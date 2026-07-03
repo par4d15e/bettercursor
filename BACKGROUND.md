@@ -470,3 +470,39 @@ Mac client 介入后:
 > 跨端共享的是 JSONL (Layer 1, 已被 Cursor 自动同步到 Linux workspace)。
 > 跨端**不共享**的是各端 SQLite (Layer 2/3/3'), 需要 daemon 桥接。
 > 约束 (你只在 1 个端活跃) 保证写并发不会冲突。
+
+---
+
+## 11. History Normalization (历史 commit message 中文化)
+
+> 触发条款: AGENTS.md "提交与协作" → "关于已发布 commit message 的中文化 / 规范化重写"
+
+**动机**: bettercursor 首个 v0.1 → v0.2 阶段恰好赶上仓库 AGENTS.md 引入
+"中文 + emoji 前缀" 的提交规范。最初 6 条 commit 是规范落地之前用英文写的;
+与其让后人 `git log` 时看到双轨制, 不如趁单人 / 规范定型期一次性 normalize。
+
+**方法**: `git filter-branch -f --msg-filter /tmp/msg.sh 21227fd`
+(`21227fd` 是规范化起点之前的最老 HEAD, 涵盖全部 6 条需要重写的 commit;
+`7136913` AGENTS.md 提交留在范围之外不动。)
+
+**旧的 → 新的 SHA + subject 映射**:
+
+| old SHA | old subject | new subject |
+|---|---|---|
+| `f8b1626` | `Initial commit: bettercursor v0.1 working (Tauri + React + Rust)` | `✨ feat: v0.1 初始可用版本 (Tauri + React + Rust)` |
+| `35e7aed` | `docs: add README.md` | `📄 docs: README.md 项目说明` |
+| `3c72440` | `feat(ui): distinguish title fallback from real extracted titles` | `✨ feat(ui): 标题 fallback 与真实标题视觉区分` |
+| `09051b9` | `fix(core): Layer 1 JSONL title extraction — correct path & schema` | `🐛 fix(core): Layer 1 JSONL 标题提取 — 路径 + 嵌套 schema` |
+| `508d3b3` | `feat(B): load conversation bubbles from Layer 1 JSONL` | `✨ feat: 对话气泡记录加载 (Phase T3, v0.2)` |
+| `21227fd` | `feat(I+II): full-content search + wired sort modes` | `✨ feat: 全文搜索 + 排序按钮接通` |
+
+**正文 (body)**: 全部中文化 (subject + body), body 保留代码路径 / 单测名等
+技术细节 (保持英文标识符)。
+
+**约束执行**:
+- 仅修改 commit message, 文件内容 (patch) 不动
+- push 用 `--force-with-lease` (不是 `--force`)
+- 重写后跑 `cargo test` (16/16 通过) + `pnpm exec tsc --noEmit` (clean) 确认内容未受影响
+
+**何时失效**: 项目进入多人协作 / 达到 `v1.0` 时, 本豁免条款失效,
+未来新增的已发布 commit 不再被允许重写。
