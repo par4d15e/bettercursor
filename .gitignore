@@ -1,0 +1,44 @@
+# ── Node / Vite ──────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.eslintcache
+
+# ── Tauri / Rust ─────────────────────────────────────────────
+src-tauri/target/
+# Generated schemas/capabilities committed via `gen/schemas/*.json`
+# are tracked explicitly only when needed for inspection; safe to ignore.
+src-tauri/gen/schemas/
+
+# ── IDE / OS ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*~
+
+# ── Local test / scratch ─────────────────────────────────────
+sessions.csv
+*.tmp
+*.bak
+
+# ── Vendored sub-repos (have their own git history) ─────────
+vendored/cursaves/
+
+# ── Python (legacy daemon code & tests, kept for reference) ──
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ── Reference media (kept out of repo) ──────────────────────
+# Uncomment if the screenshot is treated as binary asset
+# cc-switch-session.png
