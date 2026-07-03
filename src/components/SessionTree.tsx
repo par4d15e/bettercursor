@@ -14,6 +14,7 @@ import {
   RefreshCw,
   ArrowUpDown,
   ListFilter,
+  Radio,
 } from "lucide-react";
 
 function detectSource(s: CanonicalSession): SourceLayer | null {
@@ -36,6 +37,8 @@ export function SessionTree() {
   const init = useSessionStore((s) => s.init);
   const sortMode = useSessionStore((s) => s.sortMode);
   const cycleSortMode = useSessionStore((s) => s.cycleSortMode);
+  const autoSyncLive = useSessionStore((s) => s.autoSyncLive);
+  const watcherDirs = useSessionStore((s) => s.watcherDirs);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -73,6 +76,15 @@ export function SessionTree() {
         <span className="px-1.5 py-0.5 rounded bg-bg-tertiary text-fg-primary font-mono">
           {total}
         </span>
+        {autoSyncLive && (
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-green/15 border border-accent-green/40 text-accent-green text-[10px]"
+            title={`自动同步开启: 监听 ${watcherDirs.join(", ")}`}
+          >
+            <Radio size={10} className="animate-pulse" />
+            <span className="font-semibold">LIVE</span>
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             className="p-1 rounded hover:bg-bg-hover"

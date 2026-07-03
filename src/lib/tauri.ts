@@ -54,3 +54,14 @@ export interface Conversation {
 export async function getConversation(uuid: string): Promise<Conversation> {
   return invoke<Conversation>("get_conversation", { uuid });
 }
+
+// ── Live fs watcher (auto-sync) ────────────────────────────────
+
+export interface WatcherStatus {
+  active: boolean;
+  dirs: string[];
+}
+
+export async function watcherStatus(): Promise<WatcherStatus> {
+  return invoke<WatcherStatus>("watcher_status");
+}

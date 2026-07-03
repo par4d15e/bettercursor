@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { useMemo } from "react";
 import type { CanonicalSession } from "../lib/types";
-import { listSessions, refreshSessions, onSessionsUpdated } from "../lib/tauri";
+import { listSessions, refreshSessions, onSessionsUpdated, watcherStatus } from "../lib/tauri";
 
 /**
  * Sort order. Drives the project-group → session ordering inside each
@@ -32,6 +32,11 @@ interface SessionState {
   lastScanAt: string | null;
   search: string;
   sortMode: SortMode;
+  /// True iff the backend fs-watcher thread is alive. Refreshed on
+  /// init() and by `refreshWatcherStatus()`. Drives a "live" badge
+  /// in the toolbar so users see auto-sync is working.
+  autoSyncLive: boolean;
+  watcherDirs: string[];
   setSessions: (s: CanonicalSession[]) => void;
   setSelected: (uuid: string | null) => void;
   setSearch: (q: string) => void;
@@ -39,6 +44,7 @@ interface SessionState {
   cycleSortMode: () => void;
   refresh: () => Promise<void>;
   init: () => Promise<void>;
+  refreshWatcherStatus: () => Promise<void>;
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -49,6 +55,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   lastScanAt: null,
   search: "",
   sortMode: "updated_desc",
+  autoSyncLive: false,
+  watcherDirs: [],
 
   setSessions: (sessions) => set({ sessions }),
   setSelected: (uuid) => set({ selectedUuid: uuid }),
@@ -82,7 +90,8 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   init: async () => {
     console.log("[bettercursor] init: starting");
-    // Subscribe to backend events (emitted on initial scan + manual refresh).
+    // Subscribe to backend events (emitted on initial scan + manual
+    // refresh + watcher auto-sync).
     await onSessionsUpdated(async (count) => {
       console.log(`[bettercursor] event: sessions-updated, count=${count}`);
       const fresh = await listSessions();
@@ -97,6 +106,26 @@ export const useSessionStore = create<SessionState>((set) => ({
     } catch (e: any) {
       console.error(`[bettercursor] init failed:`, e);
       set({ error: String(e) });
+    }
+    // Probe watcher status (non-fatal if it errors).
+    try {
+      const w = await watcherStatus();
+      set({
+        autoSyncLive: w.active,
+        watcherDirs: w.dirs,
+      });
+      console.log(`[bettercursor] watcher: active=${w.active}, dirs=${w.dirs.length}`);
+    } catch (e: any) {
+      console.warn(`[bettercursor] watcher_status failed:`, e);
+    }
+  },
+
+  refreshWatcherStatus: async () => {
+    try {
+      const w = await watcherStatus();
+      set({ autoSyncLive: w.active, watcherDirs: w.dirs });
+    } catch (e: any) {
+      console.warn("[bettercursor] refreshWatcherStatus:", e);
     }
   },
 }));

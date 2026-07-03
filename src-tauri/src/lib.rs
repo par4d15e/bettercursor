@@ -18,6 +18,9 @@ use tauri::{Emitter, Manager, State};
 pub struct AppState {
     pub sessions: Mutex<Vec<core::canonical::CanonicalSession>>,
     pub last_scan_at: Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    /// True iff the fs-watcher thread is currently alive. Used so
+    /// the spawn site stays idempotent across restart attempts.
+    pub watcher_active: Mutex<bool>,
 }
 
 impl AppState {
@@ -25,6 +28,7 @@ impl AppState {
         Self {
             sessions: Mutex::new(Vec::new()),
             last_scan_at: Mutex::new(None),
+            watcher_active: Mutex::new(false),
         }
     }
 }
@@ -90,6 +94,26 @@ fn get_conversation(uuid: &str) -> core::canonical::Conversation {
     core::canonical::read_conversation(uuid)
 }
 
+/// Watcher diagnostics for the frontend. Returns the watch dirs
+/// (with `~` substituted for `$HOME`) and whether the watcher thread
+/// is currently active.
+#[derive(serde::Serialize)]
+struct WatcherStatus {
+    active: bool,
+    dirs: Vec<String>,
+}
+
+#[tauri::command]
+fn watcher_status(state: State<'_, AppState>) -> WatcherStatus {
+    WatcherStatus {
+        active: *state.watcher_active.lock().unwrap(),
+        dirs: core::watcher::watched_dirs()
+            .iter()
+            .map(|p| core::watcher::dir_label(p))
+            .collect(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -119,6 +143,10 @@ pub fn run() {
                     }
                 }
             });
+            // Start the fs watcher for live auto-sync.
+            if let Err(e) = core::watcher::start(&app.handle()) {
+                log::warn!("fs watcher failed to start: {e:#}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -127,6 +155,7 @@ pub fn run() {
             get_resume_command,
             platform_info,
             get_conversation,
+            watcher_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
