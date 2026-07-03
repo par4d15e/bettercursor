@@ -12,6 +12,11 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+// `Path` is only referenced from the test-only `load_from` helper;
+// gate its import on `cfg(test)` so the production build stays
+// warning-clean.
+#[cfg(test)]
 use std::path::Path;
 
 use super::paths;

@@ -159,25 +159,41 @@ fn set_auto_sync(
 }
 
 /// Inject a CLI-originated session into Cursor Desktop's Layer 3
-/// (state.vscdb) so the Electron Sidebar shows it. Two-phase:
-///   1) `dry_run_inject_layer3(uuid)` — returns a previewable plan
-///      that lists every SQLite upsert that would run. UI shows the
-///      user what will happen; they confirm before step 2.
-///   2) `commit_inject_layer3(plan)` — applies the plan verbatim
-///      (no recompute) to a tmpdir-copied state.vscdb, integrity-
-///      checks, atomic-renames the result back. Backs up the
-///      original to `state.vscdb.pre_bettercursor` first.
+/// (state.vscdb) so the Electron Sidebar shows it. **Offline only**:
+/// bettercursor never writes to `state.vscdb` while Cursor Electron
+/// holds it open — the rename race silently lost mutations (#84).
+/// Instead, three Tauri commands front the offline pipeline:
+///   1) `dry_run_inject_layer3(uuid)` — pure read; returns an
+///      `InjectPlan` listing every SQLite upsert that *would* run
+///      so the UI can preview the diff.
+///   2) `prepare_inject_layer3(uuid)` — writes a JSON envelope of
+///      that plan to `~/.bettercursor/queue/inject-<uuid>.json`
+///      and returns the queue path + the `python3 ...` apply
+///      command for the UI to show.
+///   3) `inspect_prepared_layer3(uuid)` — checks the queue file +
+///      whether `apply.py` has already run (by sidecar
+///      `.applied` marker). Used by the UI badge for "已应用".
 ///
-/// Cursor Electron must be **restarted** for the Sidebar to reflect
-/// the new entry — the injector never signals the running process.
+/// The user must (a) quit Cursor Electron and (b) run the apply
+/// command themselves. After it succeeds they reopen Cursor; the
+/// Sidebar will then show the new entry.
 #[tauri::command]
 fn dry_run_inject_layer3(uuid: &str) -> Result<core::inject::InjectPlan, String> {
     core::inject::dry_run_inject(uuid).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn commit_inject_layer3(plan: core::inject::InjectPlan) -> Result<core::inject::InjectResult, String> {
-    core::inject::commit_inject(&plan).map_err(|e| e.to_string())
+fn prepare_inject_layer3(uuid: &str) -> Result<core::inject::PrepareResult, String> {
+    // First use: copy the bundled apply.py into place so the user's
+    // apply_command actually resolves. Best-effort; failure is
+    // surfaced verbatim so we never queue work the user can't apply.
+    core::inject::ensure_apply_script().map_err(|e| e.to_string())?;
+    core::inject::prepare_inject(uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn inspect_prepared_layer3(uuid: &str) -> Option<core::inject::Prepared> {
+    core::inject::inspect_prepared(uuid)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -224,7 +240,8 @@ pub fn run() {
             watcher_status,
             set_auto_sync,
             dry_run_inject_layer3,
-            commit_inject_layer3,
+            prepare_inject_layer3,
+            inspect_prepared_layer3,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

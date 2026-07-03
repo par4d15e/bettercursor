@@ -102,22 +102,55 @@ export interface InjectPlan {
   skip_reason: string | null;
 }
 
-export interface InjectResult {
+/** Result of staging a Layer 3 injection to disk. The user must
+ *  quit Cursor Electron and then run `apply_command` themselves —
+ *  bettercursor never touches state.vscdb while Cursor holds it
+ *  open (see #84). */
+export interface PrepareResult {
   uuid: string;
-  applied: number;
-  state_vscdb_path: string;
-  backup_path: string;
-  integrity_ok: boolean;
+  /** Absolute path to `~/.bettercursor/queue/inject-<uuid>.json`. */
+  queue_path: string;
+  /** One-liner the user copies-and-pastes after closing Cursor.
+   *  Format: `python3 ~/.bettercursor/apply.py <queue_path>`. */
+  apply_command: string;
+  /** Count of mutations the apply script will run, useful for the
+   *  "准备离线注入包 → N 条变更即将落地" preview. */
+  mutations: number;
+}
+
+/** Returned by `inspectPreparedLayer3`: tells the UI whether the
+ *  queue file exists and whether apply.py has already finished for
+ *  this uuid (detected by sidecar `.applied` marker). */
+export interface Prepared {
+  uuid: string;
+  queue_path: string;
+  applied: boolean;
+  marker_path: string;
+  apply_command: string;
 }
 
 /// Build a previewable plan for synthesizing the Layer 3 entries
 /// that would make this CLI-originated session visible in Cursor
-/// Electron Desktop's Sidebar. Two-phase: dry-run first, confirm,
-/// then `commitInjectLayer3(plan)`.
+/// Electron Desktop's Sidebar. Pure read; no disk writes.
 export async function dryRunInjectLayer3(uuid: string): Promise<InjectPlan> {
   return invoke<InjectPlan>("dry_run_inject_layer3", { uuid });
 }
 
-export async function commitInjectLayer3(plan: InjectPlan): Promise<InjectResult> {
-  return invoke<InjectResult>("commit_inject_layer3", { plan });
+/// Stage a Layer 3 injection: writes the plan envelope to
+/// `~/.bettercursor/queue/inject-<uuid>.json`. Idempotent — calling
+/// again overwrites with a fresh plan. Refuses to queue if the
+/// plan carries a `skip_reason` (no source data).
+///
+/// The returned `apply_command` must be run manually by the user
+/// after quitting Cursor Electron. bettercursor does NOT run it
+/// for them — see #84 for why live writes lost data.
+export async function prepareInjectLayer3(uuid: string): Promise<PrepareResult> {
+  return invoke<PrepareResult>("prepare_inject_layer3", { uuid });
+}
+
+/// Inspect a previously staged injection. Returns `null` when no
+/// queue file exists yet (use this to decide whether to show the
+/// "已应用" badge or the "准备离线注入包" call-to-action).
+export async function inspectPreparedLayer3(uuid: string): Promise<Prepared | null> {
+  return invoke<Prepared | null>("inspect_prepared_layer3", { uuid });
 }

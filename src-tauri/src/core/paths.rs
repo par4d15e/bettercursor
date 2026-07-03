@@ -99,6 +99,33 @@ pub fn config_file() -> PathBuf {
     bettercursor_dir().join("config.json")
 }
 
+/// `~/.bettercursor/queue/` — staged injection plans awaiting
+/// manual application via `apply.py`. Why not apply immediately?
+/// Because state.vscdb is held open by Cursor Electron — racing
+/// its WAL flush reliably overwrites our writes. The Python
+/// script refuses to run unless Cursor is closed.
+pub fn queue_dir() -> PathBuf {
+    let p = bettercursor_dir().join("queue");
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+/// `~/.bettercursor/queue/inject-<uuid>.json` — the staging filename
+/// for a Layer 3 injection plan. Stable across regenerations so
+/// re-running `prepare_inject_layer3` overwrites the same file.
+pub fn inject_queue_path(uuid: &str) -> PathBuf {
+    queue_dir().join(format!("inject-{uuid}.json"))
+}
+
+/// `~/.bettercursor/apply.py` — offline companion that reads a queued
+/// JSON plan, verifies no Cursor process holds the file, then does
+/// tmpdir-copy + apply + integrity_check + atomic rename. Lives in
+/// the user-data dir so it survives project moves; copy from repo
+/// `scripts/apply.py` on demand via `ensure_apply_script()`.
+pub fn apply_script_path() -> PathBuf {
+    bettercursor_dir().join("apply.py")
+}
+
 /// Convert `/Users/x/y` → `Users-x-y` (cursaves' format for Layer 1 path segment).
 pub fn sanitize_project_path(project_path: &str) -> String {
     project_path

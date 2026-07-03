@@ -8,14 +8,28 @@ import {
   getConversation,
   getResumeCommand,
   dryRunInjectLayer3,
-  commitInjectLayer3,
+  prepareInjectLayer3,
+  inspectPreparedLayer3,
   refreshSessions,
   type Conversation,
   type InjectPlan,
-  type InjectResult,
+  type PrepareResult,
+  type Prepared,
 } from "../lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Copy, Trash2, Folder, Clock, FileText, Hash, ArrowDownToLine, AlertCircle } from "lucide-react";
+import {
+  Copy,
+  Trash2,
+  Folder,
+  Clock,
+  FileText,
+  Hash,
+  Terminal,
+  AlertCircle,
+  CheckCircle2,
+  RefreshCw,
+  ClipboardCheck,
+} from "lucide-react";
 import type { SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
 
@@ -42,12 +56,20 @@ export function SessionDetail() {
   const [conv, setConv] = useState<Conversation | null>(null);
   const [convLoading, setConvLoading] = useState(false);
   const [convError, setConvError] = useState<string | null>(null);
-  // Layer 3 injection: only the dry-run preview is held in component
-  // state; on confirm the plan is replayed verbatim to commit_inject_layer3.
+  // Layer 3 injection (offline two-phase):
+  //   Phase 1: dryRun → InjectPlan preview (in-component state).
+  //   Phase 2: prepare(plan) → PrepareResult with queue_path +
+  //     apply_command. Stored as `prepared`.
+  //   Phase 3 (later, manual): user runs `apply_command` after
+  //     closing Cursor. On next mount or refresh we re-check via
+  //     inspectPreparedLayer3 and surface "已应用" if the marker
+  //     sidecar exists.
   const [injectPlan, setInjectPlan] = useState<InjectPlan | null>(null);
+  const [prepared, setPrepared] = useState<PrepareResult | null>(null);
+  const [appliedProbe, setAppliedProbe] = useState<Prepared | null>(null);
   const [injectLoading, setInjectLoading] = useState(false);
   const [injectError, setInjectError] = useState<string | null>(null);
-  const [injectResult, setInjectResult] = useState<InjectResult | null>(null);
+  const [copyHint, setCopyHint] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedUuid) {
@@ -106,9 +128,33 @@ export function SessionDetail() {
   // doesn't leak into a new selection's UI.
   useEffect(() => {
     setInjectPlan(null);
+    setPrepared(null);
+    setAppliedProbe(null);
     setInjectError(null);
-    setInjectResult(null);
     setInjectLoading(false);
+    setCopyHint(null);
+  }, [selectedUuid]);
+
+  // On every selectedUuid change, peek at the queue directory: if
+  // the user already prepared (or applied) this uuid in a previous
+  // session, surface the marker state so we can render "已应用".
+  useEffect(() => {
+    if (!selectedUuid) {
+      setAppliedProbe(null);
+      return;
+    }
+    let cancelled = false;
+    inspectPreparedLayer3(selectedUuid)
+      .then((p) => {
+        if (!cancelled) setAppliedProbe(p);
+      })
+      .catch(() => {
+        // Don't surface — no queue file just means "not prepared yet".
+        if (!cancelled) setAppliedProbe(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedUuid]);
 
   const handleCopyResume = async () => {
@@ -125,15 +171,17 @@ export function SessionDetail() {
     }
   };
 
-  // Layer 3 injection: two-phase API.
+  // Layer 3 injection: offline two-phase API.
   //   Phase 1: dryRun → fill `injectPlan` (state on the page).
-  //   Phase 2: commit(plan) → fill `injectResult`.
-  // Each phase is gated by `injectLoading` so we don't accept double-clicks.
+  //   Phase 2: prepare(plan) → fill `prepared` (with apply_command).
+  // Phase 3 (apply) is **manual** — done by the user running
+  // `apply.py` after closing Cursor Electron. bettercursor
+  // intentionally never executes it (see #84 for the WAL race
+  // that motivated going offline).
   const handleDryRunInject = async () => {
     if (!session) return;
     setInjectLoading(true);
     setInjectError(null);
-    setInjectResult(null);
     try {
       const plan = await dryRunInjectLayer3(session.uuid);
       setInjectPlan(plan);
@@ -144,21 +192,53 @@ export function SessionDetail() {
     }
   };
 
-  const handleCommitInject = async () => {
-    if (!injectPlan || !session) return;
+  const handlePrepareInject = async () => {
+    if (!session) return;
     setInjectLoading(true);
     setInjectError(null);
     try {
-      const r = await commitInjectLayer3(injectPlan);
-      setInjectResult(r);
-      // After successful commit, refresh from the backend so the
-      // Sidebar row's "desktop visibility" reflects reality without
-      // waiting for the next watcher tick.
-      const count = await refreshSessions();
-      const fresh = useSessionStore.getState().sessions;
-      console.log(`[bettercursor] post-inject refresh: ${fresh.length}/${count}`);
+      const result = await prepareInjectLayer3(session.uuid);
+      setPrepared(result);
+      // Refresh the applied probe — running prepare doesn't set the
+      // .applied marker (only apply.py does), but it's good hygiene
+      // so a subsequent user click sees fresh state without a remount.
+      const fresh = await inspectPreparedLayer3(session.uuid).catch(() => null);
+      setAppliedProbe(fresh);
     } catch (e) {
       setInjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setInjectLoading(false);
+    }
+  };
+
+  const handleCopyApplyCommand = async (cmd: string) => {
+    try {
+      await writeText(cmd);
+      setCopyHint("apply 命令已复制");
+      setTimeout(() => setCopyHint(null), 1500);
+    } catch (e) {
+      console.error("copy apply command failed:", e);
+      setCopyHint("复制失败 (见 console)");
+    }
+  };
+
+  // After a successful prepare, refresh in the background so the
+  // Sidebar's "desktop visibility" picks up the moment we read
+  // state.vscdb via the next scan — but the actual mutation stays
+  // queued until the user runs apply.py. This keeps things honest:
+  // we don't pretend the sidebar is updated.
+  const handleRecheckApplied = async () => {
+    if (!session) return;
+    setInjectLoading(true);
+    try {
+      const fresh = await inspectPreparedLayer3(session.uuid).catch(() => null);
+      setAppliedProbe(fresh);
+      if (fresh?.applied) {
+        // Refresh sessions so the Sidebar reflects the now-
+        // actually-applied injection. The user must have restarted
+        // Cursor for the rows to be visible there too.
+        await refreshSessions();
+      }
     } finally {
       setInjectLoading(false);
     }
@@ -192,25 +272,106 @@ export function SessionDetail() {
         )}
 
         {/* Inject-to-Layer-3 banner (CLI session, Desktop Sidebar missing).
-            Three phases: idle (offer button) → dry-run preview → done.
-            Cursor Electron must be restarted for Sidebar to show the
-            new entry; we surface that constraint explicitly. */}
+            Offline two-phase: dryRun → 预览 injection plan, prepare →
+            stage offline apply script for the user to run **after**
+            closing Cursor. Why offline? Cursor Electron holds
+            state.vscdb open — live writes silently lose rows to its
+            WAL flush (see #84). The user must restart Cursor for the
+            Sidebar to reflect the change either way. */}
         {canInjectLayer3 && (
           <div className="mb-3 px-3 py-2 rounded-md bg-accent-blue/10 border border-accent-blue/40 text-fg-primary text-xs flex items-start gap-2">
-            <ArrowDownToLine size={14} className="text-accent-blue shrink-0 mt-px" />
+            <Terminal size={14} className="text-accent-blue shrink-0 mt-px" />
             <div className="flex-1">
               <div className="font-semibold text-accent-blue">
                 Desktop Sidebar 看不到此 session
               </div>
               <div className="text-fg-secondary mt-0.5">
                 它由 <span className="font-mono">cursor-agent</span> 写入 (Layer 2),
-                但没有对应的 Layer 3 entry. 点击下方按钮合成一份注入 Cursor
-                Electron 的 state.vscdb. <span className="text-fg-muted">完成后需
-                重启 Cursor 才能在 Sidebar 看到.</span>
+                但没有对应的 Layer 3 entry. {" "}
+                <span className="text-fg-muted">
+                  为防止与 Cursor Electron 的 WAL 写入竞争, bettercursor
+                  只生成离线注入包 — 关闭 Cursor 后由你手动
+                  </span>
+                <span className="font-mono">python3 ~/.bettercursor/apply.py …</span>
+                <span className="text-fg-muted"> 完成落地.</span>
               </div>
 
-              {/* Phase 1: idle */}
-              {!injectPlan && !injectResult && (
+              {/* Already-applied badge. Wins over all other phases —
+                  if the marker sidecar exists, the user already did
+                  the manual apply and we just remind them to refresh
+                  Cursor if they haven't yet. */}
+              {appliedProbe?.applied && (
+                <div className="mt-2 px-2 py-1.5 rounded bg-accent-green/10 border border-accent-green/40 text-accent-green text-[11px] flex items-start gap-1.5">
+                  <CheckCircle2 size={12} className="shrink-0 mt-px" />
+                  <div className="flex-1">
+                    <div>
+                      ✓ 离线注入包已应用 (marker: <span className="font-mono">{appliedProbe.marker_path}</span>).
+                    </div>
+                    <div className="mt-0.5 text-fg-secondary">
+                      若 Sidebar 还没显示, 请确认已完全退出 Cursor 然后重新打开.
+                    </div>
+                    <button
+                      onClick={handleRecheckApplied}
+                      disabled={injectLoading}
+                      className="mt-1 px-2 py-0.5 rounded bg-bg-hover border border-border text-fg-secondary text-[11px] hover:bg-bg-primary disabled:opacity-50 inline-flex items-center gap-1"
+                    >
+                      <RefreshCw size={11} />
+                      重新检查 + 刷新 Sidebar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Phase 0: queue file exists but apply not yet run.
+                  We don't show the dry-run preview again — just the
+                  copy-able apply command and the option to re-stage. */}
+              {!appliedProbe?.applied && prepared && (
+                <div className="mt-2 px-2 py-1.5 rounded bg-bg-tertiary border border-border font-mono text-[11px]">
+                  <div className="text-fg-secondary">
+                    离线注入包已就绪 ({prepared.mutations} 条变更待落地). 关闭
+                    Cursor 后运行:
+                  </div>
+                  <div className="mt-1 flex items-start gap-1">
+                    <code className="flex-1 px-1.5 py-1 rounded bg-bg-primary border border-border text-fg-primary break-all whitespace-pre-wrap">
+                      {prepared.apply_command}
+                    </code>
+                    <button
+                      onClick={() => handleCopyApplyCommand(prepared.apply_command)}
+                      className="p-1 rounded hover:bg-bg-hover text-fg-secondary hover:text-fg-primary shrink-0"
+                      title="复制到剪贴板"
+                    >
+                      <Copy size={12} />
+                    </button>
+                  </div>
+                  <div className="mt-1 text-fg-muted">
+                    queue: <span className="text-fg-secondary">{prepared.queue_path}</span>
+                  </div>
+                  {copyHint && (
+                    <div className="mt-1 text-accent-green">✓ {copyHint}</div>
+                  )}
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={handleRecheckApplied}
+                      disabled={injectLoading}
+                      className="px-2.5 py-1 rounded bg-bg-hover border border-border text-fg-secondary text-xs hover:bg-bg-primary disabled:opacity-50 inline-flex items-center gap-1"
+                    >
+                      <RefreshCw size={11} />
+                      我已运行 apply, 重新检查
+                    </button>
+                    <button
+                      onClick={handlePrepareInject}
+                      disabled={injectLoading}
+                      className="px-2.5 py-1 rounded bg-bg-hover border border-border text-fg-muted text-xs hover:bg-bg-primary disabled:opacity-50"
+                      title="幂等: 重新生成 queue 文件 (apply 未运行时才有效)"
+                    >
+                      {injectLoading ? "重新生成中…" : "重新生成"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Phase 1: idle — surface the dry-run / prepare affordances. */}
+              {!appliedProbe?.applied && !prepared && !injectPlan && (
                 <button
                   onClick={handleDryRunInject}
                   disabled={injectLoading}
@@ -220,8 +381,8 @@ export function SessionDetail() {
                 </button>
               )}
 
-              {/* Phase 2: dry-run preview */}
-              {injectPlan && !injectResult && (
+              {/* Phase 2: dry-run preview, before staging. */}
+              {!appliedProbe?.applied && !prepared && injectPlan && (
                 <div className="mt-2 px-2 py-1.5 rounded bg-bg-tertiary border border-border font-mono text-[11px]">
                   {injectPlan.skip_reason ? (
                     <div className="text-accent-red">
@@ -251,11 +412,12 @@ export function SessionDetail() {
                       )}
                       <div className="mt-2 flex items-center gap-2">
                         <button
-                          onClick={handleCommitInject}
+                          onClick={handlePrepareInject}
                           disabled={injectLoading}
-                          className="px-2.5 py-1 rounded bg-accent-green/20 border border-accent-green/40 text-accent-green text-xs font-medium hover:bg-accent-green/30 disabled:opacity-50"
+                          className="px-2.5 py-1 rounded bg-accent-green/20 border border-accent-green/40 text-accent-green text-xs font-medium hover:bg-accent-green/30 disabled:opacity-50 inline-flex items-center gap-1"
                         >
-                          {injectLoading ? "写入中…" : "确认并写入"}
+                          <ClipboardCheck size={11} />
+                          {injectLoading ? "准备中…" : "准备离线注入包"}
                         </button>
                         <button
                           onClick={() => setInjectPlan(null)}
@@ -267,18 +429,6 @@ export function SessionDetail() {
                       </div>
                     </>
                   )}
-                </div>
-              )}
-
-              {/* Phase 3: done */}
-              {injectResult && (
-                <div className="mt-2 px-2 py-1.5 rounded bg-accent-green/10 border border-accent-green/40 text-accent-green text-[11px]">
-                  ✓ 已写入 {injectResult.applied} 条变更. 备份在{" "}
-                  <span className="font-mono">{injectResult.backup_path}</span>.
-                  完整性检查: {injectResult.integrity_ok ? "ok" : "FAILED"}.
-                  <div className="mt-1 text-fg-secondary">
-                    重启 Cursor Electron 让 Sidebar 显示此 session.
-                  </div>
                 </div>
               )}
 

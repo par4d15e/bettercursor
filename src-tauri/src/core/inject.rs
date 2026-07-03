@@ -16,17 +16,25 @@
 //!   - `dry_run_inject(uuid)` — compute the mutation set without
 //!     touching disk, return JSON-able `InjectPlan` for the UI to
 //!     preview. Skipped: file writes.
-//!   - `commit_inject(plan)` — actually apply. Uses tmpdir copy +
-//!     PRAGMA integrity_check + atomic rename. The Cursor Electron
-//!     process must be restarted for the change to take effect.
+//!   - `prepare_inject(uuid)` — write the plan to
+//!     `~/.bettercursor/queue/inject-<uuid>.json` so the user can run
+//!     `apply.py` **after closing Cursor** to apply the mutations to
+//!     `state.vscdb`. bettercursor never touches `state.vscdb`
+//!     directly because Cursor Electron holds that file open and a
+//!     rename race silently overwrites our writes via Cursor's WAL
+//!     flush (empirically verified in #84).
+//!   - `inspect_prepared(uuid)` — check whether a queue file exists
+//!     and whether `apply.py` has already run for this uuid (by
+//!     looking for the sidecar `<queue>.applied` marker).
+//!
+//! After `apply.py` succeeds, Cursor Electron must be restarted for
+//! the Sidebar to reflect the new entry.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tempfile::TempDir;
 
-use super::canonical;
 use super::paths;
 
 /// Single mutation the injector plans to make. Returned by dry-run
@@ -64,16 +72,6 @@ pub struct InjectSources {
     pub created_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InjectResult {
-    pub uuid: String,
-    pub applied: usize,
-    pub state_vscdb_path: String,
-    pub backup_path: String,
-    /// `true` iff `PRAGMA integrity_check` returned `ok` after write.
-    pub integrity_ok: bool,
-}
-
 // ── Public API ────────────────────────────────────────────────
 
 /// Build the mutation plan without touching disk. UI calls this first,
@@ -82,82 +80,149 @@ pub fn dry_run_inject(uuid: &str) -> Result<InjectPlan> {
     build_plan(uuid)
 }
 
-/// Apply a previously-built plan. The plan must be one returned by
-/// `dry_run_inject(uuid)` — the commit path takes it verbatim (no
-/// recompute) so what you previewed is what you get.
-pub fn commit_inject(plan: &InjectPlan) -> Result<InjectResult> {
+/// Stage a Layer 3 injection plan to `~/.bettercursor/queue/inject-<uuid>.json`
+/// for **offline** application via `apply.py`. Does NOT touch state.vscdb
+/// because Cursor Electron holds that file open and any race we lose
+/// silently overwrites our writes via its WAL flush — verified empirically
+/// in #84 (rename was performed but rows did not survive).
+pub fn prepare_inject(uuid: &str) -> Result<PrepareResult> {
+    let plan = build_plan(uuid)?;
     if plan.skip_reason.is_some() {
         anyhow::bail!(
-            "plan has skip_reason set ({:?}), refusing to commit",
+            "plan has skip_reason set ({:?}), refusing to write queue file",
             plan.skip_reason
         );
     }
-    let state_vscdb = paths::global_db_path()?;
-    if !state_vscdb.exists() {
-        anyhow::bail!(
-            "state.vscdb not found at {}; Cursor Desktop has not run on this host yet",
-            state_vscdb.display()
-        );
+    let queue_path = paths::inject_queue_path(uuid);
+    if let Some(parent) = queue_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("create queue dir {}", parent.display())
+        })?;
     }
 
-    // 1) Copy state.vscdb (+ WAL + SHM sidecars) to a temp dir.
-    let tmp = TempDir::new().context("create temp dir for state.vscdb copy")?;
-    let tmp_db = tmp.path().join("state.vscdb");
-    std::fs::copy(&state_vscdb, &tmp_db).with_context(|| {
-        format!("copy state.vscdb → {}", tmp_db.display())
-    })?;
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = state_vscdb.with_extension(format!(
-            "vscdb{suffix}"
-        ));
-        if sidecar.exists() {
-            let dst = tmp.path().join(format!(
-                "state.vscdb{suffix}"
-            ));
-            let _ = std::fs::copy(&sidecar, &dst);
-        }
-    }
+    // Wrap the plan with a small header so apply.py can verify it
+    // matches the live state (uuid sanity check, schema version,
+    // recommendation).
+    let envelope = serde_json::json!({
+        "schema_version": 1,
+        "tool": "bettercursor",
+        "tool_version": env!("CARGO_PKG_VERSION"),
+        "apply_command": apply_command_for(&queue_path),
+        "state_vscdb_path_hint": paths::global_db_path().ok().map(|p| p.display().to_string()),
+        "applied_marker_filename": applied_marker_filename(uuid),
+        "plan": plan,
+    });
+    let body = serde_json::to_string_pretty(&envelope)
+        .context("serialize inject envelope")?;
+    std::fs::write(&queue_path, body)
+        .with_context(|| format!("write {}", queue_path.display()))?;
 
-    // 2) Apply mutations to the copy.
-    let conn = Connection::open(&tmp_db).context("open copied state.vscdb")?;
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .context("WAL checkpoint on copy")?;
-    for m in &plan.mutations {
-        apply_mutation(&conn, m)?;
-    }
-    drop(conn);
-
-    // 3) Verify integrity before swapping in.
-    let check_conn = Connection::open(&tmp_db)?;
-    let integrity: String = check_conn
-        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-        .context("run integrity_check")?;
-    drop(check_conn);
-    if integrity.trim() != "ok" {
-        anyhow::bail!(
-            "integrity_check failed after write: {integrity}; aborting without \
-             touching the original state.vscdb"
-        );
-    }
-
-    // 4) Backup original + atomic replace.
-    let backup_path = backup_original(&state_vscdb)?;
-    atomic_replace(&tmp_db, &state_vscdb)
-        .with_context(|| format!("atomic swap into {}", state_vscdb.display()))?;
-
-    Ok(InjectResult {
-        uuid: plan.uuid.clone(),
-        applied: plan.mutations.len(),
-        state_vscdb_path: state_vscdb.display().to_string(),
-        backup_path: backup_path.display().to_string(),
-        integrity_ok: true,
+    Ok(PrepareResult {
+        uuid: uuid.to_string(),
+        queue_path: queue_path.display().to_string(),
+        apply_command: apply_command_for(&queue_path),
+        mutations: plan.mutations.len(),
     })
 }
 
-/// Path to the original state.vscdb (for diagnostics + a "is Desktop
-/// installed here" UI gate). Returns Err on unsupported platforms.
-pub fn state_vscdb_path() -> Result<PathBuf> {
-    paths::global_db_path()
+/// Result of staging an injection. The user must (1) quit Cursor and
+/// (2) run `apply_command` themselves; bettercursor never executes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrepareResult {
+    pub uuid: String,
+    pub queue_path: String,
+    pub apply_command: String,
+    pub mutations: usize,
+}
+
+/// Generate the one-liner the user will copy-paste after closing Cursor.
+/// Hard-coded `python3` for now — apply.py is portable enough that we
+/// do not worry about venv shenanigans in this stage.
+fn apply_command_for(queue_path: &Path) -> String {
+    let script = paths::apply_script_path().display().to_string();
+    let queue = queue_path.display().to_string();
+    format!("python3 {script} {queue}")
+}
+
+/// File the apply script writes next to the queue file after a
+/// successful run, so the UI can detect "this one's already done"
+/// without re-running the SQL.
+fn applied_marker_filename(uuid: &str) -> String {
+    format!("inject-{uuid}.applied")
+}
+
+/// Returns the paths the UI should show for confirmation, plus a
+/// "already applied" hint if the marker file exists.
+pub fn inspect_prepared(uuid: &str) -> Option<Prepared> {
+    let queue_path = paths::inject_queue_path(uuid);
+    if !queue_path.exists() {
+        return None;
+    }
+    let marker = queue_path.with_file_name(applied_marker_filename(uuid));
+    Some(Prepared {
+        uuid: uuid.to_string(),
+        queue_path: queue_path.display().to_string(),
+        applied: marker.exists(),
+        marker_path: marker.display().to_string(),
+        apply_command: apply_command_for(&queue_path),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Prepared {
+    pub uuid: String,
+    pub queue_path: String,
+    pub applied: bool,
+    pub marker_path: String,
+    pub apply_command: String,
+}
+
+// (state_vscdb_path() removed: it was a thin wrapper over
+//  paths::global_db_path() with no remaining callers — callers
+//  were either deleted with commit_inject or switched to
+//  inject_queue_path() / apply_script_path() in paths.rs.)
+
+/// Copy the bundled `scripts/apply.py` into the user's data directory
+/// on first use so it survives project moves. Idempotent: only copies
+/// when the destination is missing.
+pub fn ensure_apply_script() -> Result<PathBuf> {
+    let dst = paths::apply_script_path();
+    if dst.exists() {
+        return Ok(dst);
+    }
+    let src = apply_script_source_path();
+    std::fs::create_dir_all(dst.parent().unwrap_or_else(|| Path::new(".")))?;
+    std::fs::copy(&src, &dst).with_context(|| {
+        format!(
+            "copy bundled apply.py {} → {}",
+            src.display(),
+            dst.display()
+        )
+    })?;
+    Ok(dst)
+}
+
+/// Locate the bundled `scripts/apply.py`. Tries a few candidate
+/// locations so the script works whether we run from the project
+/// checkout, an installed `cargo` build, or a packaged release.
+fn apply_script_source_path() -> PathBuf {
+    let candidates = [
+        // dev: <repo>/scripts/apply.py sibling to the manifest dir
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/apply.py"),
+        // dev: legacy / nested layout (e.g. src-tauri/scripts/apply.py)
+        concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/apply.py"),
+        // current-working-directory fallback for cargo-installed bins
+        "scripts/apply.py",
+    ];
+    for c in candidates {
+        let p = PathBuf::from(c);
+        if p.is_file() {
+            return p;
+        }
+    }
+    // Fallback: even if missing, surface a user-friendly error on
+    // first invoke.
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/apply.py"))
 }
 
 // ── Internals ────────────────────────────────────────────────
@@ -442,116 +507,10 @@ fn build_workspace_identifier(cwd: &str) -> Option<serde_json::Value> {
     }))
 }
 
-// ── Mutation: ItemTable / cursorDiskKV insert ─────────────────
-
-fn apply_mutation(conn: &Connection, m: &Mutation) -> Result<()> {
-    match m {
-        Mutation::ItemTableUpsert { key, value_hex } => {
-            // ItemTable: (key PRIMARY KEY, value). Cursor uses text keys
-            // for ItemTable. Verify schema isn't a foreign surprise.
-            ensure_item_table_shape(conn)?;
-            let bytes = hex::decode(value_hex)
-                .with_context(|| format!("decode hex for ItemTable key={key}"))?;
-            let value_text = String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
-                // Last resort: store as Latin-1 surrogate so we never lose bytes.
-                bytes.iter().map(|b| *b as char).collect::<String>()
-            });
-            conn.execute(
-                "INSERT OR REPLACE INTO ItemTable(key, value) VALUES (?1, ?2)",
-                params![key, value_text],
-            )
-            .with_context(|| format!("upsert ItemTable key={key}"))?;
-        }
-        Mutation::DiskKvUpsert { key, value_hex } => {
-            ensure_diskkv_shape(conn)?;
-            let bytes = hex::decode(value_hex)
-                .with_context(|| format!("decode hex for cursorDiskKV key={key}"))?;
-            let value_text = String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
-                bytes.iter().map(|b| *b as char).collect::<String>()
-            });
-            conn.execute(
-                "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?1, ?2)",
-                params![key, value_text],
-            )
-            .with_context(|| format!("upsert cursorDiskKV key={key}"))?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_item_table_shape(conn: &Connection) -> Result<()> {
-    // Best-effort: PRAGMA table_info tolerates missing tables.
-    let mut stmt = conn.prepare("PRAGMA table_info(ItemTable)")?;
-    let cols: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
-        .collect();
-    if cols.is_empty() {
-        anyhow::bail!("ItemTable does not exist in state.vscdb (Cursor version mismatched?)");
-    }
-    Ok(())
-}
-
-fn ensure_diskkv_shape(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(cursorDiskKV)")?;
-    let cols: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
-        .collect();
-    if cols.is_empty() {
-        anyhow::bail!("cursorDiskKV does not exist in state.vscdb (Cursor version mismatched?)");
-    }
-    Ok(())
-}
-
-// ── Atomic write helpers ──────────────────────────────────────
-
-fn backup_original(state_vscdb: &Path) -> Result<PathBuf> {
-    let backup = state_vscdb.with_extension("vscdb.pre_bettercursor");
-    if !backup.exists() {
-        std::fs::copy(state_vscdb, &backup).with_context(|| {
-            format!("backup {} → {}", state_vscdb.display(), backup.display())
-        })?;
-        // Also back up sidecars (best-effort).
-        for suffix in ["-wal", "-shm"] {
-            let sidecar = state_vscdb.with_extension(format!("vscdb{suffix}"));
-            if sidecar.exists() {
-                let dst = state_vscdb.with_extension(format!(
-                    "vscdb.pre_bettercursor{suffix}"
-                ));
-                let _ = std::fs::copy(&sidecar, &dst);
-            }
-        }
-    }
-    Ok(backup)
-}
-
-fn atomic_replace(src_tmp: &Path, dst: &Path) -> Result<()> {
-    // SQLite WAL on Windows has been known to refuse plain overwrite
-    // if another process has the file open — but on Linux (our only
-    // target right now) `std::fs::rename` over an existing file is
-    // atomic per POSIX. Cursor Electron holds state.vscdb open most
-    // of the time, so we close all open handles via copy-on-write
-    // semantics: the inode changes, Electron keeps reading the old
-    // inode harmlessly. After Cursor restarts, it opens the new file.
-    std::fs::rename(src_tmp, dst).with_context(|| {
-        format!(
-            "atomic rename {} → {}",
-            src_tmp.display(),
-            dst.display()
-        )
-    })?;
-    // Also swap the wal/shm sidecars if we copied them.
-    let tmp_dir = src_tmp.parent().unwrap_or_else(|| Path::new("."));
-    for suffix in ["-wal", "-shm"] {
-        let src = tmp_dir.join(format!("state.vscdb{suffix}"));
-        if src.is_file() {
-            let dst_sidecar = dst.with_extension(format!("vscdb{suffix}"));
-            let _ = std::fs::rename(&src, &dst_sidecar);
-        }
-    }
-    Ok(())
-}
+// ── Mutation schema (helper removed: live apply_mutation was tied
+//    to the deleted commit_inject path. The actual SQL upsert that
+//    writes to state.vscdb now lives in scripts/apply.py, which runs
+//    offline with Cursor closed.) ──────────────────────────────
 
 // ── Composition (schema reverse-engineered from
 //    c1ea7999-005a-434f-bcf4-da8ddd9ff066) ─────────────────────
@@ -815,8 +774,9 @@ fn deterministic_bubble_id(uuid: &str, role: &str, ts_ms: i64, ordinal: usize) -
     s
 }
 
-// Public re-export for lib.rs to register as Tauri command.
-pub use paths::global_db_path as state_vscdb_path_helper;
+// (state_vscdb_path_helper pub use alias removed: lib.rs now
+//  registers prepare_inject_layer3 + inspect_prepared_layer3
+//  directly; nothing here needs re-exporting.)
 
 #[cfg(test)]
 mod tests {
