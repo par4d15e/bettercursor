@@ -5,6 +5,25 @@ import { useMemo } from "react";
 import type { CanonicalSession } from "../lib/types";
 import { listSessions, refreshSessions, onSessionsUpdated } from "../lib/tauri";
 
+/**
+ * Sort order. Drives the project-group → session ordering inside each
+ * group, plus the cursor across groups (groups themselves stay alphabetical
+ * by slug regardless of mode).
+ */
+export type SortMode = "updated_desc" | "name_asc" | "bubble_count_desc";
+
+export const SORT_MODES: SortMode[] = [
+  "updated_desc",
+  "name_asc",
+  "bubble_count_desc",
+];
+
+export const SORT_LABELS: Record<SortMode, string> = {
+  updated_desc: "最近更新 ↓",
+  name_asc: "名称 A→Z",
+  bubble_count_desc: "气泡数 ↓",
+};
+
 interface SessionState {
   sessions: CanonicalSession[];
   selectedUuid: string | null;
@@ -12,9 +31,12 @@ interface SessionState {
   error: string | null;
   lastScanAt: string | null;
   search: string;
+  sortMode: SortMode;
   setSessions: (s: CanonicalSession[]) => void;
   setSelected: (uuid: string | null) => void;
   setSearch: (q: string) => void;
+  setSortMode: (m: SortMode) => void;
+  cycleSortMode: () => void;
   refresh: () => Promise<void>;
   init: () => Promise<void>;
 }
@@ -26,10 +48,18 @@ export const useSessionStore = create<SessionState>((set) => ({
   error: null,
   lastScanAt: null,
   search: "",
+  sortMode: "updated_desc",
 
   setSessions: (sessions) => set({ sessions }),
   setSelected: (uuid) => set({ selectedUuid: uuid }),
   setSearch: (search) => set({ search }),
+  setSortMode: (sortMode) => set({ sortMode }),
+  cycleSortMode: () =>
+    set((s) => {
+      const i = SORT_MODES.indexOf(s.sortMode);
+      const next = SORT_MODES[(i + 1) % SORT_MODES.length];
+      return { sortMode: next };
+    }),
 
   refresh: async () => {
     set({ loading: true, error: null });
@@ -92,6 +122,7 @@ export function filterSessions(
       sess.name.toLowerCase().includes(q) ||
       sess.project_slug.toLowerCase().includes(q) ||
       sess.first_user_message_preview.toLowerCase().includes(q) ||
+      sess.indexable_text.toLowerCase().includes(q) ||
       sess.uuid.toLowerCase().includes(q),
   );
 }
@@ -101,8 +132,20 @@ export interface ProjectGroup {
   sessions: CanonicalSession[];
 }
 
+function compareSessions(a: CanonicalSession, b: CanonicalSession, mode: SortMode): number {
+  switch (mode) {
+    case "updated_desc":
+      return b.last_updated_at - a.last_updated_at;
+    case "name_asc":
+      return a.name.localeCompare(b.name, "zh-Hans-CN");
+    case "bubble_count_desc":
+      return b.bubble_count - a.bubble_count;
+  }
+}
+
 export function groupSessionsByProject(
   sessions: CanonicalSession[],
+  sortMode: SortMode = "updated_desc",
 ): ProjectGroup[] {
   const groups = new Map<string, CanonicalSession[]>();
   for (const sess of sessions) {
@@ -114,18 +157,19 @@ export function groupSessionsByProject(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([slug, list]) => ({
       slug,
-      sessions: [...list].sort((a, b) => b.last_updated_at - a.last_updated_at),
+      sessions: [...list].sort((a, b) => compareSessions(a, b, sortMode)),
     }));
 }
 
 // Hook: filtered + grouped sessions, fully memoized via React.useMemo.
-// Subscribes to the raw array + search string refs, then derives once per
-// real change — not on every render.
+// Subscribes to the raw array + search string + sortMode refs, then
+// derives once per real change — not on every render.
 export function useGroupedSessions(): ProjectGroup[] {
   const sessions = useSessionStore((s) => s.sessions);
   const search = useSessionStore((s) => s.search);
+  const sortMode = useSessionStore((s) => s.sortMode);
   return useMemo(
-    () => groupSessionsByProject(filterSessions(sessions, search)),
-    [sessions, search],
+    () => groupSessionsByProject(filterSessions(sessions, search), sortMode),
+    [sessions, search, sortMode],
   );
 }

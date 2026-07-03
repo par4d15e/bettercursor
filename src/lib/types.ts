@@ -26,6 +26,8 @@ export interface CanonicalSession {
   sources: Sources;
   first_user_message_preview: string;
   files_referenced: string[];
+  /** Concatenated conversation text (≤2 KB), used for full-content search. */
+  indexable_text: string;
 }
 
 export const SOURCE_LABELS: Record<SourceLayer, string> = {

@@ -1,7 +1,7 @@
 // src/components/SessionTree.tsx — left panel: project groups → sessions
 
 import { useEffect, useState } from "react";
-import { useSessionStore, useGroupedSessions } from "../store/sessionStore";
+import { useSessionStore, useGroupedSessions, SORT_LABELS } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
@@ -33,6 +33,8 @@ export function SessionTree() {
   const total = useSessionStore((s) => s.sessions.length);
   const error = useSessionStore((s) => s.error);
   const init = useSessionStore((s) => s.init);
+  const sortMode = useSessionStore((s) => s.sortMode);
+  const cycleSortMode = useSessionStore((s) => s.cycleSortMode);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -78,8 +80,13 @@ export function SessionTree() {
           >
             <ListFilter size={14} />
           </button>
-          <button className="p-1 rounded hover:bg-bg-hover" title="排序" disabled>
+          <button
+            className="p-1 rounded hover:bg-bg-hover flex items-center gap-1 px-1.5"
+            onClick={cycleSortMode}
+            title={`排序: ${SORT_LABELS[sortMode]} (点击切换)`}
+          >
             <ArrowUpDown size={14} />
+            <span className="text-[10px]">{SORT_LABELS[sortMode]}</span>
           </button>
           <button
             className="p-1 rounded hover:bg-bg-hover"

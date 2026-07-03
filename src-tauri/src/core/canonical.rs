@@ -90,6 +90,10 @@ pub struct CanonicalSession {
     pub sources: Sources,
     pub first_user_message_preview: String,
     pub files_referenced: Vec<String>,
+    /// Concatenated text from the conversation (first ~2 KB), used for
+    /// full-content search on the frontend. Populated from Layer 1.
+    #[serde(default)]
+    pub indexable_text: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────
@@ -153,6 +157,7 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
             };
             let modified = file_mtime_ms(&jsonl_path).unwrap_or(0);
             let (preview, _files) = read_jsonl_preview(&jsonl_path);
+            let indexable = read_jsonl_indexable(&jsonl_path);
 
             merge_source(
                 by_uuid,
@@ -168,6 +173,14 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 modified,
                 preview,
             );
+
+            // `indexable_text` is set directly (not via merge_source) because
+            // it's a per-Layer-1-only property; first writer wins.
+            if let Some(entry) = by_uuid.get_mut(&uuid) {
+                if entry.indexable_text.is_empty() {
+                    entry.indexable_text = indexable;
+                }
+            }
         }
     }
 }
@@ -543,6 +556,7 @@ fn merge_source(
         sources: Sources::default(),
         first_user_message_preview: first_user_message_preview.clone(),
         files_referenced: vec![],
+        indexable_text: String::new(),
     });
 
     let slot = match layer {
@@ -560,6 +574,10 @@ fn merge_source(
     if !first_user_message_preview.is_empty() && entry.first_user_message_preview.is_empty() {
         entry.first_user_message_preview = first_user_message_preview;
     }
+    // `indexable_text` is computed once per JSONL and is read-only across
+    // merges — first-writer wins (currently always Layer 1).
+    // (intentionally not merged here; populated by `read_jsonl_indexable`
+    //  invoked from `scan_layer1_into`.)
     if entry.project_slug.is_empty() {
         entry.project_slug = project_slug.to_string();
     }
@@ -792,6 +810,110 @@ fn clean_user_text(text: &str) -> String {
     s.trim().to_string()
 }
 
+// ── Full-content index snippet ──────────────────────────────
+//
+// Used for cross-conversation search on the frontend. Reads each JSONL
+// once (already cached in OS page cache by the title pass for most files)
+// and joins the first ~2 KB of clean text content. Capping per-session
+// keeps the wire payload bounded even for very long transcripts
+// (37 sessions × 2 KB ≈ 75 KB total).
+
+const INDEXABLE_MAX_CHARS: usize = 2000;
+
+/// Pull a contiguous text snippet (≤ INDEXABLE_MAX_CHARS) from a JSONL file.
+///
+/// Like `read_jsonl_preview`, it understands both the nested schema
+/// (`v.message.content[].text`) and the legacy top-level `content`. It
+/// stops as soon as the buffer is full, so very large transcripts are
+/// not fully scanned.
+fn read_jsonl_indexable(path: &Path) -> String {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let mut buf = String::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+
+        let content_arr = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+            .or_else(|| v.get("content").and_then(|c| c.as_array()));
+
+        if let Some(arr) = content_arr {
+            for item in arr {
+                if item.get("type").and_then(|t| t.as_str()) != Some("text") {
+                    continue;
+                }
+                if let Some(text) = item.get("text").and_then(|x| x.as_str()) {
+                    let cleaned = if role == "user" {
+                        clean_user_text(text)
+                    } else {
+                        text.to_string()
+                    };
+                    if cleaned.is_empty() {
+                        continue;
+                    }
+                    let sep = if buf.is_empty() { 0 } else { 1 };
+                    if buf.len() + sep + cleaned.len() > INDEXABLE_MAX_CHARS {
+                        let room = INDEXABLE_MAX_CHARS.saturating_sub(buf.len() + sep);
+                        if room > 0 {
+                            buf.push_str(&truncate_to_char_boundary(&cleaned, room));
+                        }
+                        return buf;
+                    }
+                    if !buf.is_empty() {
+                        buf.push('\n');
+                    }
+                    buf.push_str(&cleaned);
+                }
+            }
+        } else if let Some(raw) = v.get("content").and_then(|c| c.as_str()) {
+            let cleaned = if role == "user" {
+                clean_user_text(raw)
+            } else {
+                raw.to_string()
+            };
+            if !cleaned.is_empty() {
+                let sep = if buf.is_empty() { 0 } else { 1 };
+                if buf.len() + sep + cleaned.len() > INDEXABLE_MAX_CHARS {
+                    let room = INDEXABLE_MAX_CHARS.saturating_sub(buf.len() + sep);
+                    if room > 0 {
+                        buf.push_str(&truncate_to_char_boundary(&cleaned, room));
+                    }
+                    return buf;
+                }
+                if !buf.is_empty() {
+                    buf.push('\n');
+                }
+                buf.push_str(&cleaned);
+            }
+        }
+    }
+    buf
+}
+
+/// Return the largest prefix of `s` whose UTF-8 length does not exceed
+/// `max_bytes`. Walks back to the previous char boundary so we never
+/// slice into a multi-byte character (the crash the unit-test fix
+/// addresses).
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut idx = max_bytes.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    s[..idx].to_string()
+}
+
 // ── Tests ─────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -955,5 +1077,68 @@ mod tests {
         let conv = read_conversation("definitely-not-on-disk-12345678");
         assert!(conv.source_path.is_none());
         assert!(conv.bubbles.is_empty());
+    }
+
+    // ─── Indexable text (full-content search snippet) ────────
+
+    #[test]
+    fn indexable_joins_user_and_assistant_text() {
+        let body = r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nfind me a graphql server\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Try yoga or mercurius"},{"type":"tool_use","name":"Glob","input":{}}]}}
+"#;
+        let p = write_tmp("idx-join", body);
+        let text = read_jsonl_indexable(&p);
+        assert!(text.contains("graphql server"), "got: {text:?}");
+        assert!(text.contains("yoga or mercurius"), "got: {text:?}");
+        assert!(!text.contains("<user_query>"), "wrappers leaked: {text:?}");
+    }
+
+    #[test]
+    fn indexable_caps_at_max() {
+        let big = "X".repeat(5000);
+        let body = format!(
+            r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"{big}"}}]}}}}"#,
+        );
+        let p = write_tmp("idx-cap", &body);
+        let text = read_jsonl_indexable(&p);
+        // ASCII so byte count == char count == cap.
+        assert_eq!(text.len(), INDEXABLE_MAX_CHARS);
+    }
+
+    /// The actual bug that crashed Tauri before fix: a 3-byte UTF-8 char
+    /// at a byte index ≤ INDEXABLE_MAX_CHARS used to fall partially into
+    /// `String::truncate` and panic. Now we truncate at the previous
+    /// char boundary, so the result must be ≤ INDEXABLE_MAX_CHARS
+    /// *and* end on a clean char boundary.
+    #[test]
+    fn indexable_does_not_panic_on_multibyte() {
+        // 3000 × "中" = 3 bytes each = 9000 bytes; well over the 2 KB cap.
+        let cjk = "中".repeat(3000);
+        let body = format!(
+            r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"{cjk}"}}]}}}}"#,
+        );
+        let p = write_tmp("idx-cjk", &body);
+        let text = read_jsonl_indexable(&p);
+        assert!(text.len() <= INDEXABLE_MAX_CHARS);
+        assert!(text.is_char_boundary(text.len()), "not on char boundary");
+        // Whole-char count × 3 should still leave us under the cap.
+        let char_count = text.chars().count();
+        assert!(char_count * 3 <= INDEXABLE_MAX_CHARS);
+    }
+
+    #[test]
+    fn indexable_skips_tool_use_only_messages() {
+        let body = r#"{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{}}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nreal query\n</user_query>"}]}}
+"#;
+        let p = write_tmp("idx-no-tool", body);
+        let text = read_jsonl_indexable(&p);
+        assert_eq!(text, "real query");
+    }
+
+    #[test]
+    fn indexable_empty_on_missing_file() {
+        let text = read_jsonl_indexable(Path::new("/nope/does-not-exist.jsonl"));
+        assert!(text.is_empty());
     }
 }
