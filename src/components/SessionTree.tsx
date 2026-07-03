@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSessionStore, useGroupedSessions, SORT_LABELS } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
+import { BrokenBadge } from "./BrokenBadge";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
 import {
@@ -179,6 +180,9 @@ export function SessionTree() {
                           </span>
                         );
                       })()}
+                      {sess.is_broken && (
+                        <BrokenBadge reason={sess.broken_reason} size="sm" />
+                      )}
                       {src && <SourceBadge source={src} />}
                     </button>
                   );

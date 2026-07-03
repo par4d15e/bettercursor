@@ -98,6 +98,21 @@ export function SessionDetail() {
     <div className="flex-1 flex flex-col bg-bg-primary overflow-hidden">
       {/* Header */}
       <div className="px-6 py-4 border-b border-border">
+        {/* Broken-state banner (above title so it can't be missed). */}
+        {session.is_broken && (
+          <div className="mb-3 px-3 py-2 rounded-md bg-accent-yellow/10 border border-accent-yellow/40 text-accent-yellow text-xs flex items-start gap-2">
+            <span className="text-base leading-none shrink-0 mt-px">⚠</span>
+            <div className="flex-1">
+              <div className="font-semibold">
+                {session.broken_reason ?? "该 session 数据不完整"}
+              </div>
+              <div className="text-fg-muted mt-0.5">
+                对应 `--resume` 命令可能失败. v0.2 将提供"修复"按钮.
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
             <h2

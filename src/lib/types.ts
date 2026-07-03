@@ -23,6 +23,10 @@ export interface CanonicalSession {
   last_updated_at: number;
   bubble_count: number;
   is_empty_draft: boolean;
+  /** True when a data-correctness issue was detected (e.g. broken Layer 2 root blob). */
+  is_broken: boolean;
+  /** Human-readable explanation of `is_broken`. Present iff `is_broken == true`. */
+  broken_reason?: string;
   sources: Sources;
   first_user_message_preview: string;
   files_referenced: string[];

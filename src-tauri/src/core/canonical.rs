@@ -87,6 +87,17 @@ pub struct CanonicalSession {
     pub last_updated_at: i64,
     pub bubble_count: u32,
     pub is_empty_draft: bool,
+    /// True when we detected a data-correctness issue that makes this
+    /// session unusable (`cursor-agent --resume` would fail, conversation
+    /// can't be loaded, etc.). Always paired with a non-empty
+    /// `broken_reason`.
+    #[serde(default)]
+    pub is_broken: bool,
+    /// Human-readable explanation of `is_broken`, e.g.
+    /// "Layer 2 latestRootBlobId is empty — `--resume` will fail".
+    /// `None` when `is_broken == false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broken_reason: Option<String>,
     pub sources: Sources,
     pub first_user_message_preview: String,
     pub files_referenced: Vec<String>,
@@ -331,7 +342,8 @@ fn scan_layer2_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 continue;
             }
 
-            let (name, created_at, blob_count, _has_root) = read_store_db_meta(&store_db);
+            let (name, created_at, blob_count, latest_root_blob_id) =
+                read_store_db_meta(&store_db);
             let modified = file_mtime_ms(&store_db).unwrap_or(created_at);
             let project_slug = derive_slug_from_chat_root(&chat_root);
 
@@ -350,7 +362,8 @@ fn scan_layer2_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 String::new(),
             );
 
-            // Update bubble_count and last_updated_at on the merged entry.
+            // Update bubble_count, last_updated_at, and broken-state on
+            // the merged entry.
             if let Some(entry) = by_uuid.get_mut(&uuid) {
                 entry.bubble_count = entry.bubble_count.max(blob_count);
                 if modified > entry.last_updated_at {
@@ -359,18 +372,32 @@ fn scan_layer2_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 if entry.chat_root.is_empty() {
                     entry.chat_root = chat_root.clone();
                 }
+                // "Broken" rule: Layer 2 store.db exists, has blobs, but
+                // the session's `latestRootBlobId` is the empty string
+                // (a known cursor-agent data-loss mode that the legacy
+                // Python daemon's `adapter/fix_orphan_sessions.py` used
+                // to repair). v0.1 only surfaces this; v0.2 will add a
+                // "修复" button that re-points the root.
+                if matches!(latest_root_blob_id.as_deref(), Some(s) if s.is_empty())
+                    && !entry.is_broken
+                {
+                    entry.is_broken = true;
+                    entry.broken_reason = Some(
+                        "Layer 2 latestRootBlobId 是空字符串 — `cursor-agent --resume` 会失败".to_string(),
+                    );
+                }
             }
         }
     }
 }
 
-fn read_store_db_meta(path: &Path) -> (String, i64, u32, bool) {
+fn read_store_db_meta(path: &Path) -> (String, i64, u32, Option<String>) {
     let Ok(r) = storage::open_read(path) else {
-        return (String::new(), 0, 0, false);
+        return (String::new(), 0, 0, None);
     };
 
     // Read meta[0] (agent session metadata).
-    let (name, created_at, has_root) = match r.get_json("0", "meta") {
+    let (name, created_at, latest_root_blob_id) = match r.get_json("0", "meta") {
         Ok(Some(v)) => {
             let name = v
                 .get("name")
@@ -384,17 +411,16 @@ fn read_store_db_meta(path: &Path) -> (String, i64, u32, bool) {
             let root = v
                 .get("latestRootBlobId")
                 .and_then(|x| x.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
+                .map(str::to_string);
             (name, created_at, root)
         }
-        _ => (String::new(), 0, false),
+        _ => (String::new(), 0, None),
     };
 
     // Count blobs.
     let blob_count = r.list_blob_ids().map(|v| v.len() as u32).unwrap_or(0);
 
-    (name, created_at, blob_count, has_root)
+    (name, created_at, blob_count, latest_root_blob_id)
 }
 
 fn derive_slug_from_chat_root(chat_root: &str) -> String {
@@ -553,6 +579,8 @@ fn merge_source(
         last_updated_at,
         bubble_count: 0,
         is_empty_draft: false,
+        is_broken: false,
+        broken_reason: None,
         sources: Sources::default(),
         first_user_message_preview: first_user_message_preview.clone(),
         files_referenced: vec![],
@@ -1140,5 +1168,61 @@ mod tests {
     fn indexable_empty_on_missing_file() {
         let text = read_jsonl_indexable(Path::new("/nope/does-not-exist.jsonl"));
         assert!(text.is_empty());
+    }
+
+    // ─── Broken-session detection (Layer 2 latestRootBlobId) ──
+
+    /// Pure-JSON half of `read_store_db_meta` so we can unit-test the
+    /// "empty string root blob" detection without spinning up SQLite.
+    fn parse_store_meta_json(v: &serde_json::Value) -> (String, i64, Option<String>) {
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let created_at = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+        let root = v
+            .get("latestRootBlobId")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        (name, created_at, root)
+    }
+
+    #[test]
+    fn broken_rule_fires_on_empty_root_blob() {
+        // Simulate the cursor-agent data-loss case `c1ea7999` had:
+        // store.db has blobs but meta.latestRootBlobId == "".
+        let meta = serde_json::json!({
+            "name": "session",
+            "createdAt": 100,
+            "latestRootBlobId": ""
+        });
+        let (name, _ts, root) = parse_store_meta_json(&meta);
+        assert_eq!(name, "session");
+        assert_eq!(root.as_deref(), Some(""));
+        // ← This is the condition that should set `is_broken` upstream.
+        assert!(matches!(root.as_deref(), Some(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn broken_rule_does_not_fire_on_valid_root_blob() {
+        let meta = serde_json::json!({
+            "name": "session",
+            "createdAt": 100,
+            "latestRootBlobId": "abc123def"
+        });
+        let (_name, _ts, root) = parse_store_meta_json(&meta);
+        assert!(!matches!(root.as_deref(), Some(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn broken_rule_does_not_fire_on_missing_root_blob() {
+        // Layer 1-only sessions have no meta at all.
+        let meta = serde_json::json!({
+            "name": "session",
+            "createdAt": 100
+        });
+        let (_name, _ts, root) = parse_store_meta_json(&meta);
+        assert!(root.is_none());
     }
 }
