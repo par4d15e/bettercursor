@@ -3,7 +3,13 @@
 import { create } from "zustand";
 import { useMemo } from "react";
 import type { CanonicalSession } from "../lib/types";
-import { listSessions, refreshSessions, onSessionsUpdated, watcherStatus } from "../lib/tauri";
+import {
+  listSessions,
+  refreshSessions,
+  onSessionsUpdated,
+  watcherStatus,
+  setAutoSync,
+} from "../lib/tauri";
 
 /**
  * Sort order. Drives the project-group → session ordering inside each
@@ -36,6 +42,9 @@ interface SessionState {
   /// init() and by `refreshWatcherStatus()`. Drives a "live" badge
   /// in the toolbar so users see auto-sync is working.
   autoSyncLive: boolean;
+  /// User preference (persisted in `~/.bettercursor/config.json`).
+  /// When `false`, the watcher thread stays alive but doesn't scan.
+  autoSyncEnabled: boolean;
   watcherDirs: string[];
   setSessions: (s: CanonicalSession[]) => void;
   setSelected: (uuid: string | null) => void;
@@ -45,9 +54,10 @@ interface SessionState {
   refresh: () => Promise<void>;
   init: () => Promise<void>;
   refreshWatcherStatus: () => Promise<void>;
+  toggleAutoSync: () => Promise<void>;
 }
 
-export const useSessionStore = create<SessionState>((set) => ({
+export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   selectedUuid: null,
   loading: false,
@@ -56,6 +66,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   search: "",
   sortMode: "updated_desc",
   autoSyncLive: false,
+  autoSyncEnabled: false,
   watcherDirs: [],
 
   setSessions: (sessions) => set({ sessions }),
@@ -112,9 +123,12 @@ export const useSessionStore = create<SessionState>((set) => ({
       const w = await watcherStatus();
       set({
         autoSyncLive: w.active,
+        autoSyncEnabled: w.enabled,
         watcherDirs: w.dirs,
       });
-      console.log(`[bettercursor] watcher: active=${w.active}, dirs=${w.dirs.length}`);
+      console.log(
+        `[bettercursor] watcher: active=${w.active}, enabled=${w.enabled}, dirs=${w.dirs.length}`,
+      );
     } catch (e: any) {
       console.warn(`[bettercursor] watcher_status failed:`, e);
     }
@@ -123,9 +137,37 @@ export const useSessionStore = create<SessionState>((set) => ({
   refreshWatcherStatus: async () => {
     try {
       const w = await watcherStatus();
-      set({ autoSyncLive: w.active, watcherDirs: w.dirs });
+      set({
+        autoSyncLive: w.active,
+        autoSyncEnabled: w.enabled,
+        watcherDirs: w.dirs,
+      });
     } catch (e: any) {
       console.warn("[bettercursor] refreshWatcherStatus:", e);
+    }
+  },
+
+  /// Flip the auto-sync preference. Persists server-side immediately,
+  /// then refreshes the local badge state in one Tauri round-trip.
+  /// Optimistic toggle: the UI flips before the IPC returns, which is
+  /// fine because the optimistic value is overridden by the real one
+  /// the moment the call resolves.
+  toggleAutoSync: async () => {
+    const next = !get().autoSyncEnabled;
+    // Optimistic flip so the toggle doesn't lag the click.
+    set({ autoSyncEnabled: next });
+    try {
+      const w = await setAutoSync(next);
+      set({
+        autoSyncLive: w.active,
+        autoSyncEnabled: w.enabled,
+        watcherDirs: w.dirs,
+      });
+      console.log(`[bettercursor] auto-sync toggled: enabled=${w.enabled}`);
+    } catch (e: any) {
+      // Roll back optimistic flip on error.
+      set({ autoSyncEnabled: !next });
+      console.error(`[bettercursor] set_auto_sync failed:`, e);
     }
   },
 }));

@@ -40,7 +40,11 @@ const POLL_INTERVAL_SECS: u64 = 30;
 /// Spawn the watcher thread. Returns immediately; the thread lives
 /// for the lifetime of the `app` (drops when the process exits).
 ///
-/// Idempotent — calling twice is a no-op.
+/// The thread ALWAYS starts — even when the user has the auto-sync
+/// toggle OFF — because keeping `notify` registered avoids inotify
+/// handle churn on every toggle and means enabling the preference
+/// later takes effect with zero latency. The actual gate on whether
+/// to run `scan_all()` lives inside `run_scan`.
 pub fn spawn(app: AppHandle) -> Result<()> {
     // Idempotency: skip if a watcher thread is already running.
     if let Some(state) = app.try_state::<AppState>() {
@@ -162,7 +166,22 @@ fn is_interesting(ev: &Event) -> bool {
 
 /// Single re-scan + emit. Errors are logged but never abort — a single
 /// failed scan must not kill the watcher thread.
+///
+/// Honors the user's `auto_sync_enabled` preference. When disabled
+/// (ccswitch-style opt-out), the call silently returns without scanning
+/// or emitting — the frontend state stays as last user-initiated
+/// refresh had it. The watcher thread itself stays alive in both cases
+/// (no inotify handle churn from toggling).
 fn run_scan(app: &AppHandle, trigger: &str) {
+    // Gate: check preference before doing any IO.
+    let enabled = app
+        .try_state::<AppState>()
+        .map(|s| *s.auto_sync_enabled.lock().unwrap())
+        .unwrap_or(false);
+    if !enabled {
+        log::debug!("auto-sync [{trigger}]: disabled by user, skipping");
+        return;
+    }
     match canonical::scan_all() {
         Ok(sessions) => {
             let count = sessions.len();

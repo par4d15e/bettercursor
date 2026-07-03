@@ -94,6 +94,11 @@ pub fn bettercursor_dir() -> PathBuf {
     p
 }
 
+/// `~/.bettercursor/config.json` — user preferences (auto-sync on/off, etc).
+pub fn config_file() -> PathBuf {
+    bettercursor_dir().join("config.json")
+}
+
 /// Convert `/Users/x/y` → `Users-x-y` (cursaves' format for Layer 1 path segment).
 pub fn sanitize_project_path(project_path: &str) -> String {
     project_path

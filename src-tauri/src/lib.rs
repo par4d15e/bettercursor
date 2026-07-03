@@ -21,14 +21,25 @@ pub struct AppState {
     /// True iff the fs-watcher thread is currently alive. Used so
     /// the spawn site stays idempotent across restart attempts.
     pub watcher_active: Mutex<bool>,
+    /// User preference: whether the watcher should *fire scans* when
+    /// fs events arrive. The watcher thread itself stays alive as
+    /// long as the app runs — it just gates the `scan_all()` calls.
+    /// Default = loaded from `~/.bettercursor/config.json`, falls
+    /// back to `false` (ccswitch-style user-opt-in).
+    pub auto_sync_enabled: Mutex<bool>,
 }
 
 impl AppState {
     fn new() -> Self {
+        // Load user preference from disk. `Preferences::default()`
+        // (auto_sync_enabled = false) is the right starting state when
+        // no config file exists — matches ccswitch's local-route default.
+        let prefs = core::config::load();
         Self {
             sessions: Mutex::new(Vec::new()),
             last_scan_at: Mutex::new(None),
             watcher_active: Mutex::new(false),
+            auto_sync_enabled: Mutex::new(prefs.auto_sync_enabled),
         }
     }
 }
@@ -95,11 +106,16 @@ fn get_conversation(uuid: &str) -> core::canonical::Conversation {
 }
 
 /// Watcher diagnostics for the frontend. Returns the watch dirs
-/// (with `~` substituted for `$HOME`) and whether the watcher thread
-/// is currently active.
+/// (with `~` substituted for `$HOME`), whether the watcher thread
+/// is currently alive, and whether the user has opted in to
+/// auto-sync (the ccswitch-style toggle).
 #[derive(serde::Serialize)]
 struct WatcherStatus {
     active: bool,
+    /// True iff the user has enabled the auto-sync toggle. The
+    /// watcher thread stays alive regardless, but skips `scan_all()`
+    /// calls when this is `false`.
+    enabled: bool,
     dirs: Vec<String>,
 }
 
@@ -107,11 +123,39 @@ struct WatcherStatus {
 fn watcher_status(state: State<'_, AppState>) -> WatcherStatus {
     WatcherStatus {
         active: *state.watcher_active.lock().unwrap(),
+        enabled: *state.auto_sync_enabled.lock().unwrap(),
         dirs: core::watcher::watched_dirs()
             .iter()
             .map(|p| core::watcher::dir_label(p))
             .collect(),
     }
+}
+
+/// Toggle the auto-sync preference. Persists to
+/// `~/.bettercursor/config.json` so the choice survives restarts.
+/// Returns the new full `WatcherStatus` so the frontend can refresh
+/// its badge in one IPC round-trip.
+#[tauri::command]
+fn set_auto_sync(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<WatcherStatus, String> {
+    // Persist first — if disk write fails, surface to user immediately
+    // rather than silently letting in-memory and disk diverge.
+    let prefs = core::config::set_auto_sync(enabled).map_err(|e| e.to_string())?;
+    *state.auto_sync_enabled.lock().unwrap() = prefs.auto_sync_enabled;
+    log::info!(
+        "auto-sync preference toggled: enabled={}",
+        prefs.auto_sync_enabled
+    );
+    Ok(WatcherStatus {
+        active: *state.watcher_active.lock().unwrap(),
+        enabled: prefs.auto_sync_enabled,
+        dirs: core::watcher::watched_dirs()
+            .iter()
+            .map(|p| core::watcher::dir_label(p))
+            .collect(),
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -156,6 +200,7 @@ pub fn run() {
             platform_info,
             get_conversation,
             watcher_status,
+            set_auto_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

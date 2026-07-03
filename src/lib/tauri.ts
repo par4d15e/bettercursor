@@ -59,9 +59,19 @@ export async function getConversation(uuid: string): Promise<Conversation> {
 
 export interface WatcherStatus {
   active: boolean;
+  /// User opt-in for the auto-sync behavior (ccswitch-style toggle).
+  /// When `false`, the watcher thread is still alive but skips scans.
+  enabled: boolean;
   dirs: string[];
 }
 
 export async function watcherStatus(): Promise<WatcherStatus> {
   return invoke<WatcherStatus>("watcher_status");
+}
+
+/// Toggle the auto-sync preference. Persists to
+/// `~/.bettercursor/config.json`. Returns the fresh status after the
+/// toggle completes so the UI badge can refresh in one round-trip.
+export async function setAutoSync(enabled: boolean): Promise<WatcherStatus> {
+  return invoke<WatcherStatus>("set_auto_sync", { enabled });
 }
