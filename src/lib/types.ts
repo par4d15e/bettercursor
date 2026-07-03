@@ -32,6 +32,10 @@ export interface CanonicalSession {
   files_referenced: string[];
   /** Concatenated conversation text (≤2 KB), used for full-content search. */
   indexable_text: string;
+  /** True if Layer 3 (state.vscdb composerData) has a corresponding
+   *  entry for this uuid. False = CLI-originated, Desktop Sidebar
+   *  can't see it; the inject-to-Layer-3 button shows in that case. */
+  layer_3_present: boolean;
 }
 
 export const SOURCE_LABELS: Record<SourceLayer, string> = {

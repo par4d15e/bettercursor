@@ -105,6 +105,12 @@ pub struct CanonicalSession {
     /// full-content search on the frontend. Populated from Layer 1.
     #[serde(default)]
     pub indexable_text: String,
+    /// True iff Layer 3 (state.vscdb / cursorDiskKV['composerData:<uuid>'])
+    /// contains a corresponding entry for this session.
+    /// Drives the "注入 Desktop" UI button: when false, this CLI-originated
+    /// session is invisible to Electron Cursor's Sidebar.
+    #[serde(default)]
+    pub layer_3_present: bool,
 }
 
 // ── Entry point ───────────────────────────────────────────────
@@ -510,6 +516,10 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                     if entry.project_path.is_empty() && !project_path.is_empty() {
                         entry.project_path = project_path;
                     }
+                    // Layer 3 entry exists for this uuid — drives the
+                    // "注入 Desktop" UI button (false means we should
+                    // offer to synthesize one from Layer 2 + JSONL).
+                    entry.layer_3_present = true;
                 }
             }
         }
@@ -585,6 +595,7 @@ fn merge_source(
         first_user_message_preview: first_user_message_preview.clone(),
         files_referenced: vec![],
         indexable_text: String::new(),
+        layer_3_present: false,
     });
 
     let slot = match layer {

@@ -158,6 +158,28 @@ fn set_auto_sync(
     })
 }
 
+/// Inject a CLI-originated session into Cursor Desktop's Layer 3
+/// (state.vscdb) so the Electron Sidebar shows it. Two-phase:
+///   1) `dry_run_inject_layer3(uuid)` — returns a previewable plan
+///      that lists every SQLite upsert that would run. UI shows the
+///      user what will happen; they confirm before step 2.
+///   2) `commit_inject_layer3(plan)` — applies the plan verbatim
+///      (no recompute) to a tmpdir-copied state.vscdb, integrity-
+///      checks, atomic-renames the result back. Backs up the
+///      original to `state.vscdb.pre_bettercursor` first.
+///
+/// Cursor Electron must be **restarted** for the Sidebar to reflect
+/// the new entry — the injector never signals the running process.
+#[tauri::command]
+fn dry_run_inject_layer3(uuid: &str) -> Result<core::inject::InjectPlan, String> {
+    core::inject::dry_run_inject(uuid).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn commit_inject_layer3(plan: core::inject::InjectPlan) -> Result<core::inject::InjectResult, String> {
+    core::inject::commit_inject(&plan).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -201,6 +223,8 @@ pub fn run() {
             get_conversation,
             watcher_status,
             set_auto_sync,
+            dry_run_inject_layer3,
+            commit_inject_layer3,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
