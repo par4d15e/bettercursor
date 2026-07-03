@@ -51,6 +51,17 @@ bettercursor/
 - 引入多人协作 / 外部贡献前,需要先迁移到 enenzuo 同款的 `main` + `dev` 双分支模型 + PR 流程。
 - 合并完成的 milestone 不创建 `*-old` / `*-archive` 之类的封存分支,改用 git tag 标在合并提交上。
 
+### 关于已发布 commit message 的中文化 / 规范化重写
+
+v0.x 早期阶段 (规范定型期) 允许用 `git filter-branch --msg-filter` 或交互式 rebase 配合 `git push --force-with-lease` 重写已发布 commit 的 message 以 **统一规范**, 前提是:
+
+- **只改 message**, 不动 commit 文件内容 (不调整 patch, 不 squashing)
+- 重写前 **必须更新 `BACKGROUND.md`** 的"History Normalization"小节, 记录 SHA 映射 (old → new) 与动机, 便于后人考古 `git blame`
+- push 用 `--force-with-lease` (不是 `--force`), 防止误覆盖远端新提交
+- 重写完成后跑一次 `cargo test` 与 `pnpm exec tsc --noEmit`, 确认提交内容没受影响
+
+进入多人协作 / `v1.0` 之后, **本条款失效**, 已发布历史改为"硬禁止修改"。
+
 ## Tauri 关键坑(写入仓库规格层)
 
 > 这些坑在 README "踩坑记录" 部分有冗余描述;这里列出 **每次重构前必须自检** 的硬性约束:
