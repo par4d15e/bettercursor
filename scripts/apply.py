@@ -173,14 +173,38 @@ def apply_mutation(conn: sqlite3.Connection, m: dict[str, Any]) -> None:
 
 
 def atomic_rename(src: Path, dst: Path) -> None:
-    """Atomic swap + best-effort WAL/SHM swap. On POSIX rename(2)
+    """Atomic swap + best-effort WAL/SHM swap. On POSIX, rename(2)
     over an existing path replaces the destination atomically —
-    suitable for our offline write path where Cursor is closed."""
-    os.replace(src, dst)
-    # Move wal/shm sidecars if the tmpdir held them (the integrity
-    # check leaves them in place; they belong next to the renamed
-    # DB so the next process opening state.vscdb finds a consistent
-    # pair).
+    but only when src and dst are on the same filesystem. The
+    stdlib ``tempfile.TemporaryDirectory`` defaults to /tmp which
+    is almost always a separate tmpfs on Linux, raising
+    ``OSError: [Errno 18] Invalid cross-device link`` (#85).
+    Fix: stage the copy in ``dst.parent`` (same fs as dst), then
+    ``os.replace`` atomically. POSIX guarantees the **dst side**
+    of rename is atomic even when src came from a different fs.
+    """
+    if src.parent != dst.parent:
+        # Stage a same-filesystem copy, then rename. copy2 preserves
+        # mtime/permissions; the on-disk bytes are already correct
+        # because we just ran integrity_check + wal_checkpoint.
+        staged = dst.parent / (src.name + ".bettercursor-stage")
+        shutil.copy2(src, staged)
+        try:
+            os.replace(staged, dst)
+        except BaseException:
+            # Don't leave the staging file behind if rename fails.
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+            raise
+    else:
+        os.replace(src, dst)
+
+    # Move wal/shm sidecars if the working dir held them (the
+    # integrity check leaves them in place; they belong next to
+    # the renamed DB so the next process opening state.vscdb finds
+    # a consistent pair).
     tmp_dir = src.parent
     for suffix, replace_dst_ext in (("-wal", "vscdb-wal"),
                                     ("-shm", "vscdb-shm")):
