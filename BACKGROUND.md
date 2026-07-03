@@ -506,3 +506,39 @@ Mac client 介入后:
 
 **何时失效**: 项目进入多人协作 / 达到 `v1.0` 时, 本豁免条款失效,
 未来新增的已发布 commit 不再被允许重写。
+
+---
+
+## 12. 项目代际关系 (Lineage)
+
+**当前 bettercursor** (Tauri 2 + React 19 + Rust 17) **不依赖 Python 运行时**.
+但代码里多处出现"Ported from bettercursor/*py" 的历史引用, 这里澄清这些引用的实际链路:
+
+```
+Callum-Ward/cursaves (上游, Python)
+        │
+        │ Eric fork + 加 Layer 1 JSONL / chair_root MD5 等适配
+        ▼
+bettercursor-py (Eric 自己的早期 Python 版, ~2024–2025 初)
+        │
+        │ Eric 推倒重写为 Tauri + Rust (2026-06)
+        ▼
+bettercursor-rs (当前仓库 = ~/workspace/bettercursor)
+```
+
+**Rust 端对 Python 端的具体借鉴 (算法 / 格式约定, 非代码搬运)**:
+
+| 当前 Rust 文件 | 借鉴的 Python 思路 |
+|---|---|
+| `src-tauri/src/core/paths.rs` | `chat_root_for(cwd)` 用 `md5(cwd_as_string)` 作为 Layer 2 路径 hash; `sanitize_project_path("/a/b") → "a-b"` 的 slug 规则 |
+| `src-tauri/src/core/storage.rs` | WAL-safe SQLite 读模式: 把 db + wal + shm 三件套先拷到 `tempfile::tempdir()`, 然后 `PRAGMA wal_checkpoint(TRUNCATE)`, 再打开只读. 避开和正在运行的 Cursor 的锁争用. |
+| `src-tauri/src/core/canonical.rs` | 三层优先级 (Layer 1 内容最丰富 > Layer 2 元数据 > Layer 3 老格式); UUID 作 merge key; preview 截断 120 chars; broken-session 规则 (`latestRootBlobId == ""`) |
+| `src-tauri/src/core/watcher.rs` | **完全从零写**, Python 版没有 watcher 这一层 (Python 版只在 CLI 启动时 scan 一次, E 是 v0.2 全新加的) |
+| `src-tauri/src/core/incremental.rs` (未来) | 同上, 增量合并是当前 Rust 才有的 |
+
+**前端完全独立**: React + Zustand + Tauri API 全部为当前仓库原创, 没有任何 python-to-js 的 bridge 或 transpile.
+
+**为什么文件顶部仍写 "Ported from bettercursor/<file>.py"**:
+这些注释是为了**防止未来自己忘记"这段算法从哪儿演化来的"**. **它们不是依赖声明** — 没有 `pip install`, 没有 pyo3 bindings, 没有 subprocess 调用 python. 整个进程是 native Rust 二进制 + WebView bundle, 内存里不存在 python runtime.
+
+**何时可以把这条注释删掉**: 当没有人再会困惑"这是不是依赖 Python" 的那一天. 当下保留它有信息价值 (一行字解释一种来源 vs 另一种"这里路径格式沿用旧约定"), 因为它帮读者理解为什么是 `md5(cwd)` 而不是 `sha256(cwd)`、为什么 WAL-safe 读法不是先抢锁等显然答案.
