@@ -7,6 +7,7 @@ import { getResumeCommand } from "../lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Copy, Trash2, Folder, Clock, FileText, Hash } from "lucide-react";
 import type { SourceLayer } from "../lib/types";
+import { resolveTitle } from "../lib/display";
 
 function formatTimestamp(ms: number): string {
   if (!ms) return "—";
@@ -69,10 +70,14 @@ export function SessionDetail() {
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
             <h2
-              className="text-base font-semibold text-fg-primary truncate"
-              title={session.name || session.first_user_message_preview}
+              className={`text-base font-semibold truncate ${
+                resolveTitle(session).isFallback
+                  ? "text-fg-muted italic font-normal"
+                  : "text-fg-primary"
+              }`}
+              title={resolveTitle(session).text}
             >
-              {session.name || session.first_user_message_preview || session.uuid}
+              {resolveTitle(session).text}
             </h2>
             {session.first_user_message_preview && session.name && (
               <p className="text-xs text-fg-secondary mt-1 line-clamp-2">

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSessionStore, useGroupedSessions } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
+import { resolveTitle } from "../lib/display";
 import {
   ChevronLeft,
   ChevronDown,
@@ -156,12 +157,21 @@ export function SessionTree() {
                           : ""
                       }`}
                     >
-                      <span
-                        className="truncate flex-1 text-left text-fg-primary"
-                        title={sess.name || sess.first_user_message_preview}
-                      >
-                        {sess.name || sess.first_user_message_preview || sess.uuid.slice(0, 8)}
-                      </span>
+                      {(() => {
+                        const t = resolveTitle(sess);
+                        return (
+                          <span
+                            className={`truncate flex-1 text-left ${
+                              t.isFallback
+                                ? "text-fg-muted italic"
+                                : "text-fg-primary"
+                            }`}
+                            title={t.text}
+                          >
+                            {t.text}
+                          </span>
+                        );
+                      })()}
                       {src && <SourceBadge source={src} />}
                     </button>
                   );
