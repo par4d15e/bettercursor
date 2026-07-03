@@ -28,3 +28,29 @@ export function onSessionsUpdated(
 ): Promise<UnlistenFn> {
   return listen<number>("sessions-updated", (e) => cb(e.payload));
 }
+
+// ── Conversation / bubbles (Layer 1 JSONL) ────────────────────
+
+export interface BubbleToolUse {
+  name: string;
+  input?: unknown;
+}
+
+export interface Bubble {
+  role: string; // "user" | "assistant"
+  text: string;
+  tool_calls: BubbleToolUse[];
+  files: string[];
+}
+
+export interface Conversation {
+  uuid: string;
+  bubbles: Bubble[];
+  source_path: string | null;
+  total_lines: number;
+  parse_errors: number;
+}
+
+export async function getConversation(uuid: string): Promise<Conversation> {
+  return invoke<Conversation>("get_conversation", { uuid });
+}

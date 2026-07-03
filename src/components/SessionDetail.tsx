@@ -1,9 +1,10 @@
 // src/components/SessionDetail.tsx — right panel: title + metadata + resume cmd
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSessionStore } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
-import { getResumeCommand } from "../lib/tauri";
+import { BubbleView } from "./BubbleView";
+import { getConversation, getResumeCommand, type Conversation } from "../lib/tauri";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Copy, Trash2, Folder, Clock, FileText, Hash } from "lucide-react";
 import type { SourceLayer } from "../lib/types";
@@ -29,6 +30,36 @@ export function SessionDetail() {
   );
   const [resumeCmd, setResumeCmd] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [conv, setConv] = useState<Conversation | null>(null);
+  const [convLoading, setConvLoading] = useState(false);
+  const [convError, setConvError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedUuid) {
+      setConv(null);
+      setConvError(null);
+      return;
+    }
+    let cancelled = false;
+    setConvLoading(true);
+    setConvError(null);
+    getConversation(selectedUuid)
+      .then((c) => {
+        if (!cancelled) setConv(c);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setConv(null);
+          setConvError(e instanceof Error ? e.message : String(e));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setConvLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedUuid]);
 
   const sources = useMemo(() => {
     if (!session) return [];
@@ -159,14 +190,47 @@ export function SessionDetail() {
         )}
       </div>
 
-      {/* Conversation (placeholder) */}
+      {/* Conversation */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
-        <h3 className="text-xs font-semibold text-fg-secondary mb-2">
-          对话记录 <span className="text-fg-muted">({session.bubble_count})</span>
-        </h3>
-        <div className="text-xs text-fg-muted italic">
-          v0.1 暂未加载对话内容. v0.2 计划.
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-xs font-semibold text-fg-secondary">
+            对话记录
+          </h3>
+          {conv && (
+            <span className="text-xs text-fg-muted font-mono">
+              ({conv.bubbles.length}
+              {conv.parse_errors > 0 &&
+                `, ${conv.parse_errors} 行解析失败`}
+              )
+            </span>
+          )}
         </div>
+
+        {convLoading && (
+          <div className="text-xs text-fg-muted italic">加载中…</div>
+        )}
+
+        {convError && (
+          <div className="text-xs text-accent-red">
+            加载失败: {convError}
+          </div>
+        )}
+
+        {!convLoading && conv && conv.bubbles.length === 0 && (
+          <div className="text-xs text-fg-muted italic">
+            {conv.source_path
+              ? "该会话的 JSONL 已找到, 但没有可解析的对话气泡 (可能为空会话)."
+              : "该会话在 Layer 1 JSONL 中未找到. 仅 Layer 2/3 来源, 对话内容暂不可用."}
+          </div>
+        )}
+
+        {!convLoading && conv && conv.bubbles.length > 0 && (
+          <div>
+            {conv.bubbles.map((bubble, idx) => (
+              <BubbleView key={idx} bubble={bubble} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

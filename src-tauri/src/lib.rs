@@ -79,6 +79,17 @@ fn platform_info() -> String {
     )
 }
 
+/// Load the full conversation (bubbles + tool calls + attachments) for a
+/// single session uuid from Layer 1 JSONL.
+///
+/// Tauri command — invoked from the React frontend via
+/// `invoke('get_conversation', { uuid })`. Returns a `Conversation`
+/// with `source_path = None` if no Layer 1 JSONL was found.
+#[tauri::command]
+fn get_conversation(uuid: &str) -> core::canonical::Conversation {
+    core::canonical::read_conversation(uuid)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -115,6 +126,7 @@ pub fn run() {
             refresh_sessions,
             get_resume_command,
             platform_info,
+            get_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -14,6 +14,41 @@ use std::time::SystemTime;
 use super::paths;
 use super::storage;
 
+// ── Conversation model (Layer 1 JSONL → UI) ───────────────────
+
+/// One executed tool call inside an assistant bubble.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BubbleToolUse {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+}
+
+/// One JSONL line, surfaced to the UI as one bubble.
+///
+/// `role` is `"user"` or `"assistant"` (empty string for orphan events
+/// such as `turn_ended` / errors, which are filtered out downstream).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bubble {
+    pub role: String,
+    pub text: String,
+    pub tool_calls: Vec<BubbleToolUse>,
+    pub files: Vec<String>,
+}
+
+/// Full transcript for a single session uuid, resolved from Layer 1.
+///
+/// `source_path` is `None` when no Layer 1 JSONL was found — the session
+/// may live only on Layers 2 / 3 in that case (not yet loadable in v0.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Conversation {
+    pub uuid: String,
+    pub bubbles: Vec<Bubble>,
+    pub source_path: Option<String>,
+    pub total_lines: usize,
+    pub parse_errors: usize,
+}
+
 // ── Types (mirror PRD §4.1) ───────────────────────────────────
 
 /// One storage layer that produced a session record.
@@ -552,6 +587,211 @@ fn _path_helper(p: PathBuf) -> PathBuf {
     p
 }
 
+// ── Layer 1 conversation reader ──────────────────────────────
+
+/// Locate the Layer 1 JSONL transcript for a given session uuid.
+///
+/// Cursor stores each session as either:
+///   (a) `<chat_root>/agent-transcripts/<uuid>/<uuid>.jsonl`, or
+///   (b) `<chat_root>/agent-transcripts/<uuid>.jsonl` (older layout).
+///
+/// Either is returned when present.
+pub fn find_jsonl_for(uuid: &str) -> Option<PathBuf> {
+    let projects = paths::cursor_projects_dir();
+    if !projects.exists() {
+        return None;
+    }
+    let entries = std::fs::read_dir(&projects).ok()?;
+    for project in entries.flatten() {
+        let transcripts = project.path().join("agent-transcripts");
+        if !transcripts.is_dir() {
+            continue;
+        }
+        let in_dir = transcripts.join(uuid).join(format!("{uuid}.jsonl"));
+        if in_dir.is_file() {
+            return Some(in_dir);
+        }
+        let flat = transcripts.join(format!("{uuid}.jsonl"));
+        if flat.is_file() {
+            return Some(flat);
+        }
+    }
+    None
+}
+
+/// Read all bubbles from the Layer 1 JSONL for `uuid`.
+///
+/// Returns an empty `Conversation` (with `source_path = None`) when no
+/// JSONL exists. Lines that fail to parse are counted but never panic.
+pub fn read_conversation(uuid: &str) -> Conversation {
+    match find_jsonl_for(uuid) {
+        None => Conversation {
+            uuid: uuid.to_string(),
+            bubbles: vec![],
+            source_path: None,
+            total_lines: 0,
+            parse_errors: 0,
+        },
+        Some(path) => read_conversation_from_path(uuid, &path),
+    }
+}
+
+/// Read all bubbles from an already-resolved JSONL file path.
+///
+/// Useful for tests and for callers that already know the file location.
+pub fn read_conversation_from_path(uuid: &str, path: &Path) -> Conversation {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return Conversation {
+            uuid: uuid.to_string(),
+            bubbles: vec![],
+            source_path: Some(path.display().to_string()),
+            total_lines: 0,
+            parse_errors: 0,
+        };
+    };
+
+    let mut bubbles: Vec<Bubble> = vec![];
+    let mut total_lines = 0usize;
+    let mut parse_errors = 0usize;
+
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        total_lines += 1;
+
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            parse_errors += 1;
+            continue;
+        };
+
+        let role = v
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Resolve the `[{type, text|tool_use}]` content array, in this order:
+        //  1. nested schema:  v.message.content
+        //  2. legacy schema:  v.content
+        let content_arr = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+            .or_else(|| v.get("content").and_then(|c| c.as_array()));
+
+        let mut text_parts: Vec<String> = vec![];
+        let mut tool_calls: Vec<BubbleToolUse> = vec![];
+
+        if let Some(arr) = content_arr {
+            for item in arr {
+                let typ = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match typ {
+                    "text" => {
+                        if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                            // User bubbles have wrapper tags — strip those.
+                            // Assistant bubbles stay verbatim (markdown).
+                            let cleaned = if role == "user" {
+                                clean_user_text(t)
+                            } else {
+                                t.to_string()
+                            };
+                            if !cleaned.is_empty() {
+                                text_parts.push(cleaned);
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        let name = item
+                            .get("name")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let input = item.get("input").cloned();
+                        if !name.is_empty() {
+                            tool_calls.push(BubbleToolUse { name, input });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            // Legacy: `content` may be a plain string.
+            let raw = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .or_else(|| {
+                    v.get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_str())
+                })
+                .unwrap_or("");
+            if !raw.is_empty() {
+                text_parts.push(if role == "user" {
+                    clean_user_text(raw)
+                } else {
+                    raw.to_string()
+                });
+            }
+        }
+
+        let files = v
+            .get("attachments")
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| {
+                        a.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+
+        // Skip structural events (turn_ended / error) that produced no
+        // user-visible bubble.
+        if text_parts.is_empty() && tool_calls.is_empty() && files.is_empty() {
+            continue;
+        }
+
+        bubbles.push(Bubble {
+            role,
+            text: text_parts.join("\n\n"),
+            tool_calls,
+            files,
+        });
+    }
+
+    Conversation {
+        uuid: uuid.to_string(),
+        bubbles,
+        source_path: Some(path.display().to_string()),
+        total_lines,
+        parse_errors,
+    }
+}
+
+/// Strip wrapper tags (`<user_query>…</user_query>`, `<timestamp>…</timestamp>`)
+/// from a user bubble but **keep** all lines and newlines (full-text variant).
+fn clean_user_text(text: &str) -> String {
+    let mut s = text.trim().to_string();
+    if s.starts_with("<timestamp>") {
+        if let Some(idx) = s.find("</timestamp>") {
+            s = s[idx + "</timestamp>".len()..].trim().to_string();
+        }
+    }
+    let open = "<user_query>";
+    let close = "</user_query>";
+    if s.starts_with(open) {
+        s = s[open.len()..].to_string();
+    }
+    if s.ends_with(close) {
+        s = s[..s.len() - close.len()].to_string();
+    }
+    s.trim().to_string()
+}
+
 // ── Tests ─────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -645,5 +885,75 @@ mod tests {
         let p = write_tmp("no-user", body);
         let (preview, _files) = read_jsonl_preview(&p);
         assert_eq!(preview, "");
+    }
+
+    // ─── Conversation / bubbles ───────────────────────────────
+
+    #[test]
+    fn conv_user_then_assistant_with_tool_use() {
+        let body = r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nhi\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"**hi** back"},{"type":"tool_use","name":"Glob","input":{"pattern":"*"}},{"type":"tool_use","name":"Read","input":{"path":"/etc/hostname"}}]}}
+"#;
+        let dir = std::env::temp_dir().join(format!("bc-conv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jsonl_path = dir.join("abc.jsonl");
+        std::fs::write(&jsonl_path, body).unwrap();
+
+        let conv = read_conversation_from_path("abc", &jsonl_path);
+        assert!(conv.source_path.is_some());
+        assert_eq!(conv.bubbles.len(), 2);
+        assert_eq!(conv.bubbles[0].role, "user");
+        assert_eq!(conv.bubbles[0].text, "hi");
+        assert_eq!(conv.bubbles[1].role, "assistant");
+        assert_eq!(conv.bubbles[1].text, "**hi** back");
+        assert_eq!(conv.bubbles[1].tool_calls.len(), 2);
+        assert_eq!(conv.bubbles[1].tool_calls[0].name, "Glob");
+        assert_eq!(
+            conv.bubbles[1].tool_calls[0].input.as_ref().unwrap()["pattern"],
+            "*"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conv_orphan_events_dropped() {
+        let body = r#"{"type":"turn_ended","status":"error","error":"usage limit"}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nq\n</user_query>"}]}}
+"#;
+        let dir = std::env::temp_dir().join(format!("bc-conv-orphan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jsonl_path = dir.join("zzz.jsonl");
+        std::fs::write(&jsonl_path, body).unwrap();
+
+        let conv = read_conversation_from_path("zzz", &jsonl_path);
+        assert_eq!(conv.bubbles.len(), 1);
+        assert_eq!(conv.bubbles[0].role, "user");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conv_empty_string_content_drops_bubble() {
+        let body = r#"{"role":"user","message":{"content":[{"type":"text","text":""}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\ngenuine\n</user_query>"}]}}
+"#;
+        let dir = std::env::temp_dir().join(format!("bc-conv-empt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jsonl_path = dir.join("ww.jsonl");
+        std::fs::write(&jsonl_path, body).unwrap();
+
+        let conv = read_conversation_from_path("ww", &jsonl_path);
+        assert_eq!(conv.bubbles.len(), 1);
+        assert_eq!(conv.bubbles[0].text, "genuine");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conv_missing_uuid_returns_empty() {
+        let conv = read_conversation("definitely-not-on-disk-12345678");
+        assert!(conv.source_path.is_none());
+        assert!(conv.bubbles.is_empty());
     }
 }
