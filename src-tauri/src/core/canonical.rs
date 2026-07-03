@@ -96,10 +96,28 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
         };
 
         for t_entry in transcript_entries.flatten() {
-            let uuid = t_entry.file_name().to_string_lossy().trim_end_matches(".jsonl").to_string();
-            let path = t_entry.path();
-            let modified = file_mtime_ms(&path).unwrap_or(0);
-            let (preview, _files) = read_jsonl_preview(&path);
+            let uuid = t_entry
+                .file_name()
+                .to_string_lossy()
+                .trim_end_matches(".jsonl")
+                .to_string();
+
+            // Cursor stores each session as either:
+            //   (a) a directory `<uuid>/<uuid>.jsonl`, or
+            //   (b) a flat file `<uuid>.jsonl` (older layout)
+            // Handle both so we don't read a directory as a file and get
+            // an empty preview for every session.
+            let entry_path = t_entry.path();
+            let (jsonl_path, display_path) = if entry_path.is_dir() {
+                let p = entry_path.join(format!("{uuid}.jsonl"));
+                let display = p.display().to_string();
+                (p, display)
+            } else {
+                let display = entry_path.display().to_string();
+                (entry_path, display)
+            };
+            let modified = file_mtime_ms(&jsonl_path).unwrap_or(0);
+            let (preview, _files) = read_jsonl_preview(&jsonl_path);
 
             merge_source(
                 by_uuid,
@@ -107,7 +125,7 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 SourceInfo {
                     last_seen_at: modified,
                     layer: "1".into(),
-                    path: path.display().to_string(),
+                    path: display_path,
                 },
                 SourceLayer::LinuxCli,
                 &project_slug,
@@ -126,38 +144,119 @@ fn read_jsonl_preview(path: &Path) -> (String, Vec<String>) {
     let mut preview = String::new();
     let mut files = Vec::new();
 
-    // Take only the first non-empty line for preview (fast).
+    // Take only the first user-role message for preview (fast).
+    //
+    // Real cursor-agent JSONL schema (verified 2026/07):
+    //   {
+    //     "role": "user" | "assistant",
+    //     "message": {
+    //       "content": [
+    //         { "type": "text", "text": "<user_query>\n...\n</user_query>" },
+    //         { "type": "tool_use", "name": "Glob", "input": {...} }
+    //       ]
+    //     },
+    //     "attachments": [{"name": "foo.py"}, ...]   // optional, top-level
+    //   }
+    //
+    // Older / other layers may put `content` directly on the root, so we
+    // also try that as a fallback before giving up.
     for line in content.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(role) = v.get("role").and_then(|r| r.as_str()) {
-                if role == "user" && preview.is_empty() {
-                    if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
-                        preview = content.chars().take(120).collect();
-                    } else if let Some(arr) = v.get("content").and_then(|c| c.as_array()) {
-                        for item in arr {
-                            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                    preview = text.chars().take(120).collect();
-                                    break;
-                                }
-                            }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+
+        let role = v.get("role").and_then(|r| r.as_str());
+        if role == Some("user") && preview.is_empty() {
+            // 1) New schema: content is nested under message.content[]
+            let nested_text = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+                .and_then(|arr| {
+                    arr.iter().find_map(|item| {
+                        if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            item.get("text").and_then(|t| t.as_str())
+                        } else {
+                            None
                         }
-                    }
+                    })
+                });
+
+            // 2) Older / fallback: content directly on root, may be a
+            //    string or an array of text parts.
+            let root_text = || -> Option<String> {
+                if let Some(s) = v.get("content").and_then(|c| c.as_str()) {
+                    return Some(s.to_string());
                 }
+                v.get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| {
+                        arr.iter().find_map(|item| {
+                            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                item.get("text").and_then(|t| t.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .map(|s| s.to_string())
+                    })
+            };
+
+            let raw = nested_text.map(str::to_string).or_else(root_text);
+            if let Some(text) = raw {
+                preview = clean_user_preview(&text);
             }
-            if let Some(attachments) = v.get("attachments").and_then(|a| a.as_array()) {
-                for a in attachments {
-                    if let Some(name) = a.get("name").and_then(|n| n.as_str()) {
-                        files.push(name.to_string());
-                    }
+        }
+
+        // Top-level attachments (any message, any role).
+        if let Some(attachments) = v.get("attachments").and_then(|a| a.as_array()) {
+            for a in attachments {
+                if let Some(name) = a.get("name").and_then(|n| n.as_str()) {
+                    files.push(name.to_string());
                 }
             }
         }
     }
     (preview, files)
+}
+
+/// Strip wrapper tags (`<user_query>...</user_query>`, `<timestamp>...</timestamp>`)
+/// from a cursor-agent user message and take the first non-empty line, capped at
+/// 120 characters. Returns an empty string if nothing usable remains.
+fn clean_user_preview(text: &str) -> String {
+    let mut s = text.trim().to_string();
+
+    // Drop leading <timestamp>...</timestamp> block if present.
+    if s.starts_with("<timestamp>") {
+        if let Some(idx) = s.find("</timestamp>") {
+            s = s[idx + "</timestamp>".len()..].trim().to_string();
+        }
+    }
+
+    // Strip <user_query>...</user_query> wrappers.
+    let open = "<user_query>";
+    let close = "</user_query>";
+    if s.starts_with(open) {
+        s = s[open.len()..].to_string();
+    }
+    if s.ends_with(close) {
+        s = s[..s.len() - close.len()].to_string();
+    }
+
+    // First non-empty line, capped at 120 chars.
+    let first = s
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut out: String = first.chars().take(120).collect();
+    if first.chars().count() > 120 {
+        out.push('…');
+    }
+    out
 }
 
 // ── Layer 2: cursor-agent CLI store.db ────────────────────────
@@ -451,4 +550,100 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
 #[allow(dead_code)]
 fn _path_helper(p: PathBuf) -> PathBuf {
     p
+}
+
+// ── Tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_tmp(name: &str, body: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("bc-test-{name}-{}.jsonl", std::process::id()));
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        p
+    }
+
+    /// Real cursor-agent JSONL: `{role, message: {content: [{type, text}]}}`
+    /// (verified 2026/07 against `~/.cursor/projects/.../agent-transcripts/`).
+    #[test]
+    fn parse_nested_message_content() {
+        let body = r#"{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\n你现在用的是什么模型?\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'm Composer."},{"type":"tool_use","name":"Glob","input":{}}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"our sessions stored where?"}]}}
+"#;
+        let p = write_tmp("nested", body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        // First user line, stripped of <user_query> wrappers.
+        assert_eq!(preview, "你现在用的是什么模型?");
+    }
+
+    /// Legacy schema: content directly on root, may be a string.
+    #[test]
+    fn parse_root_string_content() {
+        let body = r#"{"role":"user","content":"hello legacy"}
+{"role":"assistant","content":"hi"}
+"#;
+        let p = write_tmp("root-string", body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        assert_eq!(preview, "hello legacy");
+    }
+
+    /// Legacy schema: content array of parts on root.
+    #[test]
+    fn parse_root_array_content() {
+        let body = r#"{"role":"user","content":[{"type":"text","text":"hi from array"}]}
+"#;
+        let p = write_tmp("root-array", body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        assert_eq!(preview, "hi from array");
+    }
+
+    /// Skips lines with no role:user (e.g. turn_ended / error events).
+    #[test]
+    fn parse_skips_orphan_events() {
+        let body = r#"{"type":"turn_ended","status":"error","error":"usage limit"}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>the real question</user_query>"}]}}
+"#;
+        let p = write_tmp("orphan", body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        assert_eq!(preview, "the real question");
+    }
+
+    /// First user line is truncated to 120 chars + ellipsis.
+    #[test]
+    fn parse_caps_preview_at_120() {
+        let big = "X".repeat(300);
+        let body = format!(
+            r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"{big}"}}]}}}}"#,
+        );
+        let p = write_tmp("cap", &body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        assert_eq!(preview.chars().count(), 121); // 120 + '…'
+        assert!(preview.ends_with('…'));
+    }
+
+    /// <timestamp>...</timestamp> block before <user_query> is dropped.
+    #[test]
+    fn parse_strips_timestamp_block() {
+        let body = r#"{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>2026-07-03T10:00:00Z</timestamp>\n<user_query>\nreal q\n</user_query>"}]}}
+"#;
+        let p = write_tmp("timestamp", body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        assert_eq!(preview, "real q");
+    }
+
+    /// Returns empty (no user line at all) → UI falls back to "Untitled · …".
+    #[test]
+    fn parse_no_user_message_yields_empty() {
+        let body = r#"{"type":"turn_ended","status":"error","error":"usage limit"}
+{"role":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}
+"#;
+        let p = write_tmp("no-user", body);
+        let (preview, _files) = read_jsonl_preview(&p);
+        assert_eq!(preview, "");
+    }
 }
