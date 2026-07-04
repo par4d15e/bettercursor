@@ -4,11 +4,12 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.2.5-success)
+![status](https://img.shields.io/badge/status-v0.2.6-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
+![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
 
 ## 它是什么
 
@@ -21,9 +22,19 @@
 
 ## 功能状态
 
-### v0.2.5 (✅ 当前, 2026-07-04 完工)
+### v0.2.6 (✅ 当前, 2026-07-04 完工)
 
-- [x] **跨平台打包**: Linux `.deb` / `.AppImage` + macOS 未签名 `.dmg` (Mac 10.15+, 暂只出 Apple Silicon) + Windows `.msi` / `.exe` (NSIS), 全部通过 GitHub Actions 矩阵自动 build ([`release.yml`](.github/workflows/release.yml))
+- [x] **跨设备 sync — Transport trait 初版**: `core::transport::Transport` trait (4 方法: `push` / `pull` / `list_remote` / `endpoint_id`, **同步签名** — 有意识偏离 [SYNC_DESIGN §4.4](SYNC_DESIGN.md#4-transport-trait) 的 `async_trait`, v0.3.0 上 outbox 时再迁). 一个 impl: `SshRsyncTransport` (T2), 调系统 `ssh` / `rsync` (0 新 Cargo dep, 无 tokio, 无 russh)
+- [x] **最小 v0.2.6 snapshot 载体**: `SessionSnapshot` (8 个 metadata 字段 — uuid / `last_updated_at_ms` / host / `project_slug` / `project_path` / `source_path` / `text_preview` 截 280 字符 / `bubble_count`). 不含 bubbles / blobs — 那是 v0.3.0 unified.db 的活
+- [x] **Peer 配置文件**: `~/.bettercursor/transports.json` (跟 `config.json` 分开). 原子 save (`*.tmp` + rename)
+- [x] **4 个 Tauri 命令**: `transport_list_peers` / `transport_test` / `transport_push` / `transport_pull`. 配套 4 个 typed IPC wrapper 在 `src/lib/tauri.ts` (`PeerSummary` / `TestReport` / `PushReport` / `PullReport` / `RemoteSession`)
+- [x] **暂无 UI** — 用法靠 `invoke('transport_*')` + 手动编 `transports.json`. SyncPeersDialog 是 v0.3.0 的事
+- [x] **20 个 Rust 单元测试** — snapshot codec / config serde / `ssh_cmd` 安全 flag / push failure stderr 等. 配套 `tests/fixtures/fake-{ssh,rsync}.sh` mock 二进制, CI 不依赖真 SSH peer
+- [x] **v0.2.6 housekeeping** (一起打包发布): CI matrix 加 `macos-13` (Intel x64 dmg 跟 Apple Silicon dmg 一起出) + Node 20 → 22 + vitest 2 + jsdom 25 + `@testing-library/react` 16 + 15 case 测 `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware fallback. 零业务代码改动
+
+### v0.2.5 (2026-07-04 完工)
+
+- [x] **跨平台打包**: Linux `.deb` / `.AppImage` + macOS 未签名 `.dmg` (Mac 10.15+, Apple Silicon) + Windows `.msi` / `.exe` (NSIS), 全部通过 GitHub Actions 矩阵自动 build ([`release.yml`](.github/workflows/release.yml))
 - [x] **i18n (zh-CN / en)**: react-i18next + `src/locales/{zh-CN,en}.json` (~110 条 UI 字符串) + `<LanguageSwitcher>` 头部 `<select>` + localStorage 持久化 (`i18nextLng`)
 - [x] 三件套 version bump: `package.json` / `Cargo.toml` / `tauri.conf.json` 都升到 `0.2.5`, `productName: "BetterCursor"` (PascalCase for Mac `.app`)
 - [x] 后台 sync loop 收尾 (v0.2.3): `<SyncNowButton>` (立即扫描) + `<SyncStatusBadge>` ("● 自动同步 · Xs 前", 1Hz tick + 5s 后端 poll)
@@ -33,11 +44,10 @@
 - [x] 跨层去重合并, 项目分组, 按会话名 / 项目 / 内容 / UUID 全文搜索
 - [x] MD5 `chat_root` 与 Python 守护进程字节级一致
 
-### v0.2.6 / v0.3 (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3 / v0.3.0+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] 跨设备 sync (Tailscale / SSH-rsync) — §4 transport trait 初版
-- [ ] `~/.bettercursor/unified.db` (snapshot codec + Conflict enum 大版本)
-- [ ] outbox flush + 5-way 分类 conflict UI
+- [ ] `~/.bettercursor/unified.db` (snapshot codec v4 — bubbles / blob_refs / raw_blobs — + `Conflict` 5-way enum; `Transport` trait 迁 `async_trait`). **大版本**
+- [ ] 离线 outbox + `<SyncPeersDialog>` UI + `<ConflictResolveDialog>`
 - [ ] T3/T4/T5 adapter: git / S3 / Tailscale
 
 ## 下载安装
@@ -48,17 +58,17 @@
 
 ```bash
 # Debian / Ubuntu (.deb, 含 libwebkit2gtk-4.1 / libgtk-3 / libayatana-appindicator3)
-sudo dpkg -i BetterCursor_0.2.5_amd64.deb
+sudo dpkg -i BetterCursor_0.2.6_amd64.deb
 sudo apt-get install -f   # 补依赖 (如 dpkg 报缺包)
 
 # 便携 AppImage (无需安装, 但首次 build 需联网下载 linuxdeploy 二进制)
-chmod +x BetterCursor_0.2.5_amd64.AppImage
-./BetterCursor_0.2.5_amd64.AppImage
+chmod +x BetterCursor_0.2.6_amd64.AppImage
+./BetterCursor_0.2.6_amd64.AppImage
 ```
 
 ### macOS
 
-1. 下载 `BetterCursor_0.2.5_aarch64.dmg` (Apple Silicon). Intel `.dmg` 暂未出, v0.2.6 会拆 matrix 补 Intel
+1. 下载 `BetterCursor_0.2.6_aarch64.dmg` (Apple Silicon) **或** `BetterCursor_0.2.6_x64.dmg` (Intel). 两者都是未签名 dmg, 由 CI matrix 的 `macos-latest` + `macos-13` 两个 entry 一起 build
 2. 双击挂载, 把 `BetterCursor.app` 拖进 `/Applications`
 3. **未签名 dmg 跳过 Gatekeeper** (一次性, 比"右键打开"更彻底):
 
@@ -80,10 +90,10 @@ chmod +x BetterCursor_0.2.5_amd64.AppImage
 
 ```powershell
 # .msi (MSI installer, 适合企业部署)
-msiexec /i BetterCursor_0.2.5_x64_en-US.msi
+msiexec /i BetterCursor_0.2.6_x64_en-US.msi
 
 # 或 .exe (NSIS, 适合个人)
-.\BetterCursor_0.2.5_x64-setup.exe
+.\BetterCursor_0.2.6_x64-setup.exe
 ```
 
 ## 快速开始 (从源码构建)
@@ -180,6 +190,43 @@ Rust 端 (`src-tauri/src/core/`) 负责:
 | `delete_session` | `uuid`, `cwd`, `slug` | `DeleteReport` (cursor_running / removed_l1 / removed_l2 / skipped_*) |
 | `watcher_status` | — | `{ active, dirs[], last_scan_at_ms }` |
 | `platform_info` | — | `<os>: <cursor_user_dir>` (调试用) |
+| `transport_list_peers` | — | `PeerSummary[]` (从 `~/.bettercursor/transports.json`) |
+| `transport_test` | `peerId` | `TestReport` (ok / latency_ms / error?) |
+| `transport_push` | `uuid`, `peerId` | `PushReport` (uuid / bytes_written / duration_ms) |
+| `transport_pull` | `peerId`, `sinceMs?` | `PullReport` (peer_id / count / snapshots[]) |
+
+## 跨设备 sync (v0.2.6)
+
+v0.2.6 落地了 **Transport trait 初版**. 先在 `~/.bettercursor/transports.json` 里配一个或多个 peer:
+
+```json
+{
+  "peers": [
+    {
+      "id": "macbook",
+      "kind": "ssh",
+      "host": "eric@192.168.1.42",
+      "port": 22,
+      "identity_file": "~/.ssh/id_ed25519",
+      "remote_snap_dir": "~/.bettercursor/peers/bettercursor-main",
+      "remote_hostname": "macbook-pro-m1"
+    }
+  ]
+}
+```
+
+然后在 devtools console 里:
+
+```js
+await __TAURI__.invoke('transport_list_peers')          // → [{id:"macbook",...}]
+await __TAURI__.invoke('transport_test', { peerId: 'macbook' })  // → {ok:true, latency_ms:42}
+await __TAURI__.invoke('transport_push', { uuid: '<某 session>', peerId: 'macbook' })
+// ~/.bettercursor/peers/bettercursor-main/<host>/<uuid>.json 现在写到对端了
+await __TAURI__.invoke('transport_pull', { peerId: 'macbook', sinceMs: 0 })
+// → { peer_id: "macbook", count: 1, snapshots: [...] }
+```
+
+SSH 安全 flag 内置: `BatchMode=yes` (不走交互式 prompt) + `StrictHostKeyChecking=accept-new` (新 host 自动加进 known_hosts, 已存在但 key 变了硬报错). v0.2.6 的 `Transport` trait 是**同步**的 (不是 `async_trait`), v0.3.0 上 outbox 时再迁 async. UI (`<SyncPeersDialog>`) 留 v0.3.0.
 
 ## 踩坑记录
 
@@ -257,9 +304,13 @@ packages:
 ## 路线图
 
 ```
-v0.2.5 (✅ now)  跨平台打包 · i18n · 后台 sync · 对话记录 · 修复 orphan · 删除
-v0.2.6 (next)   跨设备 sync (Transport trait 初版)
-v0.3.0 (later)  ~/.bettercursor/unified.db · snapshot codec · Conflict UI
+v0.2.5 (✅ done)  跨平台打包 · i18n · 后台 sync · 对话记录 · 修复 orphan · 删除
+v0.2.6 (✅ now)   跨设备 sync — Transport trait 初版 · SSH/rsync (T2) impl
+                  · 4 个 Tauri 命令 · Intel dmg
+v0.3.0 (next)     ~/.bettercursor/unified.db · snapshot codec v4 ·
+                  async Transport trait · Conflict 5-way · outbox
+v0.3.1 (later)    <SyncPeersDialog> + <ConflictResolveDialog> UI
+v0.3.2+           T3 Git · T4 S3 · T5 Tailscale adapter
 ```
 
 ## 致谢
@@ -270,4 +321,4 @@ v0.3.0 (later)  ~/.bettercursor/unified.db · snapshot codec · Conflict UI
 
 ---
 
-> 当前为个人早期项目. v0.2.5 是首个公开下载的 packaged release.
+> 当前为个人早期项目. v0.2.6 是首个带跨设备 sync 能力的 release.

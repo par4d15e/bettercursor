@@ -2,17 +2,22 @@
 //!
 //! See:
 //!   - PRD.md             — product requirements
+//!   - SYNC_DESIGN.md     — cross-device sync design (Transport trait, codecs)
 //!   - TAURI_RUST_PLAN.md — technical plan
 //!
 //! Architecture:
 //!   - core::paths    — 4-layer storage path resolution (Mac / Linux)
 //!   - core::storage  — WAL-safe SQLite read
 //!   - core::canonical— merge sessions across layers (Phase T1)
+//!   - core::transport— v0.2.6 cross-device sync (Transport trait + SSH/rsync)
 
 mod core;
 
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{Emitter, Manager, State};
+
+use crate::core::transport::Transport;
 
 /// Application-wide state, managed by Tauri.
 pub struct AppState {
@@ -194,6 +199,140 @@ async fn delete_session(
         .map_err(|e| e.to_string())
 }
 
+/// v0.2.6: 列出 `~/.bettercursor/transports.json` 里的所有 peer.
+#[tauri::command]
+fn transport_list_peers() -> Result<Vec<core::transport::PeerSummary>, String> {
+    let cfg = core::transport::TransportConfigFile::load().map_err(|e| e.to_string())?;
+    Ok(cfg
+        .peers
+        .into_iter()
+        .map(core::transport::PeerSummary::from)
+        .collect())
+}
+
+/// v0.2.6: 测一个 peer 的 SSH 连通性. 用 `ssh -o BatchMode=yes echo OK`
+/// (mock 路径下等价于 fake-ssh.sh). 返回 latency_ms + 可选 error.
+///
+/// Tauri command — invoked from the React frontend via
+/// `invoke('transport_test', { peerId })`.
+#[derive(serde::Serialize)]
+struct TestReport {
+    peer_id: String,
+    ok: bool,
+    latency_ms: u64,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn transport_test(peer_id: String) -> Result<TestReport, String> {
+    let started = Instant::now();
+    let cfg = core::transport::TransportConfigFile::load().map_err(|e| e.to_string())?;
+    let peer = cfg
+        .peer(&peer_id)
+        .ok_or_else(|| format!("peer '{peer_id}' not found in ~/.bettercursor/transports.json"))?
+        .clone();
+    let transport = core::transport::SshRsyncTransport::new(peer.clone());
+    match transport.test_connection() {
+        Ok(()) => Ok(TestReport {
+            peer_id,
+            ok: true,
+            latency_ms: started.elapsed().as_millis() as u64,
+            error: None,
+        }),
+        Err(e) => Ok(TestReport {
+            peer_id,
+            ok: false,
+            latency_ms: started.elapsed().as_millis() as u64,
+            error: Some(format!("{e:#}")),
+        }),
+    }
+}
+
+/// v0.2.6: 推一条 session 到指定 peer. 从 `AppState.sessions` 找 uuid 对应的
+/// `CanonicalSession`, 转 SessionSnapshot, 调 `Transport::push`.
+///
+/// Tauri command — invoked from the React frontend via
+/// `invoke('transport_push', { uuid, peerId })`.
+#[tauri::command]
+fn transport_push(
+    state: State<'_, AppState>,
+    uuid: String,
+    peer_id: String,
+) -> Result<core::transport::PushReport, String> {
+    let session = state
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.uuid == uuid)
+        .cloned()
+        .ok_or_else(|| format!("session '{uuid}' not found in current scan"))?;
+    let cfg = core::transport::TransportConfigFile::load().map_err(|e| e.to_string())?;
+    let peer = cfg
+        .peer(&peer_id)
+        .ok_or_else(|| format!("peer '{peer_id}' not found"))?
+        .clone();
+    let transport = core::transport::SshRsyncTransport::new(peer);
+    let snap = core::transport::SessionSnapshot::from_canonical(&session, &local_hostname());
+    transport.push(&snap).map_err(|e| e.to_string())
+}
+
+/// v0.2.6: 从指定 peer 拉 snapshot. `since_ms` 默认 0 (拉全部).
+/// v0.2.6 **不**写 local DB (没 unified.db); 只返回数据让调用方看到
+/// 远端有什么.
+///
+/// Tauri command — invoked from the React frontend via
+/// `invoke('transport_pull', { peerId, sinceMs })`.
+#[derive(serde::Serialize)]
+struct PullReport {
+    peer_id: String,
+    count: usize,
+    snapshots: Vec<core::transport::RemoteSessionMeta>,
+}
+
+#[tauri::command]
+fn transport_pull(
+    peer_id: String,
+    since_ms: Option<i64>,
+) -> Result<PullReport, String> {
+    let cfg = core::transport::TransportConfigFile::load().map_err(|e| e.to_string())?;
+    let peer = cfg
+        .peer(&peer_id)
+        .ok_or_else(|| format!("peer '{peer_id}' not found"))?
+        .clone();
+    let transport = core::transport::SshRsyncTransport::new(peer);
+    let since = since_ms.unwrap_or(0);
+    let snaps = transport.pull(since).map_err(|e| e.to_string())?;
+    let snapshots: Vec<core::transport::RemoteSessionMeta> = snaps
+        .iter()
+        .map(|s| core::transport::RemoteSessionMeta {
+            uuid: s.uuid.clone(),
+            host: s.host.clone(),
+            last_updated_at_ms: s.last_updated_at_ms,
+            project_slug: s.project_slug.clone(),
+            source_path: s.source_path.clone(),
+        })
+        .collect();
+    let count = snapshots.len();
+    Ok(PullReport {
+        peer_id,
+        count,
+        snapshots,
+    })
+}
+
+/// 本机 hostname. 给 `transport_push` 用, 把本机 hostname 写进 snapshot.
+/// 失败 fallback 到 `"unknown"` (push 仍能跑, 但日志会 warn).
+fn local_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Reverse-lookup: scan `~/.cursor/chats/*/<uuid>/` for a matching
 /// directory and return the L2 directory basename (which is
 /// `md5(cwd)`). Used when neither L3 nor L1 surfaced a real cwd.
@@ -268,6 +407,10 @@ pub fn run() {
             sync_session_layer23,
             fix_orphans,
             delete_session,
+            transport_list_peers,
+            transport_test,
+            transport_push,
+            transport_pull,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

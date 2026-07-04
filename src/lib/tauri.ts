@@ -181,3 +181,86 @@ export async function deleteSession(
     projectSlug,
   });
 }
+
+// ── v0.2.6 cross-device sync (Transport trait + SSH/rsync) ────
+//
+// Four Tauri commands wrap the Rust `Transport` trait:
+//   - list peers from ~/.bettercursor/transports.json
+//   - probe a peer's SSH connectivity (returns latency + error)
+//   - push one session's metadata to a peer
+//   - pull metadata from a peer (since optional epoch ms)
+//
+// v0.2.6 first cut: SSH+rsync only (T2 per SYNC_DESIGN §4.3). v0.3.0+
+// will add git (T3), S3 (T4), Tailscale (T5), folder watcher (T1), and
+/// a UI (`<SyncPeersDialog>`).
+
+export interface PeerSummary {
+  id: string;
+  kind: string;
+  host: string;
+  port: number;
+  identity_file: string;
+  remote_snap_dir: string;
+  remote_hostname: string;
+}
+
+export interface TestReport {
+  peer_id: string;
+  ok: boolean;
+  latency_ms: number;
+  error?: string;
+}
+
+export interface PushReport {
+  uuid: string;
+  bytes_written: number;
+  duration_ms: number;
+}
+
+export interface RemoteSession {
+  uuid: string;
+  host: string;
+  last_updated_at_ms: number;
+  project_slug: string;
+  source_path: string;
+}
+
+export interface PullReport {
+  peer_id: string;
+  count: number;
+  snapshots: RemoteSession[];
+}
+
+/// List every peer declared in `~/.bettercursor/transports.json`.
+/// Empty array when the file doesn't exist yet (first run).
+export async function transportListPeers(): Promise<PeerSummary[]> {
+  return invoke<PeerSummary[]>("transport_list_peers");
+}
+
+/// Probe one peer's SSH connectivity by running `ssh <peer> true` on
+/// the backend. Returns a `TestReport` (never throws) — when `ok` is
+/// `false`, the human-readable reason is in `error`.
+export async function transportTest(peerId: string): Promise<TestReport> {
+  return invoke<TestReport>("transport_test", { peerId });
+}
+
+/// Push one session's metadata snapshot to a peer. Resolves to a
+/// `PushReport` on success; rejects with the ssh/rsync stderr on
+/// failure. The session must be present in the current local scan —
+/// pass a uuid you got from `listSessions()`.
+export async function transportPush(
+  uuid: string,
+  peerId: string,
+): Promise<PushReport> {
+  return invoke<PushReport>("transport_push", { uuid, peerId });
+}
+
+/// Pull session metadata from a peer. `sinceMs` defaults to `0`
+/// (everything). v0.2.6 doesn't write a local DB — the returned
+/// snapshots are surfaced for inspection only.
+export async function transportPull(
+  peerId: string,
+  sinceMs?: number,
+): Promise<PullReport> {
+  return invoke<PullReport>("transport_pull", { peerId, sinceMs });
+}

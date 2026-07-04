@@ -1,6 +1,6 @@
 [package]
 name = "bettercursor"
-version = "0.2.5"
+version = "0.2.6"
 description = "Tauri + Rust read-only viewer for local Cursor sessions"
 authors = ["Eric Shen"]
 edition = "2021"

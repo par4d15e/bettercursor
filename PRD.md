@@ -15,7 +15,9 @@
 >   - **v0.2.2** (2026-07-04 完工) = 对话记录展开 — L1+L2+L3 三路合并 (bubble-id 对账 + 字段级 LWW) + `<MessageList>` 薄包装 (sticky header + 浮动跳转 + stable key). 详见 [SYNC_DESIGN.md §7](SYNC_DESIGN.md).
 >   - **v0.2.3** (2026-07-04 完工) = 后台 sync loop 收尾 — `refresh_sessions` 改名为 `sync_now` + `watcher_status.last_scan_at_ms` 暴露给前端 + `<SyncNowButton>` (立即扫描) + `<SyncStatusBadge>` ("● 自动同步 · Xs 前"). 详见 [SYNC_DESIGN.md §10.1](SYNC_DESIGN.md).
 >   - **v0.2.5** (2026-07-04 完工) = 跨平台打包 + i18n — version bump 三件套 (0.1.0→0.2.5) + `bundle.macOS` (未签名 dmg, Mac 10.15+) + `bundle.linux.deb` depends + react-i18next (zh-CN/en) + `<LanguageSwitcher>` (localStorage 持久化) + GitHub Actions release workflow (ubuntu+macos+windows matrix). 详见 [README.md](README.md) §下载安装.
->   - **v0.2.6+** = 跨设备 sync (Tailscale / SSH-rsync). 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §9.
+>   - **v0.2.6** (2026-07-04 完工) = cross-device sync — **Transport trait 初版 + SSH/rsync (T2) impl + 4 个 Tauri 命令** (`transport_list_peers` / `transport_test` / `transport_push` / `transport_pull`) + `~/.bettercursor/transports.json` peer 配置 + 同步 trait (有意识偏离 SYNC_DESIGN §4.4 spec 的 async_trait; v0.3.0 上 outbox 时再迁). 同步 metadata-only snapshot (8 字段, 不含 bubbles/blobs — 那是 v0.3.0 unified.db + 完整 codec 的活). **无 UI** (出 SyncPeersDialog 留 v0.3.0); 用法靠 `invoke('transport_*')` + 手动编辑 transports.json. 详见 [SYNC_DESIGN.md §4.4 / §10.1 / §11](SYNC_DESIGN.md).
+>   - **v0.2.6 housekeeping** (2026-07-04 完工, 跟 v0.2.6 一起打包发布) = CI matrix 加 `macos-13` (Intel x64 dmg) + Node 20→22 + vitest 2 + jsdom 25 + `@testing-library/react` 16 + `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware 单测 (15 case). 无业务代码改动.
+>   - **v0.3.0+** = unified.db (§3) + 完整 snapshot codec v4 (bubbles / blob_refs / raw_blobs) + 5-way Conflict enum + 离线 outbox + 异步 Transport trait + `<SyncPeersDialog>` UI + git / S3 / Tailscale / folder watcher 多种 transport.
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -103,10 +105,22 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.2.5 — react-i18next 接入 + zh-CN/en 两套资源 (110 条 UI 字符串)** | `src/i18n/index.ts` + `src/locales/{zh-CN,en}.json` | **v0.2.5 ✅** |
 | **v0.2.5 — `<LanguageSwitcher>` (header `<select>`, localStorage 持久化, `i18n.changeLanguage()` 即时切换)** | `src/components/LanguageSwitcher.tsx` | **v0.2.5 ✅** |
 | **v0.2.5 — GitHub Actions release workflow (ubuntu+macos+windows matrix, tag `v*.*.*` 触发, softprops/action-gh-release@v2 自动发版)** | `.github/workflows/release.yml` | **v0.2.5 ✅** |
-| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | 设计稿 (v0.2.6) |
+| **v0.2.6 — `Transport` trait (4 方法: push / pull / list_remote / endpoint_id, 同步签名 — 有意偏离 SYNC_DESIGN §4.4 spec 的 async_trait)** | `src-tauri/src/core/transport/mod.rs` | **v0.2.6 ✅** |
+| **v0.2.6 — `SshRsyncTransport` (T2) impl: 调系统 `ssh` / `rsync`, 0 新 Cargo dep, `BatchMode=yes` + `StrictHostKeyChecking=accept-new` 安全 flag, heredoc 写 + atomic rename** | `src-tauri/src/core/transport/ssh.rs` | **v0.2.6 ✅** |
+| **v0.2.6 — `SessionSnapshot` 最小载体 (8 字段: uuid / 时间戳 / host / project_slug / project_path / source_path / text_preview 280 字符 / bubble_count; metadata-only, 不含 bubbles/blobs)** | `src-tauri/src/core/transport/snapshot.rs` | **v0.2.6 ✅** |
+| **v0.2.6 — `TransportConfigFile` + `PeerConfig` (id / kind / host / port / identity_file / remote_snap_dir / remote_hostname) + 原子 save (`*.tmp` + rename)** | `src-tauri/src/core/transport/config.rs` | **v0.2.6 ✅** |
+| **v0.2.6 — 4 个 Tauri 命令: `transport_list_peers` / `transport_test` / `transport_push` / `transport_pull` (同步, 走 `State<'_, AppState>` 拿 session cache)** | `src-tauri/src/lib.rs` | **v0.2.6 ✅** |
+| **v0.2.6 — 前端 4 个 IPC wrapper + 4 个 type interface (`PeerSummary` / `TestReport` / `PushReport` / `PullReport` / `RemoteSession`)** | `src/lib/tauri.ts` | **v0.2.6 ✅** |
+| **v0.2.6 — `~/.bettercursor/transports.json` peer 配置文件 (新文件, 跟 `~/.bettercursor/config.json` 分开)** | `core::transport::config::TransportConfigFile` | **v0.2.6 ✅** |
+| **v0.2.6 — Rust 单元测试 20 case (snapshot codec round-trip / source_path 优先级 / text_preview 280 截断 / config serde round-trip / ssh_cmd 安全 flag / push ssh failure stderr / endpoint_id / with_bins)** | `src-tauri/src/core/transport/{mod,snapshot,ssh,config}.rs::tests` | **v0.2.6 ✅** |
+| **v0.2.6 — `tests/fixtures/fake-ssh.sh` + `fake-rsync.sh` mock 二进制 (写 argv log + 可模拟 fail)** | `src-tauri/tests/fixtures/` | **v0.2.6 ✅** |
+| **v0.2.6 housekeeping — CI matrix 加 `macos-13` (Intel x64 dmg 跟 Apple Silicon dmg 一起出)** | `.github/workflows/release.yml` | **v0.2.6 ✅** |
+| **v0.2.6 housekeeping — Node 20 → 22 (CI)** | `.github/workflows/release.yml` | **v0.2.6 ✅** |
+| **v0.2.6 housekeeping — vitest 2 + jsdom 25 + `@testing-library/react` 16 + 15 case 测 `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware fallback** | `vitest.config.ts` + `src/test/setup.ts` + `src/components/*.test.tsx` | **v0.2.6 ✅** |
+| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **Transport trait 落地 (v0.2.6 ✅)**; unified.db / outbox / UI / 5-way conflict / CLI binary 推迟到 v0.3.0 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
-| UI: SyncToggle / SyncNowButton / 状态显示 | [SYNC_DESIGN.md §4.3](SYNC_DESIGN.md) | 设计稿 |
-| Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | 设计稿 |
+| UI: SyncPeersDialog / 推送按钮 / sync history | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | 设计稿 (v0.3.0) |
+| Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | **v0.2.5 ✅** (Apple Silicon) + **v0.2.6 ✅** (Intel x64 via `macos-13` matrix) |
 
 ### 0.6 怎么跑
 

@@ -4,11 +4,12 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.2.5-success)
+![status](https://img.shields.io/badge/status-v0.2.6-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
+![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
 
 ## What it is
 
@@ -27,11 +28,45 @@ Design goals:
 
 ## Feature status
 
-### v0.2.5 (✅ current, shipped 2026-07-04)
+### v0.2.6 (✅ current, shipped 2026-07-04)
+
+- [x] **Cross-device sync — Transport trait first cut**:
+      `core::transport::Transport` trait (4 methods: `push` / `pull` /
+      `list_remote` / `endpoint_id`, **sync** — deliberately diverging
+      from the `async_trait` in [SYNC_DESIGN §4.4](SYNC_DESIGN.md#4-transport-trait)
+      until v0.3.0). One impl: `SshRsyncTransport` (T2), shelling out
+      to system `ssh` / `rsync` (no new Cargo deps, no `tokio`,
+      no `russh`).
+- [x] **Minimum v0.2.6 snapshot carrier**: `SessionSnapshot`
+      (8 metadata fields — uuid / `last_updated_at_ms` / host /
+      `project_slug` / `project_path` / `source_path` / `text_preview`
+      capped 280 chars / `bubble_count`). No bubbles / blobs yet —
+      that's v0.3.0 unified.db territory.
+- [x] **Peer config file**: `~/.bettercursor/transports.json`
+      (separate from the prefs `config.json`). Atomic save
+      (`*.tmp` + rename).
+- [x] **4 Tauri commands**: `transport_list_peers` /
+      `transport_test` / `transport_push` / `transport_pull`. Plus
+      4 typed IPC wrappers in `src/lib/tauri.ts` (`PeerSummary` /
+      `TestReport` / `PushReport` / `PullReport` / `RemoteSession`).
+- [x] **No UI yet** — usage is via `invoke('transport_*')` from dev
+      console + manually editing `transports.json`. SyncPeersDialog is
+      a v0.3.0 milestone.
+- [x] **20 Rust unit tests** for snapshot codec, config serde,
+      `ssh_cmd` safety flags, push failure stderr, etc. Plus
+      `tests/fixtures/fake-{ssh,rsync}.sh` mock binaries for
+      CI-friendly testing without a real SSH peer.
+- [x] **v0.2.6 housekeeping** (shipped together): CI matrix gains
+      `macos-13` (Intel x64 dmg alongside Apple Silicon dmg), Node
+      20 → 22, vitest 2 + jsdom 25 + `@testing-library/react` 16 +
+      15-case test suite for `<SyncStatusBadge>` / `<BrokenBadge>`
+      i18n-aware fallback. Zero business-code change.
+
+### v0.2.5 (shipped 2026-07-04)
 
 - [x] **Cross-platform packaging**: Linux `.deb` / `.AppImage` + macOS
-      unsigned `.dmg` (macOS 10.15+, Apple Silicon only for now) + Windows
-      `.msi` / `.exe` (NSIS). All built by GitHub Actions matrix
+      unsigned `.dmg` (macOS 10.15+, Apple Silicon) + Windows `.msi` /
+      `.exe` (NSIS). All built by GitHub Actions matrix
       ([`release.yml`](.github/workflows/release.yml))
 - [x] **i18n (zh-CN / en)**: react-i18next + `src/locales/{zh-CN,en}.json`
       (~110 UI strings) + `<LanguageSwitcher>` header `<select>` +
@@ -51,13 +86,12 @@ Design goals:
       project / content / UUID
 - [x] MD5 `chat_root` byte-identical to the Python reference
 
-### v0.2.6 / v0.3 (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3 / v0.3.0+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] Cross-device sync (Tailscale / SSH-rsync) — §4 `Transport` trait
-      first cut
-- [ ] `~/.bettercursor/unified.db` (snapshot codec + `Conflict` enum
-      — major version)
-- [ ] Outbox flush + 5-way conflict categorization UI
+- [ ] `~/.bettercursor/unified.db` (snapshot codec v4 — bubbles /
+      blob_refs / raw_blobs — + `Conflict` 5-way enum; migrate
+      `Transport` trait to `async_trait`). **Major version.**
+- [ ] Offline outbox + `<SyncPeersDialog>` UI + `<ConflictResolveDialog>`
 - [ ] T3/T4/T5 adapters: git / S3 / Tailscale
 
 ## Download & install
@@ -72,20 +106,20 @@ on three platforms. Artifacts end up on the
 ```bash
 # Debian / Ubuntu (.deb — declares libwebkit2gtk-4.1 / libgtk-3 /
 # libayatana-appindicator3 in Depends:)
-sudo dpkg -i BetterCursor_0.2.5_amd64.deb
+sudo dpkg -i BetterCursor_0.2.6_amd64.deb
 sudo apt-get install -f   # satisfy missing deps if dpkg complains
 
 # Portable AppImage (no install, but first run downloads linuxdeploy
 # binaries from tauri-apps/binary-releases — needs network)
-chmod +x BetterCursor_0.2.5_amd64.AppImage
-./BetterCursor_0.2.5_amd64.AppImage
+chmod +x BetterCursor_0.2.6_amd64.AppImage
+./BetterCursor_0.2.6_amd64.AppImage
 ```
 
 ### macOS
 
-1. Download `BetterCursor_0.2.5_aarch64.dmg` (Apple Silicon).
-   Intel `.dmg` is pending a release.yml tweak (matrix split) — see
-   `task #37` / v0.2.6 milestone.
+1. Download `BetterCursor_0.2.6_aarch64.dmg` (Apple Silicon) **or**
+   `BetterCursor_0.2.6_x64.dmg` (Intel). Both are unsigned `.dmg`
+   built by the `macos-latest` + `macos-13` CI matrix entries.
 2. Mount, drag `BetterCursor.app` into `/Applications`.
 3. **Bypass Gatekeeper for an unsigned app** (one-shot, cleaner than
    right-click → Open):
@@ -114,10 +148,10 @@ chmod +x BetterCursor_0.2.5_amd64.AppImage
 
 ```powershell
 # .msi (MSI installer — good for managed deployment)
-msiexec /i BetterCursor_0.2.5_x64_en-US.msi
+msiexec /i BetterCursor_0.2.6_x64_en-US.msi
 
 # or .exe (NSIS — better for personal installs)
-.\BetterCursor_0.2.5_x64-setup.exe
+.\BetterCursor_0.2.6_x64-setup.exe
 ```
 
 ## Quick start (from source)
@@ -218,6 +252,48 @@ Tauri commands exposed to the frontend:
 | `delete_session` | `uuid`, `cwd`, `slug` | `DeleteReport` (cursor_running / removed_l1 / removed_l2 / skipped_*) |
 | `watcher_status` | — | `{ active, dirs[], last_scan_at_ms }` |
 | `platform_info` | — | `<os>: <cursor_user_dir>` (debug) |
+| `transport_list_peers` | — | `PeerSummary[]` from `~/.bettercursor/transports.json` |
+| `transport_test` | `peerId` | `TestReport` (ok / latency_ms / error?) |
+| `transport_push` | `uuid`, `peerId` | `PushReport` (uuid / bytes_written / duration_ms) |
+| `transport_pull` | `peerId`, `sinceMs?` | `PullReport` (peer_id / count / snapshots[]) |
+
+## Cross-device sync (v0.2.6)
+
+v0.2.6 ships the **Transport trait first cut**. Configure one or more
+peers in `~/.bettercursor/transports.json`:
+
+```json
+{
+  "peers": [
+    {
+      "id": "macbook",
+      "kind": "ssh",
+      "host": "eric@192.168.1.42",
+      "port": 22,
+      "identity_file": "~/.ssh/id_ed25519",
+      "remote_snap_dir": "~/.bettercursor/peers/bettercursor-main",
+      "remote_hostname": "macbook-pro-m1"
+    }
+  ]
+}
+```
+
+Then from devtools console:
+
+```js
+await __TAURI__.invoke('transport_list_peers')          // → [{id:"macbook",...}]
+await __TAURI__.invoke('transport_test', { peerId: 'macbook' })  // → {ok:true, latency_ms:42}
+await __TAURI__.invoke('transport_push', { uuid: '<a session>', peerId: 'macbook' })
+// ~/.bettercursor/peers/bettercursor-main/<host>/<uuid>.json now exists on the peer.
+await __TAURI__.invoke('transport_pull', { peerId: 'macbook', sinceMs: 0 })
+// → { peer_id: "macbook", count: 1, snapshots: [...] }
+```
+
+SSH safety flags baked in: `BatchMode=yes` (no interactive prompts) +
+`StrictHostKeyChecking=accept-new` (auto-trust new hosts, fail loud
+on key mismatch). The `Transport` trait is **sync** (not `async_trait`)
+in v0.2.6 — it migrates to async in v0.3.0 when the offline outbox
+lands. A `<SyncPeersDialog>` UI is on the v0.3.0 roadmap.
 
 ## Pitfalls
 
@@ -306,11 +382,14 @@ in 30 s.
 ## Roadmap
 
 ```
-v0.2.5 (✅ now)  Cross-platform packaging · i18n · background sync ·
-                conversation records · repair orphan · delete
-v0.2.6 (next)   Cross-device sync (Transport trait first cut)
-v0.3.0 (later)  ~/.bettercursor/unified.db · snapshot codec ·
-                Conflict UI
+v0.2.5 (✅ done)  Cross-platform packaging · i18n · background sync ·
+                 conversation records · repair orphan · delete
+v0.2.6 (✅ now)   Cross-device sync — Transport trait first cut ·
+                 SSH/rsync (T2) impl · 4 Tauri commands · Intel dmg
+v0.3.0 (next)     ~/.bettercursor/unified.db · snapshot codec v4 ·
+                 async Transport trait · Conflict 5-way · outbox
+v0.3.1 (later)    <SyncPeersDialog> + <ConflictResolveDialog> UI
+v0.3.2+           T3 Git · T4 S3 · T5 Tailscale adapters
 ```
 
 ## Acknowledgements
@@ -323,5 +402,5 @@ v0.3.0 (later)  ~/.bettercursor/unified.db · snapshot codec ·
 
 ---
 
-> Currently a personal/early-stage project. v0.2.5 is the first
-> packaged release available for public download.
+> Currently a personal/early-stage project. v0.2.6 is the first
+> release that ships cross-device sync.
