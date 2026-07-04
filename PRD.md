@@ -14,7 +14,8 @@
 >   - **v0.2.1** (2026-07-04 完工) = 修 orphan (latestRootBlobId 空字符串) + 删除 session (L1 + L2, L3 跳). 详见 [SYNC_DESIGN.md §9](SYNC_DESIGN.md).
 >   - **v0.2.2** (2026-07-04 完工) = 对话记录展开 — L1+L2+L3 三路合并 (bubble-id 对账 + 字段级 LWW) + `<MessageList>` 薄包装 (sticky header + 浮动跳转 + stable key). 详见 [SYNC_DESIGN.md §7](SYNC_DESIGN.md).
 >   - **v0.2.3** (2026-07-04 完工) = 后台 sync loop 收尾 — `refresh_sessions` 改名为 `sync_now` + `watcher_status.last_scan_at_ms` 暴露给前端 + `<SyncNowButton>` (立即扫描) + `<SyncStatusBadge>` ("● 自动同步 · Xs 前"). 详见 [SYNC_DESIGN.md §10.1](SYNC_DESIGN.md).
->   - **v0.2.4+** = 跨设备 sync (Tailscale / SSH-rsync). 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §9.
+>   - **v0.2.5** (2026-07-04 完工) = 跨平台打包 + i18n — version bump 三件套 (0.1.0→0.2.5) + `bundle.macOS` (未签名 dmg, Mac 10.15+) + `bundle.linux.deb` depends + react-i18next (zh-CN/en) + `<LanguageSwitcher>` (localStorage 持久化) + GitHub Actions release workflow (ubuntu+macos+windows matrix). 详见 [README.md](README.md) §下载安装.
+>   - **v0.2.6+** = 跨设备 sync (Tailscale / SSH-rsync). 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §9.
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -96,7 +97,13 @@ Layer 3 (state.vscdb)─┘                            ↓
 | `sync_now` command (用户手动触发全量扫描) | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | **v0.2.3 ✅** (从 v0.1 `refresh_sessions` 改名) |
 | `get_sync_status` (`watcher_status` 加 `last_scan_at_ms`) | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | **v0.2.3 ✅** (frontend `<SyncStatusBadge>` 显示 "● 自动同步 · Xs 前") |
 | 不复活 `auto_sync_enabled` toggle (沿用 #103 拍板) | — | **v0.2.3 ✅** (默认行为不变, 只暴露状态) |
-| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | 设计稿 (v0.2.4) |
+| **v0.2.5 — 三件套 version bump (0.1.0 → 0.2.5)** | `package.json` + `src-tauri/Cargo.toml` + `src-tauri/tauri.conf.json` | **v0.2.5 ✅** |
+| **v0.2.5 — `bundle.macOS` 子配置 (最低系统 10.15, 未签名 `signingIdentity: null`, dmg 窗口 660×400)** | `src-tauri/tauri.conf.json` | **v0.2.5 ✅** |
+| **v0.2.5 — `bundle.linux.deb.depends` (libwebkit2gtk-4.1-0 / libgtk-3-0 / libayatana-appindicator3-1)** | `src-tauri/tauri.conf.json` | **v0.2.5 ✅** |
+| **v0.2.5 — react-i18next 接入 + zh-CN/en 两套资源 (110 条 UI 字符串)** | `src/i18n/index.ts` + `src/locales/{zh-CN,en}.json` | **v0.2.5 ✅** |
+| **v0.2.5 — `<LanguageSwitcher>` (header `<select>`, localStorage 持久化, `i18n.changeLanguage()` 即时切换)** | `src/components/LanguageSwitcher.tsx` | **v0.2.5 ✅** |
+| **v0.2.5 — GitHub Actions release workflow (ubuntu+macos+windows matrix, tag `v*.*.*` 触发, softprops/action-gh-release@v2 自动发版)** | `.github/workflows/release.yml` | **v0.2.5 ✅** |
+| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | 设计稿 (v0.2.6) |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | UI: SyncToggle / SyncNowButton / 状态显示 | [SYNC_DESIGN.md §4.3](SYNC_DESIGN.md) | 设计稿 |
 | Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | 设计稿 |

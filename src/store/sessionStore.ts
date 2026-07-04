@@ -23,11 +23,17 @@ export const SORT_MODES: SortMode[] = [
   "bubble_count_desc",
 ];
 
-export const SORT_LABELS: Record<SortMode, string> = {
-  updated_desc: "最近更新 ↓",
-  name_asc: "名称 A→Z",
-  bubble_count_desc: "气泡数 ↓",
-};
+// v0.2.5: i18n-aware. Pass the `t` from `useTranslation()` so the
+// toolbar label follows the active locale. Used by SessionTree.tsx.
+export function getSortLabels(
+  t: (key: string) => string,
+): Record<SortMode, string> {
+  return {
+    updated_desc: t("tree.sort.updated_desc"),
+    name_asc: t("tree.sort.name_asc"),
+    bubble_count_desc: t("tree.sort.bubble_count_desc"),
+  };
+}
 
 interface SessionState {
   sessions: CanonicalSession[];

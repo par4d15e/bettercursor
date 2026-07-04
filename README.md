@@ -2,10 +2,11 @@
 
 > 本地 **Cursor** 会话查看器 (只读). **Tauri 2 + React 19 + Rust**, UI 范式借鉴 [cc-switch](https://github.com/farion1231/cc-switch).
 
-![status](https://img.shields.io/badge/status-v0.1%20working-success)
-![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue)
+![status](https://img.shields.io/badge/status-v0.2.5-success)
+![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
+![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
 
 ## 它是什么
 
@@ -14,31 +15,30 @@
 数据, 跨层去重合并后呈现给用户.
 
 设计目标:
-- **只读** — v0.1 阶段不写任何文件, 避免污染 Cursor 自身的工作目录
+- **v0.2.1+ 可写 (受控)** — 仅后端命令明确允许时才写 (`sync_session_layer23` / `fix_orphans` / `delete_session`), 仍有 v0.1 阶段不可写越权
 - **借鉴 cc-switch UI** — 左侧项目分组树 + 右侧会话详情的范式
 - **与 Python 守护进程版本字节级一致** — MD5 `chat_root` 实现 parity 测试通过
 
 ## 功能状态
 
-### v0.1 (✅ 当前)
+### v0.2.5 (✅ 当前, 2026-07-04 完工)
 
+- [x] **跨平台打包**: Linux `.deb` / `.AppImage` + macOS 未签名 `.dmg` (Mac 10.15+) + Windows `.msi` / `.exe` (NSIS), 全部通过 GitHub Actions 矩阵自动 build ([`release.yml`](.github/workflows/release.yml))
+- [x] **i18n (zh-CN / en)**: react-i18next + `src/locales/{zh-CN,en}.json` (~110 条 UI 字符串) + `<LanguageSwitcher>` 头部 `<select>` + localStorage 持久化 (`i18nextLng`)
+- [x] 三件套 version bump: `package.json` / `Cargo.toml` / `tauri.conf.json` 都升到 `0.2.5`, `productName: "BetterCursor"` (PascalCase for Mac `.app`)
+- [x] 后台 sync loop 收尾 (v0.2.3): `<SyncNowButton>` (立即扫描) + `<SyncStatusBadge>` ("● 自动同步 · Xs 前", 1Hz tick + 5s 后端 poll)
+- [x] 对话记录展开 (v0.2.2): L1+L2+L3 三路合并 + `<MessageList>` 薄包装
+- [x] 修 orphan + 删 session (v0.2.1): `<dialog>` 原生确认
 - [x] 启动时扫描 3 层 Cursor 存储 (Layer 1 JSONL / Layer 2 `store.db` / Layer 3 `state.vscdb`)
-- [x] 跨层去重合并: 同一对话在多处存储只出现一次
-- [x] 项目分组 + 会话名 + 来源 badge (`mac` / `linux_cli` / `linux_desktop`)
-- [x] 手动刷新按钮, 立即重新扫描
-- [x] 按会话名 / 项目 / 内容预览 / UUID 的全文搜索
-- [x] 会话详情面板: 元数据 + 复制 resume 命令 + 来源展示
-- [x] MD5 `chat_root` 与 Python 守护进程字节级一致 (`tests/test_layer2_import.py`)
-- [x] 首次实跑扫到 **37 个 session** (Linux desktop + Linux CLI + macOS 来源混合)
-- [x] Linux Wayland 兼容性验证通过 (经过 webkit2gtk + Mutter 实测)
+- [x] 跨层去重合并, 项目分组, 按会话名 / 项目 / 内容 / UUID 全文搜索
+- [x] MD5 `chat_root` 与 Python 守护进程字节级一致
 
-### v0.2 / v0.3 (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.2.6 / v0.3 (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] 对话气泡记录加载 (Layer 1 JSONL 完整解析)
-- [ ] 复制 resume 命令后自动 spawn Cursor
-- [ ] 删除会话 (引入写权限)
-- [ ] 本地自动同步 (Snapshot codec + 后台 loop)
-- [ ] 跨设备同步 (云端 / P2P 节点)
+- [ ] 跨设备 sync (Tailscale / SSH-rsync) — §4 transport trait 初版
+- [ ] `~/.bettercursor/unified.db` (snapshot codec + Conflict enum 大版本)
+- [ ] outbox flush + 5-way 分类 conflict UI
+- [ ] T3/T4/T5 adapter: git / S3 / Tailscale
 
 ## 技术栈
 
@@ -50,6 +50,39 @@
 | IPC | Tauri command + event (`list_sessions`, `refresh_sessions`, `get_resume_command`, `platform_info`) |
 
 > **为什么不是 Electron**: Tauri 用系统 WebView, 二进制小 (≈15 MB), 后端 Rust 可直接复用 SQL 解析逻辑.
+
+## 下载安装
+
+每个 git tag (`v*.*.*`) 都触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)
+三平台矩阵 build, 产物在 [Releases](../../releases) 页:
+
+### Linux
+
+```bash
+# Debian / Ubuntu (.deb, 含 libwebkit2gtk-4.1 / libgtk-3 / libayatana-appindicator3)
+sudo dpkg -i BetterCursor_0.2.5_amd64.deb
+sudo apt-get install -f   # 补依赖 (如 dpkg 报缺包)
+
+# 便携 AppImage (无需安装, 但首次 build 需联网下载 linuxdeploy 二进制)
+chmod +x BetterCursor_0.2.5_amd64.AppImage
+./BetterCursor_0.2.5_amd64.AppImage
+```
+
+### macOS
+
+1. 下载 `BetterCursor_0.2.5_x64.dmg` (Intel) 或 `BetterCursor_0.2.5_aarch64.dmg` (Apple Silicon)
+2. 双击挂载, 把 `BetterCursor.app` 拖进 `/Applications`
+3. **未签名 dmg**: 首次打开 `右键 → "打开方式" → 打开` 即可 (之后正常双击, Gatekeeper 只卡第一次)
+
+### Windows
+
+```powershell
+# .msi (MSI installer, 适合企业部署)
+msiexec /i BetterCursor_0.2.5_x64_en-US.msi
+
+# 或 .exe (NSIS, 适合个人)
+.\BetterCursor_0.2.5_x64-setup.exe
+```
 
 ## 快速开始
 
@@ -203,9 +236,9 @@ pnpm tauri dev
 ## 路线图
 
 ```
-v0.1 (✅ now)  只读查看 · 复制 resume
-v0.2 (next)   对话内容 · 删除 · 本地自动同步
-v0.3 (later)  跨设备同步
+v0.2.5 (✅ now)  跨平台打包 · i18n · 后台 sync · 对话记录 · 修复 orphan · 删除
+v0.2.6 (next)   跨设备 sync (Transport trait 初版)
+v0.3.0 (later)  ~/.bettercursor/unified.db · snapshot codec · Conflict UI
 ```
 
 ## 致谢

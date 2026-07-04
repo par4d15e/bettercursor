@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch: # manual trigger — useful for re-running without a fresh tag
+
+permissions:
+  contents: write # softprops/action-gh-release needs this to publish a Release
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_glob: |
+              src-tauri/target/release/bundle/**/*.deb
+              src-tauri/target/release/bundle/**/*.AppImage
+          - os: macos-latest
+            artifact_glob: |
+              src-tauri/target/release/bundle/**/*.dmg
+          - os: windows-latest
+            artifact_glob: |
+              src-tauri/target/release/bundle/**/*.msi
+              src-tauri/target/release/bundle/**/*.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cache the Rust workspace across runs. Saves ~3 min on warm cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      # Linux: Tauri needs the webkit2gtk-4.1 / GTK 3 stack + librsvg
+      # (for icon embedding) + patchelf (rpath rewriting for AppImage).
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            file
+
+      # Windows: NSIS produces the .exe installer, wget downloads the
+      # linuxdeploy-style helpers Tauri shells out to.
+      - name: Install Windows build dependencies
+        if: matrix.os == 'windows-latest'
+        shell: cmd
+        run: |
+          choco install -y nsis wget --no-progress || choco install -y nsis --no-progress
+
+      - name: Install dependencies and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm tauri build
+
+      # Tauri writes bundle artifacts under src-tauri/target/release/bundle/.
+      # Globs are matrix-specific (.deb/.AppImage on Linux, .dmg on macOS,
+      # .msi/.exe on Windows) so we don't pollute each runner's release with
+      # unsupported targets.
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bettercursor-${{ matrix.os }}
+          path: ${{ matrix.artifact_glob }}
+
+  publish:
+    name: publish-release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

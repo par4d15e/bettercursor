@@ -1,0 +1,136 @@
+{
+  "common": {
+    "loading": "加载中…",
+    "error": "错误: {{msg}}",
+    "cancel": "取消",
+    "copy": "复制",
+    "copied": "✓ 已复制到剪贴板",
+    "close": "关闭",
+    "empty": "—"
+  },
+  "tree": {
+    "header": {
+      "title": "会话管理",
+      "back": "返回",
+      "version": "v0.2.5"
+    },
+    "toolbar": {
+      "sessionCount": "会话列表",
+      "sortBy": "排序: {{mode}} (点击切换)",
+      "multiSelect": "多选",
+      "fixOrphans": "修复所有 Layer 2 orphan session (latestRootBlobId 是空字符串). 已自动备份 store.db."
+    },
+    "fixOrphansToast": {
+      "successWithSkip": "扫描 {{scanned}} 条 orphan, 修复 {{fixed}} 条, 跳过 {{skipped}} 条",
+      "successNoSkip": "扫描 {{scanned}} 条 orphan, 修复 {{fixed}} 条",
+      "failed": "修复失败: {{msg}}"
+    },
+    "empty": {
+      "noSessions": "暂无 session. 点击刷新按钮重新扫描.",
+      "noMatch": "没有匹配当前搜索的 session."
+    },
+    "sort": {
+      "updated_desc": "最近更新 ↓",
+      "name_asc": "名称 A→Z",
+      "bubble_count_desc": "气泡数 ↓"
+    },
+    "search": {
+      "placeholder": "搜索会话名 / 项目 / 内容"
+    },
+    "selectSessionHint": "← 在左侧选择一条 session"
+  },
+  "detail": {
+    "selectSessionHint": "← 在左侧选择一条 session",
+    "metadata": {
+      "lastUpdated": "最后更新:",
+      "project": "项目:",
+      "bubbleCount": "bubble 数:",
+      "source": "来源:",
+      "uuid": "UUID:"
+    },
+    "actions": {
+      "deleteSession": "删除会话",
+      "deleteTitle": "删除 Layer 1 + Layer 2 存储 (L3 由 Cursor Desktop 自己管理, 暂不删)",
+      "copyResumeTitle": "复制到剪贴板"
+    },
+    "syncBanner": {
+      "missingBoth": "两端都看不到这条 session",
+      "missingL2": "cursor-agent 看不到这条 session (缺 Layer 2)",
+      "missingL3": "Desktop Sidebar 看不到这条 session (缺 Layer 3)",
+      "hintL2": "补 Layer 2 后 cursor-agent --resume 才能进入.",
+      "hintL3": "补 Layer 3 后 Cursor Desktop Sidebar 才会显示.",
+      "wroteL2Root": "✓ 写入 store.db (root={{root}}…)",
+      "wroteL2NoRoot": "✓ 写入 store.db",
+      "wroteL3": "✓ 写入 state.vscdb",
+      "skipped": "跳过: {{items}}",
+      "durationMs": "({{ms}} ms)",
+      "running": "同步中…",
+      "fillL2": "补 Layer 2",
+      "fillL3": "补 Layer 3",
+      "fillAll": "一键同步"
+    },
+    "brokenBanner": {
+      "defaultReason": "该 session 数据不完整",
+      "hint": "对应 cursor-agent --resume 命令可能失败. 点\"修复 Layer 2\"自动把 latestRootBlobId 填上 (会留 .backup).",
+      "scannedFixedSkip": "✓ 扫描 {{scanned}} 条, 修复 {{fixed}} 条, 跳过 {{skipped}} 条",
+      "scannedFixed": "✓ 扫描 {{scanned}} 条, 修复 {{fixed}} 条",
+      "skipped": "跳过: {{count}} 条",
+      "running": "修复中…",
+      "repair": "修复 Layer 2",
+      "title": "扫描所有 chats/<md5>/<uuid>/store.db, 把 latestRootBlobId 是空字符串的修上. 已自动备份."
+    },
+    "deleteDialog": {
+      "title": "删除 session",
+      "body": "即将从磁盘删除 session {{uuid}}…. 至少勾选一层才能确认, 默认 L1 + L2 都删 (Cursor-agent 看不到的层).",
+      "layerL1": "Layer 1 (JSONL)",
+      "layerL1Path": "~/.cursor/projects/{{slug}}/agent-transcripts/{{uuid}}/",
+      "layerL2": "Layer 2 (store.db)",
+      "layerL2Path": "~/.cursor/chats/{{cwd}}/{{uuid}}/",
+      "layerL2PathFallback": "~/.cursor/chats/<md5(cwd)>/{{uuid}}/",
+      "layerL3": "Layer 3 (state.vscdb composerData)",
+      "layerL3Note": "L3 由 Cursor Desktop 自己管理, 强制删除需要 cursaves 的 staged-copy 路径, v0.2.1 暂不支持.",
+      "running": "检测到 Cursor / cursor-agent 在跑 (pid 数: {{count}}). 请关闭后重试, \"确认删除\"按钮已禁用.",
+      "reportL1Removed": "L1: ✓ 已删",
+      "reportL1Skipped": "L1: 跳过 ({{reason}})",
+      "reportL2Removed": "L2: ✓ 已删",
+      "reportL2Skipped": "L2: 跳过 ({{reason}})",
+      "skippedUnknown": "未知",
+      "confirm": "确认删除",
+      "deleting": "删除中…"
+    }
+  },
+  "message": {
+    "title": "对话记录",
+    "count": "({{count}})",
+    "countWithErrors": "({{count}}, {{errors}} 行解析失败)",
+    "loading": "加载中…",
+    "loadFailed": "加载失败: {{msg}}",
+    "emptyWithPath": "该会话的 JSONL 已找到, 但没有可解析的对话气泡 (可能为空会话).",
+    "emptyNoPath": "该会话在 Layer 1 JSONL 中未找到. 仅 Layer 2/3 来源, 对话内容暂不可用.",
+    "jumpToBottomTitle": "跳到底部"
+  },
+  "sync": {
+    "autoSync": "自动同步",
+    "stopped": "同步已停止",
+    "neverScanned": "尚未扫描",
+    "xSecondsAgo": "{{n}}s 前",
+    "xMinutesAgo": "{{n}}m 前",
+    "xHoursAgo": "{{n}}h 前",
+    "tooltip": "{{label}} · 监听: {{dirs}}",
+    "tooltipNoDirs": "{{label}}",
+    "syncNowTitle": "立即重新扫描本机 Cursor 存储"
+  },
+  "broken": {
+    "label": "数据残缺"
+  },
+  "source": {
+    "mac": "Mac Desktop",
+    "linux_cli": "Linux CLI",
+    "linux_desktop": "Linux Desktop"
+  },
+  "language": {
+    "switch": "语言",
+    "zh-CN": "中文",
+    "en": "English"
+  }
+}

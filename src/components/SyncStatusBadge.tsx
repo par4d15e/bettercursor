@@ -7,11 +7,13 @@
 // counter stays in sync with `AppState.last_scan_at` (which the
 // watcher thread bumps on every fs event / 30s polling tick).
 //
-// `formatAge` is exported (alongside its tests in
-// SyncStatusBadge.test.tsx) so other components can reuse the same
-// formatter without duplicating logic.
+// v0.2.5: i18n — label + counter units read from the current locale
+// via `useTranslation`. `formatAge` is now an i18n-aware closure
+// (it takes `t`) — see SyncStatusBadge.test.tsx for the formatter
+// tests that exercise both languages.
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useSessionStore } from "../store/sessionStore";
 
 export function SyncStatusBadge() {
@@ -20,6 +22,7 @@ export function SyncStatusBadge() {
   const last_scan_at_ms = useSessionStore((s) => s.last_scan_at_ms);
   const startWatcherPolling = useSessionStore((s) => s.startWatcherPolling);
   const init = useSessionStore((s) => s.init);
+  const { t } = useTranslation();
 
   // 1Hz local tick so the "Xs 前" counter updates without waiting for
   // the next 5s poll. Cheap (single setState per second) and bounded
@@ -42,10 +45,10 @@ export function SyncStatusBadge() {
   }, []);
 
   const dotClass = autoSyncLive ? "bg-accent-green" : "bg-accent-red";
-  const label = autoSyncLive ? "自动同步" : "同步已停止";
-  const ageText = formatAge(last_scan_at_ms, now);
+  const label = autoSyncLive ? t("sync.autoSync") : t("sync.stopped");
+  const ageText = formatAge(last_scan_at_ms, now, t);
   const tooltip = watcherDirs.length
-    ? `${label} · 监听: ${watcherDirs.join(", ")}`
+    ? t("sync.tooltip", { label, dirs: watcherDirs.join(", ") })
     : label;
 
   return (
@@ -67,20 +70,22 @@ export function SyncStatusBadge() {
 }
 
 /// Pure helper — exported so SyncStatusBadge.test.tsx can exercise
-/// the time-formatting branches without mounting React. Returns:
-///   - "尚未扫描" when `lastScanMs` is null
-///   - "{sec}s 前" when < 60s elapsed (sec clamped to ≥0)
-///   - "{min}m 前" when < 60m elapsed
-///   - "{hr}h 前"  otherwise
+/// the time-formatting branches without mounting React. i18n-aware:
+/// the caller passes the active `t` from `useTranslation()` so both
+/// languages are covered (zh: "Xs 前", en: "Xs ago").
 ///
-/// `now` is passed in (rather than read from `Date.now()`) so tests
-/// can pin the clock and avoid flake on slow CI.
-export function formatAge(lastScanMs: number | null, now: number): string {
-  if (lastScanMs === null) return "尚未扫描";
+/// `now` is also passed in (rather than read from `Date.now()`) so
+/// tests can pin the clock and avoid flake on slow CI.
+export function formatAge(
+  lastScanMs: number | null,
+  now: number,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (lastScanMs === null) return t("sync.neverScanned");
   const sec = Math.max(0, Math.floor((now - lastScanMs) / 1000));
-  if (sec < 60) return `${sec}s 前`;
+  if (sec < 60) return t("sync.xSecondsAgo", { n: sec });
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m 前`;
+  if (min < 60) return t("sync.xMinutesAgo", { n: min });
   const hr = Math.floor(min / 60);
-  return `${hr}h 前`;
+  return t("sync.xHoursAgo", { n: hr });
 }

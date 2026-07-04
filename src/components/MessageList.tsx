@@ -10,18 +10,12 @@
 //      visible as visible flash in the right panel after each
 //      sync_session_layer23 run).
 //
-// Design constraints (v0.2.2 scope):
-//   - No virtual scroll (deferred to v0.2.3 with "large session" support).
-//   - No markdown upgrade (BubbleView's self-rolled parser is
-//     intentionally kept at 0 deps).
-//   - No folding, search, toolbar (those are v0.2.3+).
-//
-// Props mirror what SessionDetail already collected internally
-// (`conv` + `loading` + `error`), so the call-site change is one
-// JSX line — see SessionDetail.tsx lines 482-523 for the diff.
+// v0.2.5: i18n — sticky-header title, count badges, empty-state,
+// loading/error copy, jump-to-bottom tooltip all go through `t`.
 
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { BubbleView } from "./BubbleView";
 import type { Conversation } from "../lib/tauri";
 
@@ -39,6 +33,7 @@ const JUMP_THRESHOLD_PX = 200;
 export function MessageList({ conv, loading, error }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showJump, setShowJump] = useState(false);
+  const { t } = useTranslation();
 
   // Auto-scroll on new bubbles when the user is already near the
   // bottom. If they're reading older messages we leave the position
@@ -69,13 +64,17 @@ export function MessageList({ conv, loading, error }: MessageListProps) {
     <div className="flex-1 flex flex-col overflow-hidden relative">
       {/* Sticky header */}
       <div className="sticky top-0 z-10 px-6 py-2 bg-bg-primary border-b border-border flex items-center gap-2">
-        <h3 className="text-xs font-semibold text-fg-secondary">对话记录</h3>
+        <h3 className="text-xs font-semibold text-fg-secondary">
+          {t("message.title")}
+        </h3>
         {conv && (
           <span className="text-xs text-fg-muted font-mono">
-            ({conv.bubbles.length}
-            {conv.parse_errors > 0 &&
-              `, ${conv.parse_errors} 行解析失败`}
-            )
+            {conv.parse_errors > 0
+              ? t("message.countWithErrors", {
+                  count: conv.bubbles.length,
+                  errors: conv.parse_errors,
+                })
+              : t("message.count", { count: conv.bubbles.length })}
           </span>
         )}
       </div>
@@ -87,18 +86,20 @@ export function MessageList({ conv, loading, error }: MessageListProps) {
         className="flex-1 overflow-y-auto px-6 py-4"
       >
         {loading && (
-          <div className="text-xs text-fg-muted italic">加载中…</div>
+          <div className="text-xs text-fg-muted italic">{t("message.loading")}</div>
         )}
 
         {error && (
-          <div className="text-xs text-accent-red">加载失败: {error}</div>
+          <div className="text-xs text-accent-red">
+            {t("message.loadFailed", { msg: error })}
+          </div>
         )}
 
         {!loading && !error && conv && conv.bubbles.length === 0 && (
           <div className="text-xs text-fg-muted italic">
             {conv.source_path
-              ? "该会话的 JSONL 已找到, 但没有可解析的对话气泡 (可能为空会话)."
-              : "该会话在 Layer 1 JSONL 中未找到. 仅 Layer 2/3 来源, 对话内容暂不可用."}
+              ? t("message.emptyWithPath")
+              : t("message.emptyNoPath")}
           </div>
         )}
 
@@ -121,7 +122,7 @@ export function MessageList({ conv, loading, error }: MessageListProps) {
           data-testid="jump-to-bottom"
           onClick={jumpToBottom}
           className="absolute bottom-4 right-4 z-20 p-2 rounded-full bg-bg-tertiary border border-border text-fg-secondary hover:text-fg-primary hover:bg-bg-hover shadow-lg"
-          title="跳到底部"
+          title={t("message.jumpToBottomTitle")}
         >
           <ArrowDown size={14} />
         </button>

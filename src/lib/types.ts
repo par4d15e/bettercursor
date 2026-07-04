@@ -38,11 +38,9 @@ export interface CanonicalSession {
   layer_3_present: boolean;
 }
 
-export const SOURCE_LABELS: Record<SourceLayer, string> = {
-  mac: "Mac Desktop",
-  linux_cli: "Linux CLI",
-  linux_desktop: "Linux Desktop",
-};
+// v0.2.5: SOURCE_LABELS moved to `useTranslation()` in SourceBadge
+// (namespace `source.*` in src/locales). Kept the colors map here
+// since Tailwind class strings are platform-agnostic.
 
 export const SOURCE_COLORS: Record<SourceLayer, string> = {
   mac: "bg-accent-blue/20 text-accent-blue border-accent-blue/30",

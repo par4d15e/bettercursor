@@ -1,0 +1,136 @@
+{
+  "common": {
+    "loading": "Loading…",
+    "error": "Error: {{msg}}",
+    "cancel": "Cancel",
+    "copy": "Copy",
+    "copied": "✓ Copied to clipboard",
+    "close": "Close",
+    "empty": "—"
+  },
+  "tree": {
+    "header": {
+      "title": "Sessions",
+      "back": "Back",
+      "version": "v0.2.5"
+    },
+    "toolbar": {
+      "sessionCount": "Session list",
+      "sortBy": "Sort: {{mode}} (click to cycle)",
+      "multiSelect": "Multi-select",
+      "fixOrphans": "Repair all Layer 2 orphan sessions (latestRootBlobId is empty string). store.db is auto-backed-up."
+    },
+    "fixOrphansToast": {
+      "successWithSkip": "Scanned {{scanned}} orphans, fixed {{fixed}}, skipped {{skipped}}",
+      "successNoSkip": "Scanned {{scanned}} orphans, fixed {{fixed}}",
+      "failed": "Repair failed: {{msg}}"
+    },
+    "empty": {
+      "noSessions": "No sessions yet. Click the refresh button to rescan.",
+      "noMatch": "No sessions match the current search."
+    },
+    "sort": {
+      "updated_desc": "Last updated ↓",
+      "name_asc": "Name A→Z",
+      "bubble_count_desc": "Bubble count ↓"
+    },
+    "search": {
+      "placeholder": "Search by session name / project / content"
+    },
+    "selectSessionHint": "← Select a session on the left"
+  },
+  "detail": {
+    "selectSessionHint": "← Select a session on the left",
+    "metadata": {
+      "lastUpdated": "Last updated:",
+      "project": "Project:",
+      "bubbleCount": "Bubble count:",
+      "source": "Source:",
+      "uuid": "UUID:"
+    },
+    "actions": {
+      "deleteSession": "Delete session",
+      "deleteTitle": "Delete Layer 1 + Layer 2 storage (L3 is managed by Cursor Desktop, not touched)",
+      "copyResumeTitle": "Copy to clipboard"
+    },
+    "syncBanner": {
+      "missingBoth": "Neither side can see this session",
+      "missingL2": "cursor-agent can't see this session (missing Layer 2)",
+      "missingL3": "Desktop Sidebar can't see this session (missing Layer 3)",
+      "hintL2": "After filling Layer 2, cursor-agent --resume will be able to enter.",
+      "hintL3": "After filling Layer 3, Cursor Desktop Sidebar will display it.",
+      "wroteL2Root": "✓ Wrote store.db (root={{root}}…)",
+      "wroteL2NoRoot": "✓ Wrote store.db",
+      "wroteL3": "✓ Wrote state.vscdb",
+      "skipped": "Skipped: {{items}}",
+      "durationMs": "({{ms}} ms)",
+      "running": "Syncing…",
+      "fillL2": "Fill Layer 2",
+      "fillL3": "Fill Layer 3",
+      "fillAll": "One-click sync"
+    },
+    "brokenBanner": {
+      "defaultReason": "This session's data is incomplete",
+      "hint": "cursor-agent --resume may fail on this session. Click \"Repair Layer 2\" to auto-fill latestRootBlobId (a .backup is kept).",
+      "scannedFixedSkip": "✓ Scanned {{scanned}}, fixed {{fixed}}, skipped {{skipped}}",
+      "scannedFixed": "✓ Scanned {{scanned}}, fixed {{fixed}}",
+      "skipped": "Skipped: {{count}}",
+      "running": "Repairing…",
+      "repair": "Repair Layer 2",
+      "title": "Scans all chats/<md5>/<uuid>/store.db and fills latestRootBlobId when it's empty. Auto-backed-up."
+    },
+    "deleteDialog": {
+      "title": "Delete session",
+      "body": "About to delete session {{uuid}}… from disk. At least one layer must be checked to confirm. L1 + L2 are checked by default (the layers cursor-agent can't see).",
+      "layerL1": "Layer 1 (JSONL)",
+      "layerL1Path": "~/.cursor/projects/{{slug}}/agent-transcripts/{{uuid}}/",
+      "layerL2": "Layer 2 (store.db)",
+      "layerL2Path": "~/.cursor/chats/{{cwd}}/{{uuid}}/",
+      "layerL2PathFallback": "~/.cursor/chats/<md5(cwd)>/{{uuid}}/",
+      "layerL3": "Layer 3 (state.vscdb composerData)",
+      "layerL3Note": "L3 is managed by Cursor Desktop. Forced deletion requires the cursaves staged-copy path, which v0.2.1 does not support.",
+      "running": "Cursor / cursor-agent is running (process count: {{count}}). Please close it and retry — the \"Confirm delete\" button is disabled.",
+      "reportL1Removed": "L1: ✓ deleted",
+      "reportL1Skipped": "L1: skipped ({{reason}})",
+      "reportL2Removed": "L2: ✓ deleted",
+      "reportL2Skipped": "L2: skipped ({{reason}})",
+      "skippedUnknown": "unknown",
+      "confirm": "Confirm delete",
+      "deleting": "Deleting…"
+    }
+  },
+  "message": {
+    "title": "Conversation",
+    "count": "({{count}})",
+    "countWithErrors": "({{count}}, {{errors}} parse errors)",
+    "loading": "Loading…",
+    "loadFailed": "Load failed: {{msg}}",
+    "emptyWithPath": "The JSONL for this session was found, but no parseable conversation bubbles (possibly an empty session).",
+    "emptyNoPath": "This session was not found in Layer 1 JSONL. Layer 2/3 only — the conversation content is not available.",
+    "jumpToBottomTitle": "Jump to bottom"
+  },
+  "sync": {
+    "autoSync": "Auto-sync",
+    "stopped": "Sync stopped",
+    "neverScanned": "Not yet scanned",
+    "xSecondsAgo": "{{n}}s ago",
+    "xMinutesAgo": "{{n}}m ago",
+    "xHoursAgo": "{{n}}h ago",
+    "tooltip": "{{label}} · watching: {{dirs}}",
+    "tooltipNoDirs": "{{label}}",
+    "syncNowTitle": "Rescan local Cursor storage now"
+  },
+  "broken": {
+    "label": "Incomplete data"
+  },
+  "source": {
+    "mac": "Mac Desktop",
+    "linux_cli": "Linux CLI",
+    "linux_desktop": "Linux Desktop"
+  },
+  "language": {
+    "switch": "Language",
+    "zh-CN": "中文",
+    "en": "English"
+  }
+}

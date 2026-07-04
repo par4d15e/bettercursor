@@ -1,6 +1,13 @@
 // src/components/SessionDetail.tsx — right panel: title + metadata + resume cmd
+//
+// v0.2.5: i18n — every user-visible string goes through `useTranslation`'s
+// `t`. The three banners (sync / broken / delete-dialog) keep their
+// existing 3-state semantics; only the copy changes. `formatTimestamp`
+// now picks its locale off `i18n.language` so that English users see
+// `7/4/2026, 12:34 PM` rather than the v0.2.x `2026/7/4 12:34`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useSessionStore } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
 import { MessageList } from "./MessageList";
@@ -32,9 +39,9 @@ import {
 import type { SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
 
-function formatTimestamp(ms: number): string {
+function formatTimestamp(ms: number, locale: string): string {
   if (!ms) return "—";
-  return new Date(ms).toLocaleString("zh-CN", {
+  return new Date(ms).toLocaleString(locale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -44,6 +51,7 @@ function formatTimestamp(ms: number): string {
 }
 
 export function SessionDetail() {
+  const { t, i18n } = useTranslation();
   const selectedUuid = useSessionStore((s) => s.selectedUuid);
   const sessions = useSessionStore((s) => s.sessions);
   const session = useMemo(
@@ -237,10 +245,21 @@ export function SessionDetail() {
   if (!selectedUuid || !session) {
     return (
       <div className="flex-1 flex items-center justify-center bg-bg-primary text-fg-muted text-sm">
-        ← 在左侧选择一条 session
+        {t("detail.selectSessionHint")}
       </div>
     );
   }
+
+  // Layer 2 path suffix: chats/<cwd-with-slashes-to-dashes>/<uuid>/,
+  // or the "<md5(cwd)>" fallback when cwd is missing/empty. The
+  // dialog renders this verbatim — split out so the JSX stays
+  // readable.
+  const layer2CwdSegment = session.project_path
+    ? session.project_path
+        .trim()
+        .replace(/^\/+/, "")
+        .replace(/\//g, "-")
+    : null;
 
   return (
     <div className="flex-1 flex flex-col bg-bg-primary overflow-hidden">
@@ -259,50 +278,52 @@ export function SessionDetail() {
             <div className="flex-1">
               <div className="font-semibold text-accent-blue">
                 {syncMissing.missing.length === 2
-                  ? "两端都看不到这条 session"
+                  ? t("detail.syncBanner.missingBoth")
                   : syncMissing.missing.includes("L2")
-                  ? "cursor-agent 看不到这条 session (缺 Layer 2)"
-                  : "Desktop Sidebar 看不到这条 session (缺 Layer 3)"}
+                  ? t("detail.syncBanner.missingL2")
+                  : t("detail.syncBanner.missingL3")}
               </div>
               <div className="text-fg-muted mt-0.5">
                 {syncMissing.missing.includes("L2") && (
-                  <span>
-                    补 Layer 2 后 <code className="font-mono">cursor-agent --resume</code>{" "}
-                    才能进入.
-                  </span>
+                  <span>{t("detail.syncBanner.hintL2")}</span>
                 )}
                 {syncMissing.missing.length === 2 && " "}
                 {syncMissing.missing.includes("L3") && (
-                  <span>
-                    补 Layer 3 后 Cursor Desktop Sidebar 才会显示.
-                  </span>
+                  <span>{t("detail.syncBanner.hintL3")}</span>
                 )}
               </div>
               {syncReport && (
                 <div className="mt-1 text-fg-secondary">
                   {syncReport.wrote_layer2 && (
                     <span>
-                      ✓ 写入 store.db
                       {syncReport.root_blob_id
-                        ? ` (root=${syncReport.root_blob_id.slice(0, 8)}…)`
-                        : ""}
+                        ? t("detail.syncBanner.wroteL2Root", {
+                            root: syncReport.root_blob_id.slice(0, 8),
+                          })
+                        : t("detail.syncBanner.wroteL2NoRoot")}
                     </span>
                   )}
                   {syncReport.wrote_layer3 && (
-                    <span className="ml-2">✓ 写入 state.vscdb</span>
+                    <span className="ml-2">{t("detail.syncBanner.wroteL3")}</span>
                   )}
                   {syncReport.skipped.length > 0 && (
                     <span className="ml-2 text-accent-yellow">
-                      跳过: {syncReport.skipped.join(", ")}
+                      {t("detail.syncBanner.skipped", {
+                        items: syncReport.skipped.join(", "),
+                      })}
                     </span>
                   )}
                   <span className="ml-2 text-fg-muted">
-                    ({syncReport.duration_ms} ms)
+                    {t("detail.syncBanner.durationMs", {
+                      ms: syncReport.duration_ms,
+                    })}
                   </span>
                 </div>
               )}
               {syncError && (
-                <div className="mt-1 text-accent-red">错误: {syncError}</div>
+                <div className="mt-1 text-accent-red">
+                  {t("common.error", { msg: syncError })}
+                </div>
               )}
             </div>
             <button
@@ -315,16 +336,16 @@ export function SessionDetail() {
               {syncRunning ? (
                 <>
                   <RefreshCw size={11} className="animate-spin" />
-                  同步中…
+                  {t("detail.syncBanner.running")}
                 </>
               ) : (
                 <>
                   <ArrowLeftRight size={11} />
                   {syncMissing.missing.includes("L2")
-                    ? "补 Layer 2"
+                    ? t("detail.syncBanner.fillL2")
                     : syncMissing.missing.includes("L3")
-                    ? "补 Layer 3"
-                    : "一键同步"}
+                    ? t("detail.syncBanner.fillL3")
+                    : t("detail.syncBanner.fillAll")}
                 </>
               )}
             </button>
@@ -337,28 +358,35 @@ export function SessionDetail() {
             <span className="text-base leading-none shrink-0 mt-px">⚠</span>
             <div className="flex-1">
               <div className="font-semibold">
-                {session.broken_reason ?? "该 session 数据不完整"}
+                {session.broken_reason ?? t("detail.brokenBanner.defaultReason")}
               </div>
               <div className="text-fg-muted mt-0.5">
-                对应{" "}
-                <code className="font-mono">cursor-agent --resume</code>{" "}
-                命令可能失败. 点"修复 Layer 2"自动把 latestRootBlobId 填上
-                (会留 .backup).
+                {t("detail.brokenBanner.hint")}
               </div>
               {repairReport && (
                 <div className="mt-1 text-fg-secondary">
-                  ✓ 扫描 {repairReport.scanned} 条, 修复{" "}
-                  {repairReport.fixed.length} 条
+                  {repairReport.skipped.length > 0
+                    ? t("detail.brokenBanner.scannedFixedSkip", {
+                        scanned: repairReport.scanned,
+                        fixed: repairReport.fixed.length,
+                        skipped: repairReport.skipped.length,
+                      })
+                    : t("detail.brokenBanner.scannedFixed", {
+                        scanned: repairReport.scanned,
+                        fixed: repairReport.fixed.length,
+                      })}
                   {repairReport.skipped.length > 0 && (
                     <span className="ml-2 text-accent-yellow">
-                      跳过: {repairReport.skipped.length} 条
+                      {t("detail.brokenBanner.skipped", {
+                        count: repairReport.skipped.length,
+                      })}
                     </span>
                   )}
                 </div>
               )}
               {repairError && (
                 <div className="mt-1 text-accent-red">
-                  错误: {repairError}
+                  {t("common.error", { msg: repairError })}
                 </div>
               )}
             </div>
@@ -368,17 +396,17 @@ export function SessionDetail() {
               disabled={repairRunning}
               onClick={handleRepair}
               className="px-2.5 py-1 rounded bg-accent-yellow text-bg-primary font-semibold hover:bg-accent-yellow/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0"
-              title="扫描所有 chats/<md5>/<uuid>/store.db, 把 latestRootBlobId 是空字符串的修上. 已自动备份."
+              title={t("detail.brokenBanner.title")}
             >
               {repairRunning ? (
                 <>
                   <RefreshCw size={11} className="animate-spin" />
-                  修复中…
+                  {t("detail.brokenBanner.running")}
                 </>
               ) : (
                 <>
                   <Wrench size={11} />
-                  修复 Layer 2
+                  {t("detail.brokenBanner.repair")}
                 </>
               )}
             </button>
@@ -408,10 +436,10 @@ export function SessionDetail() {
             data-testid="delete-button"
             onClick={openDeleteDialog}
             className="px-3 py-1.5 rounded-md bg-accent-red/15 border border-accent-red/30 text-accent-red text-xs font-medium hover:bg-accent-red/25"
-            title="删除 Layer 1 + Layer 2 存储 (L3 由 Cursor Desktop 自己管理, 暂不删)"
+            title={t("detail.actions.deleteTitle")}
           >
             <Trash2 size={12} className="inline mr-1" />
-            删除会话
+            {t("detail.actions.deleteSession")}
           </button>
         </div>
 
@@ -419,28 +447,28 @@ export function SessionDetail() {
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
           <div className="flex items-center gap-1.5 text-fg-secondary">
             <Clock size={12} className="text-fg-muted" />
-            <span>最后更新:</span>
+            <span>{t("detail.metadata.lastUpdated")}</span>
             <span className="text-fg-primary font-mono">
-              {formatTimestamp(session.last_updated_at)}
+              {formatTimestamp(session.last_updated_at, i18n.language)}
             </span>
           </div>
           <div className="flex items-center gap-1.5 text-fg-secondary">
             <Folder size={12} className="text-fg-muted" />
-            <span>项目:</span>
+            <span>{t("detail.metadata.project")}</span>
             <span className="text-fg-primary font-mono truncate">
               {session.project_slug}
             </span>
           </div>
           <div className="flex items-center gap-1.5 text-fg-secondary">
             <Hash size={12} className="text-fg-muted" />
-            <span>UUID:</span>
+            <span>{t("detail.metadata.uuid")}</span>
             <span className="text-fg-primary font-mono truncate" title={session.uuid}>
               {session.uuid}
             </span>
           </div>
           <div className="flex items-center gap-1.5 text-fg-secondary">
             <FileText size={12} className="text-fg-muted" />
-            <span>bubble 数:</span>
+            <span>{t("detail.metadata.bubbleCount")}</span>
             <span className="text-fg-primary font-mono">{session.bubble_count}</span>
           </div>
         </div>
@@ -448,7 +476,9 @@ export function SessionDetail() {
         {/* Sources */}
         {sources.length > 0 && (
           <div className="mt-3 flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-fg-muted">来源:</span>
+            <span className="text-xs text-fg-muted">
+              {t("detail.metadata.source")}
+            </span>
             {sources.map((s) => (
               <SourceBadge key={s.layer} source={s.layer} size="md" />
             ))}
@@ -469,13 +499,15 @@ export function SessionDetail() {
           <button
             onClick={handleCopyResume}
             className="p-1.5 rounded hover:bg-bg-hover text-fg-secondary hover:text-fg-primary"
-            title="复制到剪贴板"
+            title={t("detail.actions.copyResumeTitle")}
           >
             <Copy size={12} />
           </button>
         </div>
         {copied && (
-          <div className="mt-1.5 text-xs text-accent-green">✓ 已复制到剪贴板</div>
+          <div className="mt-1.5 text-xs text-accent-green">
+            {t("common.copied")}
+          </div>
         )}
       </div>
 
@@ -503,7 +535,7 @@ export function SessionDetail() {
         <div className="px-5 py-3 border-b border-border flex items-center justify-between">
           <div className="font-semibold text-sm flex items-center gap-2">
             <Trash2 size={14} className="text-accent-red" />
-            删除 session
+            {t("detail.deleteDialog.title")}
           </div>
           <button
             type="button"
@@ -511,18 +543,16 @@ export function SessionDetail() {
             onClick={closeDeleteDialog}
             disabled={deleteRunning}
             className="p-1 rounded hover:bg-bg-hover text-fg-muted disabled:opacity-40"
-            title="关闭"
+            title={t("common.close")}
           >
             <X size={14} />
           </button>
         </div>
         <div className="px-5 py-4 text-sm space-y-3">
           <div className="text-fg-secondary">
-            即将从磁盘删除 session{" "}
-            <code className="font-mono text-fg-primary">
-              {session.uuid.slice(0, 8)}…
-            </code>
-            . 至少勾选一层才能确认, 默认 L1 + L2 都删 (Cursor-agent 看不到的层).
+            {t("detail.deleteDialog.body", {
+              uuid: session.uuid.slice(0, 8),
+            })}
           </div>
 
           <label className="flex items-start gap-2 px-3 py-2 rounded-md bg-bg-tertiary border border-border cursor-pointer">
@@ -536,11 +566,13 @@ export function SessionDetail() {
             />
             <div className="flex-1 min-w-0">
               <div className="font-mono text-xs text-fg-primary">
-                Layer 1 (JSONL)
+                {t("detail.deleteDialog.layerL1")}
               </div>
               <div className="text-xs text-fg-muted mt-0.5 break-all">
-                ~/.cursor/projects/{session.project_slug}/agent-transcripts/
-                {session.uuid}/
+                {t("detail.deleteDialog.layerL1Path", {
+                  slug: session.project_slug,
+                  uuid: session.uuid,
+                })}
               </div>
             </div>
           </label>
@@ -556,16 +588,17 @@ export function SessionDetail() {
             />
             <div className="flex-1 min-w-0">
               <div className="font-mono text-xs text-fg-primary">
-                Layer 2 (store.db)
+                {t("detail.deleteDialog.layerL2")}
               </div>
               <div className="text-xs text-fg-muted mt-0.5 break-all">
-                ~/.cursor/chats/{session.project_path
-                  ? `${session.project_path
-                      .trim()
-                      .replace(/^\/+/, "")
-                      .replace(/\//g, "-")}`
-                  : "<md5(cwd)>"}
-                /{session.uuid}/
+                {layer2CwdSegment
+                  ? t("detail.deleteDialog.layerL2Path", {
+                      cwd: layer2CwdSegment,
+                      uuid: session.uuid,
+                    })
+                  : t("detail.deleteDialog.layerL2PathFallback", {
+                      uuid: session.uuid,
+                    })}
               </div>
             </div>
           </label>
@@ -580,40 +613,45 @@ export function SessionDetail() {
             />
             <div className="flex-1 min-w-0">
               <div className="font-mono text-xs text-fg-muted">
-                Layer 3 (state.vscdb composerData)
+                {t("detail.deleteDialog.layerL3")}
               </div>
               <div className="text-xs text-fg-muted mt-0.5">
-                L3 由 Cursor Desktop 自己管理, 强制删除需要 cursaves 的
-                staged-copy 路径, v0.2.1 暂不支持.
+                {t("detail.deleteDialog.layerL3Note")}
               </div>
             </div>
           </label>
 
           {deleteReport?.cursor_running && (
             <div className="text-xs text-accent-red bg-accent-red/10 border border-accent-red/30 rounded px-2 py-1.5">
-              检测到 Cursor / cursor-agent 在跑 (pid 数:{" "}
-              {deleteReport.running_processes.length}).
-              请关闭后重试, "确认删除"按钮已禁用.
+              {t("detail.deleteDialog.running", {
+                count: deleteReport.running_processes.length,
+              })}
             </div>
           )}
           {deleteReport && !deleteReport.cursor_running && (
             <div className="text-xs text-fg-secondary bg-bg-tertiary border border-border rounded px-2 py-1.5">
               <div>
-                L1:{" "}
                 {deleteReport.removed_l1
-                  ? "✓ 已删"
-                  : `跳过 (${deleteReport.skipped_l1 ?? "未知"})`}
+                  ? t("detail.deleteDialog.reportL1Removed")
+                  : t("detail.deleteDialog.reportL1Skipped", {
+                      reason:
+                        deleteReport.skipped_l1 ?? t("detail.deleteDialog.skippedUnknown"),
+                    })}
               </div>
               <div>
-                L2:{" "}
                 {deleteReport.removed_l2
-                  ? "✓ 已删"
-                  : `跳过 (${deleteReport.skipped_l2 ?? "未知"})`}
+                  ? t("detail.deleteDialog.reportL2Removed")
+                  : t("detail.deleteDialog.reportL2Skipped", {
+                      reason:
+                        deleteReport.skipped_l2 ?? t("detail.deleteDialog.skippedUnknown"),
+                    })}
               </div>
             </div>
           )}
           {deleteError && (
-            <div className="text-xs text-accent-red">错误: {deleteError}</div>
+            <div className="text-xs text-accent-red">
+              {t("common.error", { msg: deleteError })}
+            </div>
           )}
         </div>
         <div className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
@@ -623,7 +661,7 @@ export function SessionDetail() {
             disabled={deleteRunning}
             className="px-3 py-1.5 rounded-md bg-bg-tertiary border border-border text-xs hover:bg-bg-hover disabled:opacity-50"
           >
-            取消
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -639,12 +677,12 @@ export function SessionDetail() {
             {deleteRunning ? (
               <>
                 <RefreshCw size={11} className="animate-spin" />
-                删除中…
+                {t("detail.deleteDialog.deleting")}
               </>
             ) : (
               <>
                 <Trash2 size={11} />
-                确认删除
+                {t("detail.deleteDialog.confirm")}
               </>
             )}
           </button>

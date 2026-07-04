@@ -1,11 +1,24 @@
 // src/components/SessionTree.tsx — left panel: project groups → sessions
+//
+// v0.2.5: i18n — every visible string now goes through `useTranslation`'s
+// `t`, including the dynamic `SORT_LABELS` lookup (formerly a static
+// `Record<SortMode, string>` exported from `sessionStore`; we now
+// compute it per-render via `getSortLabels(t)`). `<LanguageSwitcher />`
+// also lives in the header next to `<SyncStatusBadge />`.
 
 import { useEffect, useState } from "react";
-import { useSessionStore, useGroupedSessions, SORT_LABELS } from "../store/sessionStore";
+import { useTranslation } from "react-i18next";
+import {
+  useSessionStore,
+  useGroupedSessions,
+  getSortLabels,
+  type SortMode,
+} from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
 import { BrokenBadge } from "./BrokenBadge";
 import { SyncNowButton } from "./SyncNowButton";
 import { SyncStatusBadge } from "./SyncStatusBadge";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
 import { fixOrphans, syncNow as syncNowTauri, type FixOrphansReport } from "../lib/tauri";
@@ -29,6 +42,9 @@ function detectSource(s: CanonicalSession): SourceLayer | null {
 }
 
 export function SessionTree() {
+  const { t } = useTranslation();
+  const SORT_LABELS = getSortLabels(t);
+
   const grouped = useGroupedSessions();
   const selected = useSessionStore((s) => s.selectedUuid);
   const setSelected = useSessionStore((s) => s.setSelected);
@@ -71,17 +87,25 @@ export function SessionTree() {
       await syncNowTauri().catch(() => undefined);
       setOrphanToast({
         kind: "ok",
-        text: `扫描 ${report.scanned} 条 orphan, 修复 ${report.fixed.length} 条${
+        text:
           report.skipped.length > 0
-            ? `, 跳过 ${report.skipped.length} 条`
-            : ""
-        }`,
+            ? t("tree.fixOrphansToast.successWithSkip", {
+                scanned: report.scanned,
+                fixed: report.fixed.length,
+                skipped: report.skipped.length,
+              })
+            : t("tree.fixOrphansToast.successNoSkip", {
+                scanned: report.scanned,
+                fixed: report.fixed.length,
+              }),
         report,
       });
     } catch (e: unknown) {
       setOrphanToast({
         kind: "err",
-        text: `修复失败: ${e instanceof Error ? e.message : String(e)}`,
+        text: t("tree.fixOrphansToast.failed", {
+          msg: e instanceof Error ? e.message : String(e),
+        }),
       });
     } finally {
       setFixingOrphans(false);
@@ -97,35 +121,45 @@ export function SessionTree() {
     });
   };
 
+  // Pull the current `sortMode`'s label out so the toolbar button can
+  // read it without a re-derivation in JSX (and so the `title`
+  // attribute stays in sync if the user cycles the sort).
+  const sortLabel = SORT_LABELS[sortMode satisfies SortMode];
+
   return (
     <div className="flex flex-col h-full bg-bg-secondary border-r border-border text-fg-primary">
       {/* Header / toolbar — always visible */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-secondary">
         <button
           className="p-1 rounded hover:bg-bg-hover text-fg-secondary"
-          title="返回"
+          title={t("tree.header.back")}
         >
           <ChevronLeft size={16} />
         </button>
-        <h1 className="text-sm font-semibold text-fg-primary">会话管理</h1>
+        <h1 className="text-sm font-semibold text-fg-primary">
+          {t("tree.header.title")}
+        </h1>
         {/* v0.2.3: replaces the old "LIVE" badge — now shows the
             watcher state + "Xs 前" counter. Polls watcher_status
             every 5s, ticks the counter every 1s locally. */}
-        <span className="ml-auto">
+        <span className="ml-auto inline-flex items-center gap-1.5">
           <SyncStatusBadge />
+          <LanguageSwitcher />
         </span>
-        <span className="text-[10px] text-fg-muted font-mono">v0.2.3</span>
+        <span className="text-[10px] text-fg-muted font-mono">
+          {t("tree.header.version")}
+        </span>
       </div>
 
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-xs text-fg-secondary">
-        <span>会话列表</span>
+        <span>{t("tree.toolbar.sessionCount")}</span>
         <span className="px-1.5 py-0.5 rounded bg-bg-tertiary text-fg-primary font-mono">
           {total}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button
             className="p-1 rounded hover:bg-bg-hover"
-            title="多选"
+            title={t("tree.toolbar.multiSelect")}
             disabled
           >
             <ListFilter size={14} />
@@ -133,16 +167,16 @@ export function SessionTree() {
           <button
             className="p-1 rounded hover:bg-bg-hover flex items-center gap-1 px-1.5"
             onClick={cycleSortMode}
-            title={`排序: ${SORT_LABELS[sortMode]} (点击切换)`}
+            title={t("tree.toolbar.sortBy", { mode: sortLabel })}
           >
             <ArrowUpDown size={14} />
-            <span className="text-[10px]">{SORT_LABELS[sortMode]}</span>
+            <span className="text-[10px]">{sortLabel}</span>
           </button>
           <button
             data-testid="fix-orphans-button"
             className="p-1 rounded hover:bg-bg-hover"
             onClick={handleFixOrphans}
-            title="修复所有 Layer 2 orphan session (latestRootBlobId 是空字符串). 已自动备份 store.db."
+            title={t("tree.toolbar.fixOrphans")}
             disabled={fixingOrphans}
           >
             <Wrench
@@ -187,7 +221,7 @@ export function SessionTree() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索会话名 / 项目 / 内容"
+            placeholder={t("tree.search.placeholder")}
             className="flex-1 bg-transparent text-xs text-fg-primary outline-none placeholder:text-fg-muted"
           />
         </div>
@@ -202,7 +236,7 @@ export function SessionTree() {
 
       {/* Tree */}
       <div className="flex-1 overflow-y-auto py-1">
-        {/* Provider root: "Cursor" */}
+        {/* Provider root: "Cursor" (brand name, intentionally untranslated) */}
         <div className="px-3 py-1.5 flex items-center gap-1.5 text-xs font-semibold text-fg-primary">
           <ChevronDown size={12} className="text-fg-muted" />
           <span>Cursor</span>
@@ -273,8 +307,8 @@ export function SessionTree() {
         {grouped.length === 0 && !loading && (
           <div className="px-3 py-8 text-center text-xs text-fg-muted">
             {total === 0
-              ? "暂无 session. 点击刷新按钮重新扫描."
-              : "没有匹配当前搜索的 session."}
+              ? t("tree.empty.noSessions")
+              : t("tree.empty.noMatch")}
           </div>
         )}
       </div>
