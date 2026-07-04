@@ -119,6 +119,17 @@ impl CursorRead {
         Ok(rows)
     }
 
+    /// List keys whose name contains `substr` (SQL `LIKE %substr%`).
+    pub fn list_keys_containing(&self, substr: &str, table: &str) -> Result<Vec<String>> {
+        let sql = format!("SELECT key FROM {table} WHERE key LIKE ?");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let pattern = format!("%{substr}%");
+        let rows = stmt
+            .query_map([pattern], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// List all keys in the `blobs` table (Layer 2).
     pub fn list_blob_ids(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT id FROM blobs")?;

@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -659,6 +659,179 @@ fn extract_workspace_path(v: &serde_json::Value) -> String {
     String::new()
 }
 
+fn layer3_source_layer() -> SourceLayer {
+    if cfg!(target_os = "macos") {
+        SourceLayer::Mac
+    } else {
+        SourceLayer::LinuxDesktop
+    }
+}
+
+/// Single pass over `bubbleId:<composerId>:<bubbleId>` keys (cursor-history optimization).
+fn load_global_bubble_counts(r: &storage::CursorRead) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    if let Ok(keys) = r.list_keys("bubbleId:", "cursorDiskKV") {
+        for key in keys {
+            if let Some(rest) = key.strip_prefix("bubbleId:") {
+                if let Some(composer_id) = rest.split(':').next() {
+                    if !composer_id.is_empty() {
+                        *counts.entry(composer_id.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+    counts
+}
+
+/// Extract composer IDs from `composer.composerData` / `composer.composerHeaders` JSON blobs.
+fn collect_composer_ids_from_composer_blob(v: &serde_json::Value) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    if let Some(arr) = v.get("allComposers").and_then(|x| x.as_array()) {
+        for c in arr {
+            if let Some(id) = c.get("composerId").and_then(|x| x.as_str()) {
+                if !id.is_empty() {
+                    ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    for key in ["selectedComposerIds", "lastFocusedComposerIds"] {
+        if let Some(arr) = v.get(key).and_then(|x| x.as_array()) {
+            for id in arr {
+                if let Some(s) = id.as_str() {
+                    if !s.is_empty() {
+                        ids.insert(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Extract composer GUIDs from workspace `composerChatViewPane` pointer keys (cursor-history).
+fn collect_pointer_composer_ids(r: &storage::CursorRead) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    if let Ok(keys) = r.list_keys("workbench.panel.composerChatViewPane.", "ItemTable") {
+        for key in keys {
+            if let Some(suffix) = key.strip_prefix("workbench.panel.composerChatViewPane.") {
+                if is_uuid_like(suffix) {
+                    ids.insert(suffix.to_lowercase());
+                }
+            }
+            if let Ok(Some(val)) = r.get_json(key.as_str(), "ItemTable") {
+                if let Some(obj) = val.as_object() {
+                    for view_key in obj.keys() {
+                        if view_key.contains(".view.") {
+                            if let Some(cid) = view_key.rsplit('.').next() {
+                                if is_uuid_like(cid) {
+                                    ids.insert(cid.to_lowercase());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(keys) = r.list_keys_containing("composerChatViewPane", "ItemTable") {
+        for key in keys {
+            extract_uuids_from_str(&key, &mut ids);
+            if let Ok(Some(text)) = r.get_item(key.as_str(), "ItemTable") {
+                extract_uuids_from_str(&text, &mut ids);
+            }
+        }
+    }
+    ids
+}
+
+fn is_uuid_like(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() != 36 {
+        return false;
+    }
+    s.chars().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => c == '-',
+        _ => c.is_ascii_hexdigit(),
+    })
+}
+
+fn extract_uuids_from_str(s: &str, out: &mut HashSet<String>) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 36 <= bytes.len() {
+        let candidate = &s[i..i + 36];
+        if is_uuid_like(candidate) {
+            out.insert(candidate.to_lowercase());
+            i += 36;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Merge one Layer 3 composer into the canonical map (extracted from scan_layer3_into).
+fn merge_layer3_composer(
+    by_uuid: &mut HashMap<String, CanonicalSession>,
+    uuid: &str,
+    v: &serde_json::Value,
+    global_db: &Path,
+    source: SourceLayer,
+    bubble_count_override: Option<u32>,
+) {
+    let modified = file_mtime_ms(global_db).unwrap_or(0);
+    let name = v
+        .get("name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let project_path = extract_workspace_path(v);
+    let project_slug = if !project_path.is_empty() {
+        paths::sanitize_project_path(&project_path)
+    } else {
+        "no-workspace".to_string()
+    };
+    let created_at = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let json_last_updated_at = v.get("lastUpdatedAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let last_updated_at = json_last_updated_at.max(created_at);
+    let bubble_count = bubble_count_override
+        .or_else(|| {
+            v.get("bubbleCount")
+                .and_then(|x| x.as_u64())
+                .map(|n| n as u32)
+        })
+        .unwrap_or(0);
+
+    merge_source(
+        by_uuid,
+        uuid,
+        SourceInfo {
+            last_seen_at: modified,
+            layer: "3".into(),
+            path: global_db.display().to_string(),
+        },
+        source,
+        &project_slug,
+        name,
+        last_updated_at,
+        String::new(),
+    );
+    if let Some(entry) = by_uuid.get_mut(uuid) {
+        entry.bubble_count = entry.bubble_count.max(bubble_count);
+        if entry.project_path.is_empty() && !project_path.is_empty() {
+            entry.project_path = project_path;
+        }
+        entry.layer_3_present = true;
+        let full_json = serde_json::to_string(v).unwrap_or_default();
+        entry.composer_data = Some(ComposerData {
+            full_json: full_json.clone(),
+            subset_json: full_json,
+        });
+        entry.composer_id = Some(uuid.to_string());
+    }
+}
+
 fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
     let global_db = match paths::global_db_path() {
         Ok(p) if p.exists() => p,
@@ -668,159 +841,95 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
         return;
     };
 
-    // Layer 3 has two relevant tables:
-    //   - ItemTable: key `composer.composerData` → JSON with all composer headers
-    //   - cursorDiskKV: keys like `composerData:<uuid>`, `bubbleId:<uuid>:<bid>`
+    let bubble_counts = load_global_bubble_counts(&r);
+    let source = layer3_source_layer();
+    let mut candidate_ids = HashSet::new();
 
-    // Try the legacy single-blob location first.
-    if let Ok(Some(blob)) = r.get_item_binary("composer.composerData", "ItemTable") {
-        if let Ok(text) = std::str::from_utf8(&blob) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-                walk_composer_data(&v, by_uuid, &global_db, SourceLayer::Mac);
-            }
-        }
-    }
-
-    // Then the per-composer location.
+    // cursorDiskKV: composerData:<uuid>
     if let Ok(keys) = r.list_keys("composerData:", "cursorDiskKV") {
         for key in keys {
-            let Some(uuid) = key.strip_prefix("composerData:") else { continue };
-            if let Ok(Some(v)) = r.get_json(&key, "cursorDiskKV") {
-                let modified = file_mtime_ms(&global_db).unwrap_or(0);
-                let name = v
-                    .get("name")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let project_path = extract_workspace_path(&v);
-                let project_slug = if !project_path.is_empty() {
-                    paths::sanitize_project_path(&project_path)
-                } else {
-                    // Cursor Desktop can create a session in an empty
-                    // window (no folder opened yet) — those rows have
-                    // no `workspaceIdentifier.uri.fsPath`. The previous
-                    // fallback `desktop-<uuid>` looked like a real
-                    // Cursor project name and confused users (#99).
-                    // We collapse all such orphans into a single
-                    // `"no-workspace"` group slug so the left tree can
-                    // render one collapsible section instead of 30+
-                    // unique-looking rows. Per-session identity is
-                    // preserved via `uuid` (which is what the rest of
-                    // the codebase uses for selection / resume).
-                    "no-workspace".to_string()
-                };
-                let created_at = v
-                    .get("createdAt")
-                    .and_then(|x| x.as_i64())
-                    .unwrap_or(0);
-                // `lastUpdatedAt` is Cursor's own per-session ms timestamp —
-                // the real "this session was last touched at". Use it for
-                // `last_updated_at` instead of the global state.vscdb mtime
-                // (which is shared by ALL sessions and changes on every
-                // write, making the sidebar order jitter — #102).
-                let json_last_updated_at = v
-                    .get("lastUpdatedAt")
-                    .and_then(|x| x.as_i64())
-                    .unwrap_or(0);
-                let last_updated_at = json_last_updated_at.max(created_at);
-                let bubble_count = v
-                    .get("bubbleCount")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0) as u32;
-
-                // macOS only if we're actually on macOS; otherwise treat as linux_desktop.
-                let source = if cfg!(target_os = "macos") {
-                    SourceLayer::Mac
-                } else {
-                    SourceLayer::LinuxDesktop
-                };
-
-                merge_source(
-                    by_uuid,
-                    uuid,
-                    SourceInfo {
-                        last_seen_at: modified,
-                        layer: "3".into(),
-                        path: global_db.display().to_string(),
-                    },
-                    source.clone(),
-                    &project_slug,
-                    name,
-                    last_updated_at,
-                    String::new(),
-                );
-                if let Some(entry) = by_uuid.get_mut(uuid) {
-                    entry.bubble_count = entry.bubble_count.max(bubble_count);
-                    if entry.project_path.is_empty() && !project_path.is_empty() {
-                        entry.project_path = project_path;
-                    }
-                    // Layer 3 entry exists for this uuid — drives the
-                    // "注入 Desktop" UI button (false means we should
-                    // offer to synthesize one from Layer 2 + JSONL).
-                    entry.layer_3_present = true;
-                    // v0.3.0: capture the full composerData JSON so
-                    // unified.db write paths don't need to re-open
-                    // state.vscdb later. subset_json mirrors full_json
-                    // for now — v0.3.0 first cut doesn't synthesize a
-                    // real subset, the v4 codec round-trips the full
-                    // body verbatim.
-                    let full_json = serde_json::to_string(&v).unwrap_or_default();
-                    entry.composer_data = Some(ComposerData {
-                        full_json: full_json.clone(),
-                        subset_json: full_json,
-                    });
-                    // composerId == uuid today; kept separate so we can
-                    // pivot if Cursor ever splits the two.
-                    entry.composer_id = Some(uuid.to_string());
+            if let Some(uuid) = key.strip_prefix("composerData:") {
+                if !uuid.is_empty() {
+                    candidate_ids.insert(uuid.to_string());
                 }
             }
         }
     }
-}
 
-fn walk_composer_data(
-    v: &serde_json::Value,
-    by_uuid: &mut HashMap<String, CanonicalSession>,
-    global_db: &Path,
-    source: SourceLayer,
-) {
-    let Some(all_composers) = v.get("allComposers").and_then(|x| x.as_array()) else {
-        return;
-    };
-    let modified = file_mtime_ms(global_db).unwrap_or(0);
-    for c in all_composers {
-        let Some(uuid) = c.get("composerId").and_then(|x| x.as_str()) else { continue };
-        let name = c.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let workspace = extract_workspace_path(c);
-        let project_slug = if !workspace.is_empty() {
-            paths::sanitize_project_path(&workspace)
+    // ItemTable: composer.composerHeaders (Cursor 3.0+ authoritative index)
+    if let Ok(Some(headers)) = r.get_json("composer.composerHeaders", "ItemTable") {
+        candidate_ids.extend(collect_composer_ids_from_composer_blob(&headers));
+    }
+
+    // ItemTable: legacy composer.composerData blob
+    if let Ok(Some(blob)) = r.get_item_binary("composer.composerData", "ItemTable") {
+        if let Ok(text) = std::str::from_utf8(&blob) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+                candidate_ids.extend(collect_composer_ids_from_composer_blob(&v));
+            }
+        }
+    }
+
+    // Workspace DBs: selectedComposerIds / allComposers / composerChatViewPane pointers
+    if let Ok(ws_dir) = paths::workspace_storage_dir() {
+        if let Ok(entries) = std::fs::read_dir(&ws_dir) {
+            for entry in entries.flatten() {
+                let ws_db = entry.path().join("state.vscdb");
+                if !ws_db.is_file() {
+                    continue;
+                }
+                if let Ok(ws_r) = storage::open_read(&ws_db) {
+                    if let Ok(Some(data)) = ws_r.get_json("composer.composerData", "ItemTable") {
+                        candidate_ids.extend(collect_composer_ids_from_composer_blob(&data));
+                    }
+                    candidate_ids.extend(collect_pointer_composer_ids(&ws_r));
+                }
+            }
+        }
+    }
+
+    for uuid in candidate_ids {
+        let global_bubbles = bubble_counts.get(&uuid).copied().unwrap_or(0);
+        let composer_key = format!("composerData:{uuid}");
+        let composer_v = r
+            .get_json(&composer_key, "cursorDiskKV")
+            .ok()
+            .flatten();
+
+        if global_bubbles == 0 && composer_v.is_none() {
+            continue;
+        }
+
+        if let Some(ref v) = composer_v {
+            merge_layer3_composer(
+                by_uuid,
+                &uuid,
+                v,
+                &global_db,
+                source.clone(),
+                Some(global_bubbles.max(
+                    v.get("bubbleCount")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0) as u32,
+                )),
+            );
         } else {
-            format!("desktop-{uuid}")
-        };
-        let created_at = c.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
-        // Prefer the per-session `lastUpdatedAt` over the global mtime
-        // for the same reason as `scan_layer3_into` above (#102):
-        // allComposers live in a shared table; their mtimes are useless
-        // for ordering by recency.
-        let json_last_updated_at = c
-            .get("lastUpdatedAt")
-            .and_then(|x| x.as_i64())
-            .unwrap_or(0);
-        let last_updated_at = json_last_updated_at.max(created_at);
-        merge_source(
-            by_uuid,
-            uuid,
-            SourceInfo {
-                last_seen_at: modified,
-                layer: "3".into(),
-                path: global_db.display().to_string(),
-            },
-            source.clone(),
-            &project_slug,
-            name,
-            last_updated_at,
-            String::new(),
-        );
+            let stub = serde_json::json!({
+                "composerId": uuid,
+                "bubbleCount": global_bubbles,
+                "name": "",
+                "createdAt": 0_i64,
+                "lastUpdatedAt": 0_i64,
+            });
+            merge_layer3_composer(
+                by_uuid,
+                &uuid,
+                &stub,
+                &global_db,
+                source.clone(),
+                Some(global_bubbles),
+            );
+        }
     }
 }
 
@@ -2532,6 +2641,67 @@ mod tests {
         });
         let b = decode_l3_bubble_blob("bid-ts", &v).unwrap();
         assert_eq!(b.created_at_ms, 1_700_000_000_123);
+    }
+
+    #[test]
+    fn collect_composer_ids_from_headers_and_selected() {
+        let headers = serde_json::json!({
+            "allComposers": [
+                { "composerId": "aaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }
+            ],
+            "selectedComposerIds": ["sel-1", "sel-2"]
+        });
+        let ids = collect_composer_ids_from_composer_blob(&headers);
+        assert!(ids.contains("aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        assert!(ids.contains("sel-1"));
+        assert!(ids.contains("sel-2"));
+    }
+
+    #[test]
+    fn load_global_bubble_counts_parses_keys() {
+        let keys = [
+            "bubbleId:composer-a:bid-1",
+            "bubbleId:composer-a:bid-2",
+            "bubbleId:composer-b:bid-3",
+        ];
+        let mut counts = HashMap::new();
+        for key in keys {
+            if let Some(rest) = key.strip_prefix("bubbleId:") {
+                if let Some(composer_id) = rest.split(':').next() {
+                    *counts.entry(composer_id.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        assert_eq!(counts.get("composer-a"), Some(&2));
+        assert_eq!(counts.get("composer-b"), Some(&1));
+    }
+
+    #[test]
+    fn extract_uuids_from_pointer_key() {
+        let guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let key = format!("workbench.panel.composerChatViewPane.{guid}");
+        let mut ids = HashSet::new();
+        extract_uuids_from_str(&key, &mut ids);
+        assert!(ids.contains(guid));
+    }
+
+    #[test]
+    fn is_uuid_like_rejects_invalid() {
+        assert!(is_uuid_like("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        assert!(!is_uuid_like("not-a-uuid"));
+        assert!(!is_uuid_like("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeeg"));
+    }
+
+    #[test]
+    fn stale_composer_without_bubbles_filtered() {
+        let global_bubbles = 0u32;
+        let composer_v: Option<serde_json::Value> = None;
+        let include = !(global_bubbles == 0 && composer_v.is_none());
+        assert!(!include);
+        let include2 = global_bubbles > 0 || composer_v.is_some();
+        assert!(include2 == false);
+        let composer_v2 = Some(serde_json::json!({ "name": "x" }));
+        assert!(global_bubbles > 0 || composer_v2.is_some());
     }
 
     /// 3-way merge: L3 is the main chain. L2 with the same id overlays
