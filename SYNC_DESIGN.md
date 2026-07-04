@@ -1560,8 +1560,8 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.2.6 housekeeping** (2026-07-04) | v0.2.6 旁路 housekeeping — CI matrix 加 `macos-13` (Intel x64 dmg 跟 Apple Silicon dmg 一起出) + Node 20 → 22 + vitest 2 + jsdom 25 + `@testing-library/react` 16 + 15 case 测 `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware fallback. **零业务代码改动**. | 0.5d | **✅ 已落地 2026-07-04** |
 | **v0.2.6** (2026-07-04) | **跨设备 sync — Transport trait 初版 (§4)**. `Transport` trait 4 方法 (push / pull / list_remote / endpoint_id) — **同步 trait** (有意识偏离 §4.4 spec 的 `async_trait`, v0.3.0 上 outbox 时再迁). 1 个 impl: `SshRsyncTransport` (T2, 调系统 `ssh` / `rsync`, **0 新 Cargo dep**). 最小 `SessionSnapshot` 载体 (8 字段, metadata-only, 不含 bubbles/blobs). `~/.bettercursor/transports.json` peer 配置 (新文件, 跟 config.json 分开). 4 个 Tauri 命令 `transport_list_peers` / `transport_test` / `transport_push` / `transport_pull`. **无 UI** (SyncPeersDialog 推迟到 v0.3.0). 20 个 Rust 单元测试 + `tests/fixtures/fake-{ssh,rsync}.sh` mock. | 3-3.5d | **✅ 已落地 2026-07-04** |
 | **v0.3.0 PR-1** (2026-07-04) | **`~/.bettercursor/unified.db` (§3) — read-cache + archive + sync_runs**. 8 表 (`schema_version` / `sessions` / `bubbles` / `bubbles_fts` / `blobs` / `composer_data` / `sync_runs` / `archive` / `conflicts`) + FTS5 虚表 (无 triggers 手动维护, `unicode61` tokenizer) + `UnifiedDb::rebuild_from_cursor_state` 幂等 ingest + `record_archive` / `record_conflict` / `record_sync_run` / `finish_sync_run` / `search_bubbles` / `delete_session_row` / `unresolved_conflicts` helpers + `paths::unified_db_path()`. `Bubble.parent_bubble_id: Option<String>` + `ComposerData { full_json, subset_json }` + `CanonicalSession.{composer_data, composer_id}` + `Sources::preferred_endpoint_kind()` + `Sources::preferred_source_path()`. **Migration A coexist**: v0.2.6 inline-write 路径保留, 4 个 hook 点 (`sync_session` / `fix_orphans` / `delete_session` / `sync_now`) 同步写 unified.db. **0 新 Cargo dep** (rusqlite + bundled + sha2 + hex 已 in). 8 单元测 + 4 canonical 字段测 = ~12 case PR-1 阶段. | 3-4d | **✅ PR-1 已落地 2026-07-04** |
-| **v0.3.0 pre-PR-2** | **读路径补全 (§2.8 + §11.5)**: `extract_l3_bubble_text` + `extractToolCalls` 移植; Cursor 3.0+ session discovery (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*`); timestamp fallback (spec 010); cursor-history spec 010–013 → Rust parity fixtures. **不**改 Transport / unified.db schema. | 2-3d | ⚪ 建议 PR-2 前先做 |
-| **v0.3.0 PR-2** | snapshot codec v4 (§2, bubbles / blob_refs / raw_blobs, `SNAPSHOT_VERSION=4`) + `Transport` trait 转 `async_trait` (§4) + `ConflictClass` 5-way enum (§6, New/Identical/IncomingNewer/LocalAhead/Diverged) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec + unified.db upsert + Conflict 分类 (New/Identical/IncomingNewer → upsert; LocalAhead → 跳过; Diverged → auto_merge + archive). **含 §9.8 agentKv 写入**. `core::transport::snapshot` 改名 `core::transport::snapshot_meta` (给新 `core::snapshot` 让位). 冲突算法参考 `vendored/cursaves/cursor_saves/importer.py::_check_conflict`. 新增 2 个 Cargo dep: `tokio = "1"` (full features) + `async-trait = "0.1"` (~1.5MB binary 增量, 跟 v0.3.1 outbox `tokio::time::interval` 自然衔接). | 3-4d | ⚪ PR-2 待开 |
+| **v0.3.0 pre-PR-2** | **读路径补全 (§2.8 + §11.5)**: `extract_l3_bubble_text` + `extractToolCalls` 移植; Cursor 3.0+ session discovery (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*`); timestamp fallback (spec 010); cursor-history spec 010–013 → Rust parity fixtures. **不**改 Transport / unified.db schema. | 2-3d | **✅ 已落地 2026-07-05** |
+| **v0.3.0 PR-2** | snapshot codec v4 (§2, bubbles / blob_refs / raw_blobs, `SNAPSHOT_VERSION=4`) + `Transport` trait 转 `async_trait` (§4) + `ConflictClass` 5-way enum (§6, New/Identical/IncomingNewer/LocalAhead/Diverged) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec + unified.db upsert + Conflict 分类 (New/Identical/IncomingNewer → upsert; LocalAhead → 跳过; Diverged → auto_merge + archive). **含 §9.8 agentKv 写入**. `core::transport::snapshot` 改名 `core::transport::snapshot_meta` (给新 `core::snapshot` 让位). 冲突算法参考 `vendored/cursaves/cursor_saves/importer.py::_check_conflict`. 新增 2 个 Cargo dep: `tokio = "1"` (full features) + `async-trait = "0.1"` (~1.5MB binary 增量, 跟 v0.3.1 outbox `tokio::time::interval` 自然衔接). | 3-4d | **✅ PR-2 已落地 2026-07-05** |
 | **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + SSH workspace 路径解析 + git remote 项目标识 (§11.5 中优先级项). 默认 dry-run; **不** auto-create workspace (借鉴 cursaves 注册逻辑, 不借鉴 `find_or_create_workspace`). | 2d | ⚪ PR-2 后 |
 | **v0.3.1** | SSH/rsync default transport 切到 outbox path (§5.2) + `<SyncPeersDialog>` UI (§9) + `<ConflictResolveDialog>` (§6.7) + `core::lock` structured 升级 (§7.4) | 5-7d | ⚪ 待拍板 |
 | **v0.3.2** | T3 Git adapter (路线图) — 历史可视化 | 5d | ⚪ 待拍板 |
@@ -1581,10 +1581,10 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
                               │  v0.2.6 ✅ (Transport trait T2) │
                               └────────────────────────────────┘
                                               │
-                              (Transport trait 已初版, 同步; v0.3.0 转 async)
+                              (Transport trait 已初版; v0.3.0 PR-2 ✅ 转 async + tokio)
                                               │
                                               ▼
-                                          v0.3.0 (unified.db + codec v4 + conflict 5-way + async trait)
+                                          v0.3.0 ✅ (unified.db PR-1 + codec v4 + conflict 5-way + async trait PR-2)
                                               │
                                               ▼
                                           v0.3.1 (outbox + conflict UI + lock + SyncPeersDialog)
@@ -1594,7 +1594,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
                           v0.3.2 (T3 Git)             v0.3.3 (T4/T5)
 ```
 
-- **v0.2.6 vs v0.3.0 关键差异**: v0.2.6 Transport trait 是**同步**的 (0 新 dep, 调 `std::process::Command`); v0.3.0 上 outbox / 5-way / 3+ transport 时 trait 迁 async (`tokio::process::Command`), Transport API surface 增量 ~50 行, 1d 工作量. snapshot codec 也从 v0.2.6 的 metadata-only (8 字段) 升到 v0.3.0 的完整 (bubbles / blob_refs / raw_blobs), 通过 `#[serde(default)]` 老 JSON 仍能 decode.
+- **v0.2.6 vs v0.3.0 关键差异**: v0.2.6 Transport trait 是**同步**的 (0 新 dep, 调 `std::process::Command`); **v0.3.0 PR-2 ✅** trait 已迁 async (`tokio::process::Command` + `async-trait`). snapshot codec 从 v0.2.6 的 metadata-only (8 字段, `snapshot_meta.rs`) 升到 v0.3.0 的完整 v4 (`core/snapshot.rs`, bubbles / blob_refs / raw_blobs); pull 优先 v4 decode, fallback metadata-only.
 - **v0.3.0 是分水岭**: 用户可以选 v0.2.6 (一两个月能用) 永久, 也可以跳过 0.2.x 直接上 0.3.0 (但要承担 5-6 天停更).
 - **不要并行**: T3 / T4 / T5 都是 v0.3+ 才拍板; 0.2-0.3.x 阶段就只做 T2 SSH.
 
@@ -1619,16 +1619,16 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | `src-tauri/src/core/paths.rs` | ✅ SHIPPED (v0.1) | 138 | §9 路径 |
 | `src-tauri/src/core/storage.rs` | ✅ SHIPPED (v0.1) | 200 | §9.2 WAL-safe read |
 | `src-tauri/src/core/canonical.rs` | ✅ SHIPPED (v0.1, scan_all → unified.db 回填) | ~1700 | §3.6 rebuild_from_cursor_state |
-| `src-tauri/src/core/snapshot.rs` | 🆕 NEW | — | §2 |
-| `src-tauri/src/core/unified.rs` | 🆕 NEW | — | §3 |
-| `src-tauri/src/core/transport/mod.rs` | ✅ SHIPPED (v0.2.6 — trait + PushReport / RemoteSessionMeta / PeerSummary) | ~170 | §4 trait 定义 |
-| `src-tauri/src/core/transport/snapshot.rs` | ✅ SHIPPED (v0.2.6 — SessionSnapshot + encode/decode) | ~250 | §2 (8-field metadata-only, 完整 codec v4 留 v0.3.0) |
-| `src-tauri/src/core/transport/ssh.rs` | ✅ SHIPPED (v0.2.6 — SshRsyncTransport T2, 0 新 dep) | ~330 | §5 SSH/rsync default impl |
+| `src-tauri/src/core/snapshot.rs` | ✅ SHIPPED (v0.3.0 PR-2) | ~290 | §2 codec v4 |
+| `src-tauri/src/core/unified.rs` | ✅ SHIPPED (v0.3.0 PR-1 + PR-2 upsert) | ~1000 | §3 |
+| `src-tauri/src/core/transport/mod.rs` | ✅ SHIPPED (v0.2.6 + v0.3.0 async) | ~170 | §4 trait 定义 |
+| `src-tauri/src/core/transport/snapshot_meta.rs` | ✅ SHIPPED (v0.2.6 metadata-only; push 仍用 8 字段) | ~250 | §2 (8-field summary) |
+| `src-tauri/src/core/transport/ssh.rs` | ✅ SHIPPED (v0.2.6 + v0.3.0 tokio async) | ~410 | §5 SSH/rsync default impl |
 | `src-tauri/src/core/transport/config.rs` | ✅ SHIPPED (v0.2.6 — TransportConfigFile + PeerConfig) | ~190 | §5.3 `~/.bettercursor/transports.json` |
 | `src-tauri/tests/fixtures/fake-ssh.sh` | ✅ SHIPPED (v0.2.6) | ~40 | test fixture |
 | `src-tauri/tests/fixtures/fake-rsync.sh` | ✅ SHIPPED (v0.2.6) | ~50 | test fixture |
 | `src-tauri/src/core/transport/git.rs` | 🆕 NEW (later, v0.3.2) | — | §4 T3 |
-| `src-tauri/src/core/conflict.rs` | 🆕 NEW | — | §6 |
+| `src-tauri/src/core/conflict.rs` | ✅ SHIPPED (v0.3.0 PR-2) | ~215 | §6 |
 | `src-tauri/src/core/lock.rs` | 🆕 NEW (升级自 `core::process`, 保留 v0.2.x 兼容) | — | §7.4 |
 | `src-tauri/src/cli/bettercursor.rs` | 🆕 NEW binary | — | §5.6 (CLI push / apply / outbox) |
 

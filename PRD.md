@@ -124,16 +124,26 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.3.0 PR-1 — `ComposerData { full_json, subset_json }` + `CanonicalSession.{composer_data, composer_id}` + `Sources::preferred_endpoint_kind()` + `Sources::preferred_source_path()` (mac > linux_desktop > linux_cli 优先级). `scan_layer3_into` per-composer loop 末尾捕获 `composerData` 全文, 避免 unified.db write 时回 L3 重读** | `core/canonical.rs` | **v0.3.0 PR-1 ✅** |
 | **v0.3.0 PR-1 — Migration A coexist: v0.2.6 inline-write 路径 (`write_layer2` / `write_layer3` / `fix_latest_root` / `delete_session` L1+L2) 保留; 4 个 hook 点 (`sync_session` / `fix_orphans` / `delete_session` / `sync_now`) 同步写 unified.db. unified.db 是 read-cache + archive + sync_runs, 真实写仍走 L1+L2** | `core/sync.rs` (3 处 hook) + `lib.rs::sync_now` (1 处 hook) | **v0.3.0 PR-1 ✅** |
 | **v0.3.0 PR-1 — 单元测试 10 case (`open_creates_eight_tables` / `rebuild_is_idempotent` / `rebuild_writes_content_hash_deterministically` / `archive_and_delete_cascade` / `resolve_conflict_marks_resolved` / `sync_run_record_and_finish` / `rebuild_honors_sources_priority_order` / `content_hash_changes_when_text_changes` / `sources_preferred_helpers_four_cases` / `bubble_helper_round_trip`)** | `core/unified.rs::tests` | **v0.3.0 PR-1 ✅** |
-| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **Transport trait 落地 (v0.2.6 ✅)**; unified.db 落地 (v0.3.0 PR-1 ✅); codec v4 / outbox / UI / 5-way conflict / CLI binary 推迟到 v0.3.0 PR-2 + v0.3.1 |
+| **v0.3.0 pre-PR-2 — L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks + toolCalls + timestamp fallback) | `core/canonical.rs::extract_l3_bubble_text` | **v0.3.0 pre-PR-2 ✅** |
+| **v0.3.0 pre-PR-2 — Cursor 3.0+ session discovery** (`composer.composerHeaders` / workspace `selectedComposerIds` / `composerChatViewPane.*` / bubble count 过滤) | `core/canonical.rs::scan_layer3_into` | **v0.3.0 pre-PR-2 ✅** |
+| **v0.3.0 pre-PR-2 — timestamp gaps + parity fixtures** (`fill_timestamp_gaps` + `tests/fixtures/cursor-history/`) | `core/canonical.rs` | **v0.3.0 pre-PR-2 ✅** |
+| **v0.3.0 PR-2 — snapshot codec v4** (`SNAPSHOT_VERSION=4`, `from_canonical_v4` / encode / decode / `write_snapshot_file` atomic) | `core/snapshot.rs` | **v0.3.0 PR-2 ✅** |
+| **v0.3.0 PR-2 — `core::conflict.rs` 五态分类** (`classify` / `bubble_diff` / `auto_merge` / `content_hash_from_bubbles`) | `core/conflict.rs` | **v0.3.0 PR-2 ✅** |
+| **v0.3.0 PR-2 — Transport async 化** (`tokio` + `async-trait`, `ssh.rs` tokio::process, Tauri 命令内部 `block_on`) | `core/transport/{mod,ssh}.rs` | **v0.3.0 PR-2 ✅** |
+| **v0.3.0 PR-2 — `transport_pull` → v4 decode + 5-way classify + `unified.upsert_session_from_snapshot`** | `lib.rs` + `unified.rs` | **v0.3.0 PR-2 ✅** |
+| **v0.3.0 PR-2 — `snapshot_meta.rs` 重命名** (v0.2.6 8-field push 载体保留) | `core/transport/snapshot_meta.rs` | **v0.3.0 PR-2 ✅** |
+| **v0.3.0 PR-2 — agentKv 写入 (最小切片)** (`write_layer3` 从 `conversationState` 提取 blob id 并复制 `agentKv:blob:{hex}`) | `core/sync.rs` | **v0.3.0 PR-2 ✅** |
+| **v0.3.0 PR-2 — 单元测试 28+ 新 case** (snapshot 5 / conflict 8 / ssh async 4 / sync agentKv 1; 全量 `cargo test --lib` 126 case) | 各 `::tests` | **v0.3.0 PR-2 ✅** |
+| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **Transport trait (v0.2.6 ✅)**; unified.db (PR-1 ✅); codec v4 + 5-way conflict + async pull (PR-2 ✅); outbox / UI 推迟 v0.3.1 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
-| **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | ⚪ 待做 — 参考 `vendored/cursor-history/src/core/storage.ts` |
-| **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ 待做 — cursaves + cursor-history 均有实现 |
-| **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 待做 — 参考 `vendored/cursaves/cursor_saves/export.py` |
-| **L3 统一写 API** (batch + backup 保留 N 份 + verify) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 部分 — `sync.rs` 有 inline write; 缺 agentKv batch 与 cursaves 级 backup 策略 |
-| **`core::conflict.rs` 五态分类** | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | ⚪ PR-2 — 算法参考 `bettercursor/conflict.py` + `vendored/cursaves/cursor_saves/importer.py` |
-| **Doctor 孤儿会话审计/恢复** (L3 有 composerData 但未注册 sidebar) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ 待做 — 参考 cursaves `doctor_audit` / `doctor_recover` |
-| **parity fixtures** (cursor-history spec 010–013 场景 → Rust 单测) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ 待做 |
-| UI: SyncPeersDialog / 推送按钮 / sync history | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | 设计稿 (v0.3.0) |
+| **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
+| **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
+| **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** (最小切片: `write_layer3` 复制已有 agentKv) |
+| **L3 统一写 API** (batch + backup 保留 N 份 + verify) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 部分 — `sync.rs` 有 inline write; 缺 cursaves 级 backup 策略 → PR-2b |
+| **`core::conflict.rs` 五态分类** | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** |
+| **Doctor 孤儿会话审计/恢复** (L3 有 composerData 但未注册 sidebar) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ PR-2b |
+| **parity fixtures** (cursor-history spec 010–013 场景 → Rust 单测) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
+| UI: SyncPeersDialog / 推送按钮 / sync history | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | 设计稿 (v0.3.1) |
 | Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | **v0.2.5 ✅** (Apple Silicon) + **v0.2.6 ✅** (Intel x64 via `macos-13` matrix) |
 
 ### 0.6 怎么跑

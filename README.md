@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.2.6-success)
+![status](https://img.shields.io/badge/status-v0.3.0-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -28,7 +28,31 @@ Design goals:
 
 ## Feature status
 
-### v0.2.6 (✅ current, shipped 2026-07-04)
+### v0.3.0 (✅ current, shipped 2026-07-05)
+
+- [x] **`~/.bettercursor/unified.db`** (PR-1): 8 tables + FTS5 +
+      `rebuild_from_cursor_state` + archive / conflicts / sync_runs
+- [x] **pre-PR-2 read-path parity**: full L3 bubble text extraction,
+      Cursor 3.0+ session discovery, timestamp gap fill,
+      cursor-history parity fixtures
+- [x] **snapshot codec v4** (`core/snapshot.rs`): bubble-level JSON;
+      push still uses 8-field `snapshot_meta`
+- [x] **Conflict 5-way** (`core/conflict.rs`): classify / bubble_diff /
+      auto_merge; `transport_pull` writes back into unified.db
+- [x] **Transport async** (`tokio` + `async-trait`); Tauri commands
+      stay sync, backend uses `block_on`
+- [x] **agentKv minimal slice**: `write_layer3` copies agent blobs
+      referenced by `conversationState`
+- [x] **126 Rust unit tests** (`cargo test --lib`)
+- [ ] **SyncPeersDialog / outbox / ConflictResolveDialog UI** → v0.3.1
+
+Inspect unified.db:
+
+```bash
+sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM sessions LIMIT 5;"
+```
+
+### v0.2.6 (shipped 2026-07-04)
 
 - [x] **Cross-device sync — Transport trait first cut**:
       `core::transport::Transport` trait (4 methods: `push` / `pull` /

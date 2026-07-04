@@ -568,7 +568,18 @@ S2thend/cursor-history (上游, TypeScript, MIT)
 - **8 单元测**: `open_creates_eight_tables` / `rebuild_is_idempotent` / `rebuild_writes_content_hash_deterministically` / `archive_and_delete_cascade` / `resolve_conflict_marks_resolved` / `sync_run_record_and_finish` / `rebuild_honors_sources_priority_order` / `content_hash_changes_when_text_changes` + `sources_preferred_helpers_four_cases` + `bubble_helper_round_trip` (10 case 总).
 - **失败容忍**: 所有 unified.db hook 都包在 `if let Ok(...) { let _ = ... }`, inline-write 失败不 cascade 到 unified.db, 反之亦然. **不破 v0.2.6 公开 API surface** (Tauri 命令 async fn 签名不变, 前端不感知).
 
-**v0.3.0 PR-2 关系** (未来): PR-2 在 unified.db 之上加 snapshot codec v4 (`Bubble` + `SourceEndpoint` + `ComposerMeta` + `BlobRef` + `RawBlob`, `SNAPSHOT_VERSION=4`) + Transport trait 转 `async_trait` + `ConflictClass` 5-way enum (`New` / `Identical` / `IncomingNewer` / `LocalAhead` / `Diverged`) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec → unified.db upsert. `conflict::content_hash_from_bubbles` 从 PR-1 的 unified.rs private helper 上提到 conflict.rs 公共 API. UI (SyncPeersDialog / ConflictResolveDialog) + 离线 outbox + structured `core::lock` 升级都留 v0.3.1+.
+**v0.3.0 PR-2 (2026-07-05) = snapshot codec v4 + async Transport + 5-way Conflict**. 在 PR-1 unified.db 之上完成跨设备 pull 写回：
+
+- **codec v4** (`core/snapshot.rs`): `SNAPSHOT_VERSION=4`, bubbles + `ts_ms` 映射 + atomic `write_snapshot_file`. push 仍用 v0.2.6 8-field `snapshot_meta.rs`.
+- **Conflict 5-way** (`core/conflict.rs`): `classify` / `bubble_diff` / `auto_merge` / `content_hash_from_bubbles` (从 unified.rs 上提).
+- **Transport async**: `tokio` + `async-trait`; `SshRsyncTransport` 全 async; Tauri 命令签名不变, 内部 `block_on`.
+- **`transport_pull`**: v4 decode → classify → `unified.upsert_session_from_snapshot` + archive/conflict 分支 + `sync_runs` 记账.
+- **agentKv 最小切片**: `write_layer3` 从 `conversationState` protobuf 提取 blob id, 复制已有 `agentKv:blob:{hex}`.
+- **pre-PR-2 #1–#4**: L3 文本提取 / session discovery / timestamp gaps / parity fixtures (见各 commit).
+- **2 新 Cargo dep**: `tokio = "1"` + `async-trait = "0.1"`. `cargo test --lib` 126 case (121 passed + 5 ignored).
+- **留 v0.3.1+**: SyncPeersDialog / ConflictResolveDialog UI / 离线 outbox / blob_refs 实际搬运.
+
+**v0.3.0 PR-2 关系** (已完成): 见上. UI + outbox + structured `core::lock` 升级留 v0.3.1+.
 
 ---
 

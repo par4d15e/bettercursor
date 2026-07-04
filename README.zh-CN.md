@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.2.6-success)
+![status](https://img.shields.io/badge/status-v0.3.0-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -22,7 +22,24 @@
 
 ## 功能状态
 
-### v0.2.6 (✅ 当前, 2026-07-04 完工)
+### v0.3.0 (✅ 当前, 2026-07-05 完工)
+
+- [x] **`~/.bettercursor/unified.db`** (PR-1): 8 表 + FTS5 + `rebuild_from_cursor_state` + archive / conflicts / sync_runs
+- [x] **pre-PR-2 读路径补全**: L3 bubble 完整文本 / Cursor 3.0+ session discovery / timestamp gaps / cursor-history parity fixtures
+- [x] **snapshot codec v4** (`core/snapshot.rs`): bubbles + `ts_ms` 映射; push 仍用 8-field `snapshot_meta`
+- [x] **Conflict 5-way** (`core/conflict.rs`): classify / bubble_diff / auto_merge; `transport_pull` 写回 unified.db
+- [x] **Transport async** (`tokio` + `async-trait`); Tauri 命令内部 `block_on`, 前端签名不变
+- [x] **agentKv 最小切片**: `write_layer3` 复制 `conversationState` 引用的 agent blob
+- [x] **126 Rust 单测** (`cargo test --lib`)
+- [ ] **SyncPeersDialog / outbox / ConflictResolveDialog UI** → v0.3.1
+
+查询 unified.db 示例:
+
+```bash
+sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM sessions LIMIT 5;"
+```
+
+### v0.2.6 (2026-07-04 完工)
 
 - [x] **跨设备 sync — Transport trait 初版**: `core::transport::Transport` trait (4 方法: `push` / `pull` / `list_remote` / `endpoint_id`, **同步签名** — 有意识偏离 [SYNC_DESIGN §4.4](SYNC_DESIGN.md#4-transport-trait) 的 `async_trait`, v0.3.0 上 outbox 时再迁). 一个 impl: `SshRsyncTransport` (T2), 调系统 `ssh` / `rsync` (0 新 Cargo dep, 无 tokio, 无 russh)
 - [x] **最小 v0.2.6 snapshot 载体**: `SessionSnapshot` (8 个 metadata 字段 — uuid / `last_updated_at_ms` / host / `project_slug` / `project_path` / `source_path` / `text_preview` 截 280 字符 / `bubble_count`). 不含 bubbles / blobs — 那是 v0.3.0 unified.db 的活
