@@ -64,6 +64,15 @@ fn sync_now(
 ) -> Result<usize, String> {
     let sessions = core::canonical::scan_all().map_err(|e| e.to_string())?;
     let count = sessions.len();
+    // v0.3.0: mirror into unified.db so the FTS5 mirror,
+    // content_hash, and session rows reflect the post-scan world.
+    // Best-effort — failures MUST NOT fail the in-memory cache refresh
+    // that the frontend depends on.
+    if let Ok(unified) = core::unified::UnifiedDb::open() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let host = local_hostname();
+        let _ = unified.rebuild_from_cursor_state(&sessions, &host, now_ms);
+    }
     *state.sessions.lock().unwrap() = sessions;
     *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
     let _ = app.emit("sessions-updated", count);

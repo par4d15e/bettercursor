@@ -150,6 +150,24 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
         }
     }
 
+    // ── 5. v0.3.0: mirror into unified.db (Migration A coexist) ──
+    //
+    // This is the read-cache hook — unified.db is rebuilt from the
+    // canonical 3-layer state so the FTS5 mirror, content_hash, and
+    // conflicts / archive tables reflect the post-write world.
+    // Failures here MUST NOT fail the inline-write; log and continue.
+    if let Ok(unified) = super::unified::UnifiedDb::open() {
+        if let Ok(all) = canonical::scan_all() {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let host = crate::core::paths::bettercursor_dir()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("local")
+                .to_string();
+            let _ = unified.rebuild_from_cursor_state(&all, &host, now_ms);
+        }
+    }
+
     report.duration_ms = started.elapsed().as_millis() as u64;
     Ok(report)
 }
@@ -710,6 +728,42 @@ pub fn fix_orphans() -> Result<FixOrphansReport> {
                 Ok(new_root) => report.fixed.push(format!("{uuid} (root={})", &new_root[..8.min(new_root.len())])),
                 Err(e) => report.skipped.push(format!("{uuid}: {e}")),
             }
+            // v0.3.0: archive the pre-fix state into unified.db so the
+            // recovery tool can reconstruct if the patch turned out
+            // wrong. Best-effort — failures here MUST NOT block the
+            // actual fix_latest_root operation that already succeeded.
+            if let Ok(unified) = super::unified::UnifiedDb::open() {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let pre_fix_blob_id = read_latest_root_blob_id(&store_db)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                let payload = serde_json::json!({
+                    "uuid": uuid,
+                    "pre_fix_latest_root_blob_id": pre_fix_blob_id,
+                })
+                .to_string();
+                let _ = unified.record_archive(
+                    &uuid,
+                    "before_fix_orphans",
+                    &payload,
+                    now_ms,
+                );
+            }
+        }
+    }
+    // v0.3.0: rebuild unified.db from current canonical state so the
+    // archive row counts and any sessions whose fix changed their
+    // content_hash stay in sync. Best-effort.
+    if let Ok(unified) = super::unified::UnifiedDb::open() {
+        if let Ok(all) = canonical::scan_all() {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let host = crate::core::paths::bettercursor_dir()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("local")
+                .to_string();
+            let _ = unified.rebuild_from_cursor_state(&all, &host, now_ms);
         }
     }
     Ok(report)
@@ -838,6 +892,29 @@ pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Resu
             l1_removed = false;
             l1_skip = Some("slug_not_provided".to_string());
         }
+    }
+
+    // ── v0.3.0: archive + delete in unified.db (Migration A coexist) ──
+    //
+    // We capture whatever canonical state we still have BEFORE deleting
+    // so the recovery tool can reconstruct if the user later realizes
+    // they wanted it. Both ops are best-effort — failures MUST NOT
+    // mask the actual L1/L2 deletion results.
+    if let Ok(unified) = super::unified::UnifiedDb::open() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let existing = canonical::scan_all()
+            .ok()
+            .and_then(|all| all.into_iter().find(|s| s.uuid == uuid));
+        if let Some(ref s) = existing {
+            let payload = serde_json::to_string(s).unwrap_or_default();
+            let _ = unified.record_archive(
+                uuid,
+                "before_delete",
+                &payload,
+                now_ms,
+            );
+        }
+        let _ = unified.delete_session_row(uuid);
     }
 
     Ok(DeleteReport {

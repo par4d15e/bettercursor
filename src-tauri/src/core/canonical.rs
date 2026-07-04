@@ -52,6 +52,14 @@ pub struct Bubble {
     /// reliable timestamp; L2/L3 bubbles have it set.
     #[serde(default)]
     pub created_at_ms: i64,
+    /// v0.3.0: optional reference to the previous bubble in the
+    /// conversation chain. Populated by the L2 / L3 readers when they
+    /// can infer a parent (most L1 JSONL streams don't carry an
+    /// explicit parent ref). v0.3.0 first cut leaves this `None` for
+    /// L1-derived bubbles — see the v0.3.0 plan note about
+    /// "parent_bubble_id v0.3.0 全部 None, v0.3.1 启发式回填".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_bubble_id: Option<String>,
 }
 
 /// Full transcript for a single session uuid, resolved from Layer 1.
@@ -95,6 +103,49 @@ pub struct Sources {
     pub linux_desktop: Option<SourceInfo>,
 }
 
+impl Sources {
+    /// v0.3.0: pick a stable endpoint-kind label for this session —
+    /// `mac` wins over `linux_desktop` wins over `linux_cli` so the
+    /// remote pull side can tell which "flavor" of Cursor produced
+    /// the row without having to dedup multiple sources.
+    pub fn preferred_endpoint_kind(&self) -> String {
+        if self.mac.is_some() {
+            "mac".to_string()
+        } else if self.linux_desktop.is_some() {
+            "linux_desktop".to_string()
+        } else if self.linux_cli.is_some() {
+            "linux_cli".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    /// v0.3.0: pick a stable source path (mac > linux_desktop >
+    /// linux_cli) — used by `UnifiedDb::rebuild_from_cursor_state` so
+    /// the `sessions.source_path` column always reflects one concrete
+    /// on-disk location even when multiple layers co-exist.
+    pub fn preferred_source_path(&self) -> String {
+        self.mac
+            .as_ref()
+            .or(self.linux_desktop.as_ref())
+            .or(self.linux_cli.as_ref())
+            .map(|info| info.path.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// v0.3.0: Layer 3 `composerData` JSON captured verbatim + a
+/// normalized subset. The full JSON is what Cursor itself writes into
+/// `state.vscdb::cursorDiskKV[composerData:<uuid>]`; the subset is a
+/// v0.3.0 first-cut convenience copy (we don't synthesize a real
+/// subset yet — PR-2 v4 codec round-trips full_json through the
+/// wire format unchanged and reads back via unified.db).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ComposerData {
+    pub full_json: String,
+    pub subset_json: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalSession {
     pub uuid: String,
@@ -129,6 +180,16 @@ pub struct CanonicalSession {
     /// session is invisible to Electron Cursor's Sidebar.
     #[serde(default)]
     pub layer_3_present: bool,
+    /// v0.3.0: Layer 3 composerData full JSON + subset, captured at
+    /// scan time so unified.db write paths don't need to re-open
+    /// state.vscdb later. `None` when the session has no Layer 3 row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_data: Option<ComposerData>,
+    /// v0.3.0: the `composerId` field Cursor writes into the L3
+    /// composerData JSON. Equals the session `uuid` today but kept
+    /// separate so we can pivot if Cursor ever splits the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_id: Option<String>,
 }
 
 // ── Entry point ───────────────────────────────────────────────
@@ -258,6 +319,8 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 files_referenced: vec![],
                 indexable_text: String::new(),
                 layer_3_present: false,
+                composer_data: None,
+                composer_id: None,
             });
             if !preview.is_empty() && entry.first_user_message_preview.is_empty() {
                 entry.first_user_message_preview = preview;
@@ -695,6 +758,20 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                     // "注入 Desktop" UI button (false means we should
                     // offer to synthesize one from Layer 2 + JSONL).
                     entry.layer_3_present = true;
+                    // v0.3.0: capture the full composerData JSON so
+                    // unified.db write paths don't need to re-open
+                    // state.vscdb later. subset_json mirrors full_json
+                    // for now — v0.3.0 first cut doesn't synthesize a
+                    // real subset, the v4 codec round-trips the full
+                    // body verbatim.
+                    let full_json = serde_json::to_string(&v).unwrap_or_default();
+                    entry.composer_data = Some(ComposerData {
+                        full_json: full_json.clone(),
+                        subset_json: full_json,
+                    });
+                    // composerId == uuid today; kept separate so we can
+                    // pivot if Cursor ever splits the two.
+                    entry.composer_id = Some(uuid.to_string());
                 }
             }
         }
@@ -776,6 +853,8 @@ fn merge_source(
         files_referenced: vec![],
         indexable_text: String::new(),
         layer_3_present: false,
+        composer_data: None,
+        composer_id: None,
     });
 
     let slot = match layer {
@@ -996,6 +1075,7 @@ pub(crate) fn read_layer1_bubbles_from_body(uuid: &str, body: &str) -> (Vec<Bubb
             tool_calls,
             files,
             created_at_ms,
+            parent_bubble_id: None,
         });
     }
 
@@ -1117,6 +1197,7 @@ fn decode_l2_blob(uuid: &str, blob_id: &str, bytes: &[u8], ordinal: usize) -> Op
         tool_calls: Vec::new(),
         files: Vec::new(),
         created_at_ms,
+        parent_bubble_id: None,
     })
 }
 
@@ -1162,6 +1243,7 @@ fn try_decode_canonical_bubble(v: &serde_json::Value) -> Option<Bubble> {
         tool_calls,
         files,
         created_at_ms,
+        parent_bubble_id: None,
     })
 }
 
@@ -1232,6 +1314,7 @@ fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
         tool_calls: Vec::new(),
         files: Vec::new(),
         created_at_ms,
+        parent_bubble_id: None,
     })
 }
 
@@ -2032,6 +2115,7 @@ mod tests {
             }],
             files: vec!["a.rs".into()],
             created_at_ms: 1000,
+            parent_bubble_id: None,
         };
         l3_bubble.tool_calls[0].input = Some(serde_json::json!({"pattern": "*"}));
         let l2_bubble = Bubble {
@@ -2041,6 +2125,7 @@ mod tests {
             tool_calls: Vec::new(),
             files: Vec::new(),
             created_at_ms: 0, // 0 → must not overwrite
+            parent_bubble_id: None,
         };
         let merged = merge_bubbles_three_way(Vec::new(), vec![l2_bubble], vec![l3_bubble]);
         assert_eq!(merged.len(), 1);
@@ -2061,6 +2146,7 @@ mod tests {
             tool_calls: Vec::new(),
             files: Vec::new(),
             created_at_ms: 500,
+            parent_bubble_id: None,
         }];
         let merged = merge_bubbles_three_way(l1, Vec::new(), Vec::new());
         assert_eq!(merged.len(), 1);
@@ -2078,6 +2164,7 @@ mod tests {
             tool_calls: Vec::new(),
             files: Vec::new(),
             created_at_ms: 0,
+            parent_bubble_id: None,
         }];
         let l3 = vec![Bubble {
             id: "shared".to_string(),
@@ -2086,6 +2173,7 @@ mod tests {
             tool_calls: Vec::new(),
             files: Vec::new(),
             created_at_ms: 1000,
+            parent_bubble_id: None,
         }];
         let merged = merge_bubbles_three_way(l1, Vec::new(), l3);
         assert_eq!(merged.len(), 1, "same id → one row");
@@ -2104,6 +2192,7 @@ mod tests {
                 tool_calls: vec![],
                 files: vec![],
                 created_at_ms: 3000,
+                parent_bubble_id: None,
             },
             Bubble {
                 id: "a".into(),
@@ -2112,6 +2201,7 @@ mod tests {
                 tool_calls: vec![],
                 files: vec![],
                 created_at_ms: 1000,
+                parent_bubble_id: None,
             },
             Bubble {
                 id: "b".into(),
@@ -2120,6 +2210,7 @@ mod tests {
                 tool_calls: vec![],
                 files: vec![],
                 created_at_ms: 2000,
+                parent_bubble_id: None,
             },
         ];
         let merged = merge_bubbles_three_way(Vec::new(), Vec::new(), l3);

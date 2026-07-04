@@ -136,6 +136,7 @@ pub fn parse_layer1_bubbles(uuid: &str, body: &str) -> Vec<super::canonical::Bub
             tool_calls: Vec::new(),
             files: Vec::new(),
             created_at_ms,
+            parent_bubble_id: None,
         });
     }
     out

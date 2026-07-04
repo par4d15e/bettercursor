@@ -101,6 +101,14 @@ pub fn config_file() -> PathBuf {
     bettercursor_dir().join("config.json")
 }
 
+/// v0.3.0: `~/.bettercursor/unified.db` — read-cache + archive + sync_runs
+/// index (per SYNC_DESIGN §3). Lives next to `transports.json` and
+/// `config.json` so the whole bettercursor state sits in one dir that's
+/// easy to back up / inspect with `sqlite3 ~/.bettercursor/unified.db`.
+pub fn unified_db_path() -> PathBuf {
+    bettercursor_dir().join("unified.db")
+}
+
 /// Convert `/Users/x/y` → `Users-x-y` (cursaves' format for Layer 1 path segment).
 pub fn sanitize_project_path(project_path: &str) -> String {
     project_path

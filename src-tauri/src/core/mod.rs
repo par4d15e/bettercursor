@@ -11,6 +11,9 @@
 //!   - process    — Cursor / cursor-agent process detection (sync safety check)
 //!   - transport  — v0.2.6 cross-device sync: Transport trait + SSH/rsync impl
 //!                  + SessionSnapshot codec + ~/.bettercursor/transports.json
+//!   - unified    — v0.3.0 ~/.bettercursor/unified.db (per SYNC_DESIGN §3):
+//!                  7 tables + FTS5 + rebuild_from_cursor_state + archive +
+//!                  conflicts + sync_runs
 
 pub mod canonical;
 pub mod config;
@@ -20,4 +23,5 @@ pub mod process;
 pub mod storage;
 pub mod sync;
 pub mod transport;
+pub mod unified;
 pub mod watcher;
