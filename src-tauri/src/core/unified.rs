@@ -25,25 +25,12 @@
 //! `bubbles_fts` in sync. This keeps the schema reviewable and avoids
 //! the silent-mirror bugs that fire when triggers get out of date.
 
+use crate::core::conflict::{self, ConflictClass};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Mutex;
-
-/// SHA-256 hex digest of a bubble list's identity — used by unified.db's
-/// `sessions.content_hash` column and by the v0.3.0 Conflict classifier
-/// (PR-2 will move this to `core::conflict` along with the 5-way enum).
-/// v0.3.0 first cut: keep the helper private here; PR-2 re-exports.
-fn content_hash_from_bubbles(bubbles: &[crate::core::canonical::Bubble]) -> String {
-    let mut h = Sha256::new();
-    for b in bubbles {
-        h.update(b.id.as_bytes());
-        h.update(b.text.as_bytes());
-    }
-    hex::encode(h.finalize())
-}
 
 /// Owned SQLite connection with WAL + foreign keys + reasonable
 /// synchronous mode. The Mutex is the single chokepoint — every
@@ -298,7 +285,7 @@ impl UnifiedDb {
                     s.sources.preferred_source_path(),
                     s.last_updated_at,
                     count,
-                    content_hash_from_bubbles(&bubbles),
+                    conflict::content_hash_from_bubbles(&bubbles),
                     s.is_broken as i32,
                     serde_json::to_string(&s.sources).unwrap_or_else(|_| "{}".to_string()),
                     now_ms,
@@ -394,14 +381,11 @@ impl UnifiedDb {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Record a Conflict classification. v0.3.0's classify() lives in
-    /// `core::conflict` (PR-2); here we only persist whatever string
-    /// the caller already produced so PR-2 doesn't have to touch this
-    /// file. Returns the new conflict row id.
+    /// Record a Conflict classification. Returns the new conflict row id.
     pub fn record_conflict(
         &self,
         uuid: &str,
-        class: &str,
+        class: ConflictClass,
         local_hash: Option<&str>,
         incoming_hash: Option<&str>,
         now_ms: i64,
@@ -414,9 +398,126 @@ impl UnifiedDb {
                 local_content_hash, incoming_content_hash
             ) VALUES (?1, ?2, ?3, ?4, ?5)
             ",
-            params![uuid, now_ms, class, local_hash, incoming_hash],
+            params![uuid, now_ms, class.as_str(), local_hash, incoming_hash],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Upsert one session from a v4 transport snapshot into unified.db.
+    /// Used by `transport_pull` after conflict classification.
+    pub fn upsert_session_from_snapshot(
+        &self,
+        snap: &crate::core::snapshot::SessionSnapshot,
+        bubbles: &[crate::core::canonical::Bubble],
+        now_ms: i64,
+    ) -> Result<()> {
+        let uuid = snap.composer.composer_id.clone();
+        let content_hash = conflict::content_hash_from_bubbles(bubbles);
+        let count = bubbles.len() as u32;
+        let first_seen = self
+            .get_session_meta(&uuid)?
+            .map(|r| r.first_seen_at_ms)
+            .unwrap_or(now_ms);
+        let project_path = if snap.composer.project_path.is_empty() {
+            None
+        } else {
+            Some(snap.composer.project_path.clone())
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "
+            INSERT INTO sessions (
+                uuid, host, endpoint_kind, project_slug, project_path,
+                source_path, last_updated_at_ms, bubble_count, content_hash,
+                is_broken, sources_json, first_seen_at_ms, last_rebuilt_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(uuid) DO UPDATE SET
+                host = excluded.host,
+                endpoint_kind = excluded.endpoint_kind,
+                project_slug = excluded.project_slug,
+                project_path = excluded.project_path,
+                source_path = excluded.source_path,
+                last_updated_at_ms = excluded.last_updated_at_ms,
+                bubble_count = excluded.bubble_count,
+                content_hash = excluded.content_hash,
+                is_broken = excluded.is_broken,
+                sources_json = excluded.sources_json,
+                last_rebuilt_at_ms = excluded.last_rebuilt_at_ms
+            ",
+            params![
+                uuid,
+                snap.source_endpoint.host,
+                snap.source_endpoint.endpoint_kind,
+                snap.composer.project_slug,
+                project_path,
+                snap.composer.project_path,
+                snap.composer.last_updated_at,
+                count,
+                content_hash,
+                0i32,
+                "{}",
+                first_seen,
+                now_ms,
+            ],
+        )?;
+
+        tx.execute(
+            "DELETE FROM bubbles WHERE session_uuid = ?1",
+            params![uuid],
+        )?;
+        for b in bubbles {
+            tx.execute(
+                "
+                INSERT INTO bubbles (
+                    id, session_uuid, role, text,
+                    tool_calls_json, files_json, ts_ms, parent_bubble_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ",
+                params![
+                    b.id,
+                    uuid,
+                    b.role,
+                    b.text,
+                    serde_json::to_string(&b.tool_calls).ok(),
+                    serde_json::to_string(&b.files).ok(),
+                    b.created_at_ms,
+                    b.parent_bubble_id,
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO bubbles_fts(rowid, text)
+                 VALUES ((SELECT rowid FROM bubbles
+                          WHERE session_uuid = ?1 AND id = ?2), ?3)",
+                params![uuid, b.id, b.text],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Convert `BubbleRow` values into canonical `Bubble` for conflict merge.
+    pub fn bubbles_from_rows(rows: &[BubbleRow]) -> Vec<crate::core::canonical::Bubble> {
+        rows.iter()
+            .map(|r| crate::core::canonical::Bubble {
+                id: r.id.clone(),
+                role: r.role.clone(),
+                text: r.text.clone(),
+                tool_calls: r
+                    .tool_calls_json
+                    .as_ref()
+                    .and_then(|j| serde_json::from_str(j).ok())
+                    .unwrap_or_default(),
+                files: r
+                    .files_json
+                    .as_ref()
+                    .and_then(|j| serde_json::from_str(j).ok())
+                    .unwrap_or_default(),
+                created_at_ms: r.ts_ms,
+                parent_bubble_id: r.parent_bubble_id.clone(),
+            })
+            .collect()
     }
 
     /// Mark a conflict resolved. `resolved_how` is one of
@@ -777,7 +878,7 @@ mod tests {
         // Empty bubble list → SHA-256("") known constant.
         assert_eq!(
             row.content_hash,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            conflict::content_hash_from_bubbles(&[])
         );
         assert_eq!(row.endpoint_kind, "linux_cli");
         assert_eq!(row.host, "host-b");
@@ -803,7 +904,7 @@ mod tests {
             .unwrap();
         assert!(archive_id > 0);
         let conflict_id = db
-            .record_conflict("uuid-c", "Diverged", Some("h-local"), Some("h-in"), 3)
+            .record_conflict("uuid-c", ConflictClass::Diverged, Some("h-local"), Some("h-in"), 3)
             .unwrap();
         assert!(conflict_id > 0);
         let counts = db.row_counts().unwrap();
@@ -834,7 +935,7 @@ mod tests {
         )
         .unwrap();
         let cid = db
-            .record_conflict("uuid-d", "Diverged", Some("h-local"), Some("h-in"), 2)
+            .record_conflict("uuid-d", ConflictClass::Diverged, Some("h-local"), Some("h-in"), 2)
             .unwrap();
         let open = db.unresolved_conflicts().unwrap();
         assert_eq!(open.len(), 1);
@@ -934,11 +1035,11 @@ mod tests {
     fn content_hash_changes_when_text_changes() {
         let a = vec![bubble("b1", "user", "hello", 1), bubble("b2", "assistant", "world", 2)];
         let b = vec![bubble("b1", "user", "hello", 1), bubble("b2", "assistant", "world!", 2)];
-        let h_a = content_hash_from_bubbles(&a);
-        let h_b = content_hash_from_bubbles(&b);
+        let h_a = conflict::content_hash_from_bubbles(&a);
+        let h_b = conflict::content_hash_from_bubbles(&b);
         assert_ne!(h_a, h_b, "text edit must change content hash");
         // Same input → same hash (deterministic).
-        let h_a2 = content_hash_from_bubbles(&a);
+        let h_a2 = conflict::content_hash_from_bubbles(&a);
         assert_eq!(h_a, h_a2);
     }
 

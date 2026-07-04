@@ -17,9 +17,11 @@
 
 pub mod canonical;
 pub mod config;
+pub mod conflict;
 pub mod inject;
 pub mod paths;
 pub mod process;
+pub mod snapshot;
 pub mod storage;
 pub mod sync;
 pub mod transport;

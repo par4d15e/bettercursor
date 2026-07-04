@@ -17,7 +17,7 @@ use super::storage;
 // ── Conversation model (Layer 1 JSONL → UI) ───────────────────
 
 /// One executed tool call inside an assistant bubble.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BubbleToolUse {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

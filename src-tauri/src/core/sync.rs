@@ -1013,9 +1013,18 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
     );
     let bubble_blobs = compose_bubble_blobs(uuid, bubbles);
 
+    // Collect agentKv blob refs from new + existing composerData (§9.8).
+    let mut agent_blob_ids = extract_agent_blob_ids_from_composer(&composer_data);
+    let db_path = paths::global_db_path()?;
+    if let Ok(r) = storage::open_read(&db_path) {
+        let key = format!("composerData:{uuid}");
+        if let Ok(Some(existing)) = r.get_json(&key, "cursorDiskKV") {
+            agent_blob_ids.extend(extract_agent_blob_ids_from_composer(&existing));
+        }
+    }
+
     // Apply mutations directly to state.vscdb via tmpdir-copy +
     // atomic_rename (same pattern as scripts/apply.py:175-202).
-    let db_path = paths::global_db_path()?;
     backup_existing(&db_path);
 
     let tmp = tempfile::tempdir().context("create tmpdir for state.vscdb copy")?;
@@ -1056,6 +1065,16 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
                 value_hex: hex_encode(serde_json::to_string(body)?.as_bytes()),
             },
         )?;
+    }
+    if !agent_blob_ids.is_empty() {
+        if let Ok(r) = storage::open_read(&db_path) {
+            for bid in &agent_blob_ids {
+                let key = format!("agentKv:blob:{bid}");
+                if let Ok(Some(bytes)) = r.get_item_binary(&key, "cursorDiskKV") {
+                    apply_disk_kv_binary(&conn, &key, &bytes)?;
+                }
+            }
+        }
     }
 
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
@@ -1105,6 +1124,27 @@ fn atomic_replace(src: &Path, dst: &Path) -> Result<()> {
     } else {
         std::fs::rename(src, dst).map_err(Into::into)
     }
+}
+
+fn extract_agent_blob_ids_from_composer(conv: &serde_json::Value) -> HashSet<String> {
+    let cs = conv
+        .get("conversationState")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    if !cs.starts_with('~') || cs.len() < 10 {
+        return HashSet::new();
+    }
+    base64_decode(&cs[1..])
+        .map(|raw| extract_blob_ids_from_protobuf(&raw))
+        .unwrap_or_default()
+}
+
+fn apply_disk_kv_binary(conn: &Connection, key: &str, value: &[u8]) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
 }
 
 fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> Result<()> {
@@ -1163,6 +1203,32 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_encode(&h.finalize())
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i] as u32;
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if i + 1 < bytes.len() {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if i + 2 < bytes.len() {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+        i += 3;
+    }
+    out
+}
+
 fn base64_decode(s: &str) -> Result<Vec<u8>> {
     // Minimal RFC 4648 base64 decoder (no external dep).
     let s: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
@@ -1207,6 +1273,20 @@ mod tests {
     #[test]
     fn hex_decode_rejects_odd_length() {
         assert!(hex_decode("abc").is_err());
+    }
+
+    #[test]
+    fn extract_agent_blob_ids_from_conversation_state() {
+        let payload = vec![0xAB; 32];
+        let mut proto = vec![0x0A, 32];
+        proto.extend_from_slice(&payload);
+        let b64 = base64_encode(&proto);
+        let conv = serde_json::json!({
+            "conversationState": format!("~{b64}"),
+        });
+        let ids = extract_agent_blob_ids_from_composer(&conv);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids.iter().next().unwrap(), &hex_encode(&payload));
     }
 
     #[test]

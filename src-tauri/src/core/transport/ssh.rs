@@ -25,11 +25,15 @@
 //! - remote_snap_dir 字面量传 `~`, 让远端 shell expand (`$HOME`).
 
 use anyhow::{anyhow, Context, Result};
-use std::process::Command;
+use async_trait::async_trait;
+use std::process::Stdio;
 
 use super::config::PeerConfig;
-use super::snapshot::{decode_snapshot, encode_snapshot, SessionSnapshot};
-use super::{PushReport, RemoteSessionMeta, Transport};
+use super::snapshot_meta::{
+    decode_snapshot as decode_snapshot_meta, encode_snapshot as encode_snapshot_meta,
+    SessionSnapshot as SessionSnapshotMeta,
+};
+use super::{PushReport, RemoteSessionMeta, RemoteSnapshot, Transport};
 
 pub struct SshRsyncTransport {
     config: PeerConfig,
@@ -63,30 +67,29 @@ impl SshRsyncTransport {
     /// 给 `transport_test` Tauri 命令用. 不属于 `Transport` trait 是因为
     /// 它是"连通性测试", 不是 push/pull/list_remote 语义.
     pub fn test_connection(&self) -> Result<()> {
-        let out = self
-            .ssh_cmd()
-            .arg(&self.config.host)
-            .arg("true")
-            .output()
-            .with_context(|| {
-                format!("ssh to {} failed to start", self.config.host)
-            })?;
-        if !out.status.success() {
-            return Err(anyhow!(
-                "ssh to {} exited with {}: {}",
-                self.config.host,
-                out.status,
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Ok(())
+        let rt = tokio::runtime::Runtime::new().context("tokio runtime for test_connection")?;
+        rt.block_on(async {
+            let out = self
+                .ssh_cmd()
+                .arg(&self.config.host)
+                .arg("true")
+                .output()
+                .await
+                .with_context(|| format!("ssh to {} failed to start", self.config.host))?;
+            if !out.status.success() {
+                return Err(anyhow!(
+                    "ssh to {} exited with {}: {}",
+                    self.config.host,
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            Ok(())
+        })
     }
 
-    /// 构造一个 ssh 子进程 Command, 带 BatchMode + StrictHostKeyChecking
-    /// + identity_file + port. 返回的 Command **还没指定 args**, 调用方
-    /// 自己 append `host` 和 remote_cmd.
-    fn ssh_cmd(&self) -> Command {
-        let mut cmd = Command::new(&self.ssh_bin);
+    fn ssh_std_cmd(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.ssh_bin);
         cmd.arg("-o")
             .arg("BatchMode=yes")
             .arg("-o")
@@ -98,13 +101,22 @@ impl SshRsyncTransport {
         cmd
     }
 
-    /// 跑 ssh <peer> <remote_cmd>, 拿 stdout. 失败时把 stderr 包进 Err.
-    fn ssh_run(&self, remote_cmd: &str) -> Result<String> {
+    /// 构造一个 ssh 子进程 Command, 带 BatchMode + StrictHostKeyChecking
+    /// + identity_file + port. 返回的 Command **还没指定 args**, 调用方
+    /// 自己 append `host` 和 remote_cmd.
+    fn ssh_cmd(&self) -> tokio::process::Command {
+        tokio::process::Command::from(self.ssh_std_cmd())
+    }
+
+    async fn ssh_run(&self, remote_cmd: &str) -> Result<String> {
         let out = self
             .ssh_cmd()
             .arg(&self.config.host)
             .arg(remote_cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .output()
+            .await
             .with_context(|| format!("ssh to {} failed to start", self.config.host))?;
         if !out.status.success() {
             return Err(anyhow!(
@@ -117,33 +129,25 @@ impl SshRsyncTransport {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// 在远端原子写一个文件: 写 `.tmp` + `mv`. 用 heredoc (`<<'__BC_EOF__'`)
-    /// 传 body — 单引号 EOF 标记让远端 shell 不展开 body 里的任何变量 /
-    /// 转义. body 里出现的 `__BC_EOF__` 在 v0.2.6 first cut 没防
-    /// (实际 JSON 里不会自然出现), v0.3.0 真要硬防御再换 base64.
-    fn ssh_write_atomic(&self, remote_path: &str, body: &str) -> Result<()> {
-        // 1. mkdir 父目录 (幂等)
+    async fn ssh_write_atomic(&self, remote_path: &str, body: &str) -> Result<()> {
         let remote_dir = remote_path
             .rsplit_once('/')
             .map(|(parent, _)| parent)
             .unwrap_or(".");
-        self.ssh_run(&format!("mkdir -p '{}'", remote_dir))?;
-        // 2. heredoc 写 .tmp
+        self.ssh_run(&format!("mkdir -p '{}'", remote_dir)).await?;
         let tmp_path = format!("{remote_path}.tmp");
         let remote_cmd = format!(
             "cat > '{tmp}' <<'__BC_EOF__'\n{body}\n__BC_EOF__",
             tmp = tmp_path,
             body = body,
         );
-        self.ssh_run(&remote_cmd)?;
-        // 3. 原子 rename
-        self.ssh_run(&format!("mv '{tmp}' '{final}'", tmp = tmp_path, final = remote_path))?;
+        self.ssh_run(&remote_cmd).await?;
+        self.ssh_run(&format!("mv '{tmp}' '{final}'", tmp = tmp_path, final = remote_path))
+            .await?;
         Ok(())
     }
 
-    /// 在 tmpdir 跑 rsync, 返回 tmpdir 的 PathBuf (caller 负责清理
-    /// `tempfile::TempDir` via `.keep()` 或 drop). 失败时 stderr 进 Err.
-    fn rsync_fetch(&self, host: &str) -> Result<tempfile::TempDir> {
+    async fn rsync_fetch(&self, host: &str) -> Result<tempfile::TempDir> {
         let tmpdir = tempfile::tempdir().context("rsync_fetch: tempfile::tempdir")?;
         let remote_glob = format!(
             "{}:{}/{}/",
@@ -153,7 +157,7 @@ impl SshRsyncTransport {
             "ssh -p {} -i {} -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
             self.config.port, self.config.identity_file
         );
-        let out = Command::new(&self.rsync_bin)
+        let out = tokio::process::Command::new(&self.rsync_bin)
             .arg("-az")
             .arg("--include=*/")
             .arg("--include=*.json")
@@ -162,7 +166,10 @@ impl SshRsyncTransport {
             .arg(&ssh_proxy)
             .arg(&remote_glob)
             .arg(format!("{}/", tmpdir.path().display()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .output()
+            .await
             .with_context(|| "rsync failed to start")?;
         if !out.status.success() {
             return Err(anyhow!(
@@ -175,13 +182,14 @@ impl SshRsyncTransport {
     }
 }
 
+#[async_trait]
 impl Transport for SshRsyncTransport {
-    fn push(&self, snap: &SessionSnapshot) -> Result<PushReport> {
+    async fn push(&self, snap: &SessionSnapshotMeta) -> Result<PushReport> {
         let started = std::time::Instant::now();
         let remote_dir = format!("{}/{}", self.config.remote_snap_dir, snap.host);
         let final_path = format!("{}/{}.json", remote_dir, snap.uuid);
-        let body = encode_snapshot(snap).context("encode_snapshot for push")?;
-        self.ssh_write_atomic(&final_path, &body)?;
+        let body = encode_snapshot_meta(snap).context("encode_snapshot for push")?;
+        self.ssh_write_atomic(&final_path, &body).await?;
         Ok(PushReport {
             uuid: snap.uuid.clone(),
             bytes_written: body.len() as u64,
@@ -189,8 +197,8 @@ impl Transport for SshRsyncTransport {
         })
     }
 
-    fn pull(&self, since_ms: i64) -> Result<Vec<SessionSnapshot>> {
-        let tmpdir = self.rsync_fetch(&local_hostname()?)?;
+    async fn pull(&self, since_ms: i64) -> Result<Vec<RemoteSnapshot>> {
+        let tmpdir = self.rsync_fetch(&local_hostname().await?).await?;
         let mut out_snapshots = Vec::new();
         for entry in std::fs::read_dir(tmpdir.path())
             .with_context(|| format!("read_dir {}", tmpdir.path().display()))?
@@ -212,8 +220,12 @@ impl Transport for SshRsyncTransport {
             }
             let body = std::fs::read_to_string(&path)
                 .with_context(|| format!("read {}", path.display()))?;
-            match decode_snapshot(&body) {
-                Ok(s) => out_snapshots.push(s),
+            if let Ok(v4) = crate::core::snapshot::decode_snapshot(&body) {
+                out_snapshots.push(RemoteSnapshot::V4(v4));
+                continue;
+            }
+            match decode_snapshot_meta(&body) {
+                Ok(s) => out_snapshots.push(RemoteSnapshot::Meta(s)),
                 Err(e) => log::warn!(
                     "skipping malformed snapshot {}: {}",
                     path.display(),
@@ -221,22 +233,32 @@ impl Transport for SshRsyncTransport {
                 ),
             }
         }
-        out_snapshots.sort_by_key(|s| s.last_updated_at_ms);
+        out_snapshots.sort_by_key(|s| match s {
+            RemoteSnapshot::V4(v) => v.composer.last_updated_at,
+            RemoteSnapshot::Meta(m) => m.last_updated_at_ms,
+        });
         Ok(out_snapshots)
     }
 
-    fn list_remote(&self) -> Result<Vec<RemoteSessionMeta>> {
-        // list_remote 拉本机 namespace 的 (跨设备 picker UI 给的 host
-        // 过滤是 v0.3.0+ `<SyncPeersDialog>` 的事, v0.2.6 先列本机).
-        let snaps = self.pull(0)?;
+    async fn list_remote(&self) -> Result<Vec<RemoteSessionMeta>> {
+        let snaps = self.pull(0).await?;
         Ok(snaps
             .iter()
-            .map(|s| RemoteSessionMeta {
-                uuid: s.uuid.clone(),
-                host: s.host.clone(),
-                last_updated_at_ms: s.last_updated_at_ms,
-                project_slug: s.project_slug.clone(),
-                source_path: s.source_path.clone(),
+            .map(|s| match s {
+                RemoteSnapshot::V4(v) => RemoteSessionMeta {
+                    uuid: v.composer.composer_id.clone(),
+                    host: v.source_endpoint.host.clone(),
+                    last_updated_at_ms: v.composer.last_updated_at,
+                    project_slug: v.composer.project_slug.clone(),
+                    source_path: v.composer.project_path.clone(),
+                },
+                RemoteSnapshot::Meta(m) => RemoteSessionMeta {
+                    uuid: m.uuid.clone(),
+                    host: m.host.clone(),
+                    last_updated_at_ms: m.last_updated_at_ms,
+                    project_slug: m.project_slug.clone(),
+                    source_path: m.source_path.clone(),
+                },
             })
             .collect())
     }
@@ -246,11 +268,10 @@ impl Transport for SshRsyncTransport {
     }
 }
 
-/// 本机 hostname (from `hostname` command output, trimmed). 失败时 fallback
-/// 到 `"unknown"` — push 还是能跑 (snapshot 拿不到 host 不致命), 但日志会 warn.
-fn local_hostname() -> Result<String> {
-    let out = Command::new("hostname")
+async fn local_hostname() -> Result<String> {
+    let out = tokio::process::Command::new("hostname")
         .output()
+        .await
         .with_context(|| "hostname command failed")?;
     if !out.status.success() {
         log::warn!(
@@ -268,6 +289,7 @@ fn local_hostname() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::transport::SessionSnapshotMeta;
 
     fn fake_peer() -> PeerConfig {
         PeerConfig {
@@ -307,7 +329,7 @@ mod tests {
     #[test]
     fn ssh_cmd_includes_safety_flags() {
         let t = SshRsyncTransport::new(fake_peer());
-        let cmd = t.ssh_cmd();
+        let cmd = t.ssh_std_cmd();
         let args: Vec<&str> = cmd.get_args().filter_map(|a| a.to_str()).collect();
         // -o BatchMode=yes
         assert!(args.windows(2).any(|w| w[0] == "-o" && w[1] == "BatchMode=yes"),
@@ -330,8 +352,8 @@ mod tests {
     ///
     /// 这里需要 `tests/fixtures/fake-ssh.sh` 已存在. 缺失时 skip (test 不
     /// 失败, 只是 logged).
-    #[test]
-    fn push_calls_ssh_with_expected_args() {
+    #[tokio::test]
+    async fn push_calls_ssh_with_expected_args() {
         let fixture = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/fake-ssh.sh"
@@ -341,7 +363,7 @@ mod tests {
             return;
         }
         let t = SshRsyncTransport::with_bins(fake_peer(), fixture, "rsync");
-        let snap = SessionSnapshot {
+        let snap = SessionSnapshotMeta {
             uuid: "uuid-test".into(),
             last_updated_at_ms: 1_700_000_000_000,
             host: "local-host".into(),
@@ -351,18 +373,17 @@ mod tests {
             text_preview: "hello".into(),
             bubble_count: 3,
         };
-        let report = t.push(&snap).expect("push should succeed with fake ssh");
+        let report = t.push(&snap).await.expect("push should succeed with fake ssh");
         assert_eq!(report.uuid, "uuid-test");
         assert!(report.bytes_written > 0, "must report body bytes");
     }
 
     /// ssh 失败 (non-zero exit) → Err 携带 stderr. fake ssh 模拟
     /// 失败场景.
-    #[test]
-    fn push_ssh_failure_surfaces_stderr() {
-        // 用 `false` 模拟 ssh 立即失败 (exit 1, stderr 为空).
+    #[tokio::test]
+    async fn push_ssh_failure_surfaces_stderr() {
         let t = SshRsyncTransport::with_bins(fake_peer(), "false", "rsync");
-        let snap = SessionSnapshot {
+        let snap = SessionSnapshotMeta {
             uuid: "x".into(),
             last_updated_at_ms: 0,
             host: "h".into(),
@@ -372,7 +393,7 @@ mod tests {
             text_preview: String::new(),
             bubble_count: 0,
         };
-        let r = t.push(&snap);
+        let r = t.push(&snap).await;
         assert!(r.is_err());
         let msg = r.unwrap_err().to_string();
         assert!(msg.contains("fake-host"), "error mentions peer host: {msg}");
@@ -381,9 +402,9 @@ mod tests {
 
     /// `local_hostname()` 拿到 hostname 命令的 stdout, trim 末尾 newline.
     /// `hostname` 几乎所有 Unix 都预装; CI Linux runner 必有.
-    #[test]
-    fn local_hostname_returns_trimmed_string() {
-        let h = local_hostname().expect("hostname should work on Unix");
+    #[tokio::test]
+    async fn local_hostname_returns_trimmed_string() {
+        let h = local_hostname().await.expect("hostname should work on Unix");
         assert!(!h.is_empty());
         assert!(!h.ends_with('\n'));
         assert!(!h.ends_with('\r'));
