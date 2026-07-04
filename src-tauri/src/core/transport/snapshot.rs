@@ -115,6 +115,8 @@ mod tests {
             files_referenced: vec![],
             indexable_text: String::new(),
             layer_3_present: false,
+            composer_data: None,
+            composer_id: None,
         }
     }
 

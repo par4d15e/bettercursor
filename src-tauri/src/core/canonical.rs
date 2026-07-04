@@ -1295,6 +1295,379 @@ pub fn read_layer3_bubbles(uuid: &str) -> Vec<Bubble> {
     out
 }
 
+// ── L3 bubble text extraction (ported from cursor-history storage.ts) ──
+
+/// First non-empty string param from `params` object (cursor-history `getParam`).
+fn l3_get_param(params: &serde_json::Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(s) = params.get(*key).and_then(|x| x.as_str()) {
+            if !s.trim().is_empty() {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Parse `toolFormerData.params` (JSON string or object) or `rawArgs`.
+fn l3_parse_tool_params(tool: &serde_json::Value) -> Option<serde_json::Value> {
+    if let Some(p) = tool.get("params") {
+        if let Some(s) = p.as_str() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+                return Some(v);
+            }
+        }
+        if p.is_object() {
+            return Some(p.clone());
+        }
+    }
+    if let Some(raw) = tool.get("rawArgs") {
+        if let Some(s) = raw.as_str() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+                return Some(v);
+            }
+        }
+        if raw.is_object() {
+            return Some(raw.clone());
+        }
+    }
+    None
+}
+
+fn l3_extract_thinking_text(v: &serde_json::Value) -> Option<String> {
+    v.get("thinking")
+        .and_then(|t| t.get("text"))
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Collect `codeBlocks[].content` as markdown-fenced strings when languageId is set.
+fn l3_extract_code_block_parts(v: &serde_json::Value) -> Vec<String> {
+    let Some(blocks) = v.get("codeBlocks").and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for cb in blocks {
+        let Some(content) = cb.get("content").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if content.trim().is_empty() {
+            continue;
+        }
+        let lang = cb
+            .get("languageId")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if lang.is_empty() {
+            out.push(content.to_string());
+        } else {
+            out.push(format!("```{lang}\n{content}\n```"));
+        }
+    }
+    out
+}
+
+fn l3_format_diff_block(diff: &serde_json::Value) -> Option<String> {
+    let chunks = diff.get("chunks")?.as_array()?;
+    let parts: Vec<String> = chunks
+        .iter()
+        .filter_map(|c| c.get("diffString").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+/// Tool call with `result.diff` (write / edit). Storage layer keeps full text (spec 013).
+fn l3_format_tool_with_result(tool: &serde_json::Value) -> Option<String> {
+    let result_str = tool.get("result").and_then(|x| x.as_str()).unwrap_or("{}");
+    let result: serde_json::Value = serde_json::from_str(result_str).ok()?;
+    let diff = result.get("diff")?;
+    if !diff.is_object() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    let name = tool.get("name").and_then(|x| x.as_str()).unwrap_or("write");
+    let label = if name == "write" || name == "write_file" {
+        "Write File"
+    } else {
+        "Edit File"
+    };
+    lines.push(format!("[Tool: {label}]"));
+    if let Some(params) = l3_parse_tool_params(tool) {
+        let file = l3_get_param(
+            &params,
+            &["relativeWorkspacePath", "file_path", "targetFile", "path"],
+        );
+        if !file.is_empty() {
+            lines.push(format!("File: {file}"));
+        }
+    }
+    if let Some(diff_text) = l3_format_diff_block(diff) {
+        lines.push(String::new());
+        lines.push(diff_text);
+    }
+    if let Some(rfm) = result.get("resultForModel").and_then(|x| x.as_str()) {
+        lines.push(String::new());
+        lines.push(format!("Result: {rfm}"));
+    }
+    if lines.len() <= 1 {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+/// Format a toolFormerData bubble for display. read_file_v2 / edit_file_v2: no truncation (spec 013).
+fn l3_format_tool_call(tool: &serde_json::Value, code_blocks: Option<&serde_json::Value>) -> String {
+    let name = tool.get("name").and_then(|x| x.as_str()).unwrap_or("unknown");
+    let params = l3_parse_tool_params(tool).unwrap_or(serde_json::json!({}));
+    let mut lines = vec![format!("[Tool: {name}]")];
+
+    match name {
+        "read_file_v2" | "read_file" => {
+            let file = l3_get_param(
+                &params,
+                &["targetFile", "path", "file", "effectiveUri"],
+            );
+            if !file.is_empty() {
+                lines.push(format!("File: {file}"));
+            }
+            if let Some(result_str) = tool.get("result").and_then(|x| x.as_str()) {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(result_str) {
+                    if let Some(contents) = result.get("contents").and_then(|x| x.as_str()) {
+                        lines.push(format!("Content: {contents}"));
+                    }
+                    if let Some(diff) = result.get("diff") {
+                        if let Some(diff_text) = l3_format_diff_block(diff) {
+                            lines.push(diff_text);
+                        }
+                    }
+                }
+            }
+            if let Some(blocks) = code_blocks.and_then(|x| x.as_array()) {
+                if let Some(content) = blocks
+                    .first()
+                    .and_then(|b| b.get("content"))
+                    .and_then(|x| x.as_str())
+                {
+                    if !content.is_empty() && !lines.iter().any(|l| l.starts_with("Content:")) {
+                        lines.push(format!("Content: {content}"));
+                    }
+                }
+            }
+        }
+        "edit_file_v2" | "edit_file" | "search_replace" => {
+            let file = l3_get_param(
+                &params,
+                &["targetFile", "path", "file", "relativeWorkspacePath"],
+            );
+            if !file.is_empty() {
+                lines.push(format!("File: {file}"));
+            }
+            if let Some(result_str) = tool.get("result").and_then(|x| x.as_str()) {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(result_str) {
+                    if let Some(diff) = result.get("diff") {
+                        if let Some(diff_text) = l3_format_diff_block(diff) {
+                            lines.push(diff_text);
+                        }
+                    }
+                } else if !result_str.is_empty() {
+                    lines.push(result_str.to_string());
+                }
+            }
+        }
+        "run_terminal_command" | "run_terminal_cmd" | "execute_command" => {
+            let cmd = l3_get_param(&params, &["command", "cmd"]);
+            if !cmd.is_empty() {
+                lines.push(format!("Command: {cmd}"));
+            }
+            if let Some(result_str) = tool.get("result").and_then(|x| x.as_str()) {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(result_str) {
+                    if let Some(output) = result.get("output").and_then(|x| x.as_str()) {
+                        if !output.trim().is_empty() {
+                            lines.push(format!("Output: {output}"));
+                        }
+                    }
+                }
+            }
+        }
+        "grep" | "search" | "codebase_search" => {
+            let pattern = l3_get_param(&params, &["pattern", "query", "searchQuery", "regex"]);
+            let path = l3_get_param(&params, &["path", "directory", "targetDirectory"]);
+            if !pattern.is_empty() {
+                lines.push(format!("Pattern: {pattern}"));
+            }
+            if !path.is_empty() {
+                lines.push(format!("Path: {path}"));
+            }
+        }
+        "list_dir" => {
+            let dir = l3_get_param(&params, &["targetDirectory", "path", "directory"]);
+            if !dir.is_empty() {
+                lines.push(format!("Directory: {dir}"));
+            }
+        }
+        _ => {
+            if !params.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                if let Ok(s) = serde_json::to_string_pretty(&params) {
+                    lines.push(s);
+                }
+            }
+            if let Some(result_str) = tool.get("result").and_then(|x| x.as_str()) {
+                if !result_str.trim().is_empty() {
+                    lines.push(result_str.to_string());
+                }
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Structured tool calls for UI (`BubbleToolUse`). Mirrors cursor-history `extractToolCalls`.
+fn l3_extract_tool_calls(v: &serde_json::Value) -> Vec<BubbleToolUse> {
+    let Some(tool) = v.get("toolFormerData") else {
+        return Vec::new();
+    };
+    let Some(name) = tool.get("name").and_then(|x| x.as_str()) else {
+        return Vec::new();
+    };
+    if name.trim().is_empty() {
+        return Vec::new();
+    }
+    let input = l3_parse_tool_params(tool);
+    vec![BubbleToolUse {
+        name: name.to_string(),
+        input,
+    }]
+}
+
+fn l3_extract_tool_files(v: &serde_json::Value) -> Vec<String> {
+    let Some(tool) = v.get("toolFormerData") else {
+        return Vec::new();
+    };
+    let Some(params) = l3_parse_tool_params(tool) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for key in [
+        "targetFile",
+        "file",
+        "filePath",
+        "relativeWorkspacePath",
+        "path",
+        "targetDirectory",
+        "directory",
+    ] {
+        let f = l3_get_param(&params, &[key]);
+        if !f.is_empty() && !files.contains(&f) {
+            files.push(f);
+        }
+    }
+    files
+}
+
+/// Multi-source text extraction for L3 `bubbleId:*` blobs (cursor-history `extractBubbleText`).
+fn extract_l3_bubble_text(v: &serde_json::Value, is_assistant: bool) -> String {
+    let code_block_parts = l3_extract_code_block_parts(v);
+    let tool_former = v.get("toolFormerData");
+
+    if let Some(tool) = tool_former {
+        let tool_name = tool.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        if tool_name != "read_file_v2" {
+            if let Some(text) = l3_format_tool_with_result(tool) {
+                return text;
+            }
+        }
+        if !tool_name.is_empty() {
+            return l3_format_tool_call(tool, v.get("codeBlocks"));
+        }
+    }
+
+    if is_assistant {
+        if let Some(text) = v.get("text").and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty())
+        {
+            if code_block_parts.is_empty() {
+                return text.to_string();
+            }
+            return format!("{}\n\n{}", text, code_block_parts.join("\n\n"));
+        }
+        if let Some(thinking) = l3_extract_thinking_text(v) {
+            if code_block_parts.is_empty() {
+                return format!("[Thinking]\n{thinking}");
+            }
+            return format!(
+                "[Thinking]\n{thinking}\n\n{}",
+                code_block_parts.join("\n\n")
+            );
+        }
+        if let Some(tool) = tool_former {
+            if let Some(result_str) = tool.get("result").and_then(|x| x.as_str()) {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(result_str) {
+                    for key in ["contents", "content", "text"] {
+                        if let Some(s) = result.get(key).and_then(|x| x.as_str()) {
+                            return s.to_string();
+                        }
+                    }
+                } else if result_str.len() > 50 && !result_str.starts_with('{') {
+                    return result_str.to_string();
+                }
+            }
+        }
+        if !code_block_parts.is_empty() {
+            return code_block_parts.join("\n\n");
+        }
+    } else {
+        if !code_block_parts.is_empty() {
+            return code_block_parts.join("\n\n");
+        }
+        for key in [
+            "text",
+            "content",
+            "finalText",
+            "message",
+            "markdown",
+            "textDescription",
+        ] {
+            if let Some(s) = v.get(key).and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty())
+            {
+                return s.to_string();
+            }
+        }
+        if let Some(thinking) = l3_extract_thinking_text(v) {
+            return format!("[Thinking]\n{thinking}");
+        }
+    }
+
+    v.get("text")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Timestamp fallback chain (cursor-history spec 010, simplified).
+fn extract_l3_timestamp(v: &serde_json::Value) -> i64 {
+    if let Some(t) = v.get("createdAt").and_then(|x| x.as_i64()) {
+        if t > 0 {
+            return t;
+        }
+    }
+    if let Some(ti) = v.get("timingInfo") {
+        for key in ["clientRpcSendTime", "clientStartTime", "clientEndTime"] {
+            if let Some(t) = ti.get(key).and_then(|x| x.as_i64()) {
+                if t > 0 {
+                    return t;
+                }
+            }
+        }
+    }
+    0
+}
+
 /// Decode one L3 `bubbleId:*` blob as a [`Bubble`]. Returns `None` when
 /// the blob doesn't have the expected `_v`/`type`/`text` triple or
 /// `type` is something other than 1/2.
@@ -1305,14 +1678,17 @@ fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
         2 => "assistant",
         _ => return None,
     };
-    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let created_at_ms = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let is_assistant = typ == 2;
+    let text = extract_l3_bubble_text(v, is_assistant);
+    let tool_calls = l3_extract_tool_calls(v);
+    let files = l3_extract_tool_files(v);
+    let created_at_ms = extract_l3_timestamp(v);
     Some(Bubble {
         id: bid.to_string(),
         role: role.to_string(),
         text,
-        tool_calls: Vec::new(),
-        files: Vec::new(),
+        tool_calls,
+        files,
         created_at_ms,
         parent_bubble_id: None,
     })
@@ -2097,6 +2473,65 @@ mod tests {
         // Unknown type (e.g. tool result 3) → skip.
         let tool_v = serde_json::json!({"_v": 3, "type": 3, "text": "x"});
         assert!(decode_l3_bubble_blob("bid-3", &tool_v).is_none());
+    }
+
+    /// L3 toolFormerData: read_file_v2 keeps full content (spec 013, no storage-layer truncate).
+    #[test]
+    fn decode_l3_bubble_blob_read_file_v2_full_content() {
+        let v = serde_json::json!({
+            "_v": 3,
+            "type": 2,
+            "toolFormerData": {
+                "name": "read_file_v2",
+                "params": r#"{"targetFile":"src/main.rs"}"#,
+                "result": r#"{"contents":"fn main() {\n    println!(\"hi\");\n}"}"#
+            }
+        });
+        let b = decode_l3_bubble_blob("bid-rf", &v).unwrap();
+        assert_eq!(b.role, "assistant");
+        assert!(b.text.contains("[Tool: read_file_v2]"));
+        assert!(b.text.contains("src/main.rs"));
+        assert!(b.text.contains("fn main()"));
+        assert_eq!(b.tool_calls.len(), 1);
+        assert_eq!(b.tool_calls[0].name, "read_file_v2");
+    }
+
+    /// L3 assistant: text + codeBlocks combined; thinking fallback when text empty.
+    #[test]
+    fn decode_l3_bubble_blob_thinking_and_code_blocks() {
+        let v = serde_json::json!({
+            "_v": 3,
+            "type": 2,
+            "thinking": { "text": "reasoning step" },
+            "codeBlocks": [{ "content": "print(1)", "languageId": "python" }]
+        });
+        let b = decode_l3_bubble_blob("bid-th", &v).unwrap();
+        assert!(b.text.contains("[Thinking]"));
+        assert!(b.text.contains("reasoning step"));
+        assert!(b.text.contains("```python"));
+
+        let v2 = serde_json::json!({
+            "_v": 3,
+            "type": 2,
+            "text": "Here is code:",
+            "codeBlocks": [{ "content": "x = 1" }]
+        });
+        let b2 = decode_l3_bubble_blob("bid-cb", &v2).unwrap();
+        assert!(b2.text.contains("Here is code:"));
+        assert!(b2.text.contains("x = 1"));
+    }
+
+    /// L3 timestamp fallback: timingInfo.clientRpcSendTime when createdAt missing.
+    #[test]
+    fn decode_l3_bubble_blob_timestamp_fallback() {
+        let v = serde_json::json!({
+            "_v": 3,
+            "type": 1,
+            "text": "hi",
+            "timingInfo": { "clientRpcSendTime": 1_700_000_000_123_i64 }
+        });
+        let b = decode_l3_bubble_blob("bid-ts", &v).unwrap();
+        assert_eq!(b.created_at_ms, 1_700_000_000_123);
     }
 
     /// 3-way merge: L3 is the main chain. L2 with the same id overlays
