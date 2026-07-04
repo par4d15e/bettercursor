@@ -141,10 +141,10 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # softprops 默认从 github.ref_name 读 tag, 但 workflow_dispatch
-          # 触发时 ref_name 是 main 而不是 tag — 显式 hardcode v0.2.6
-          # (跟当前 release 对齐, 等下个 tag 时跟改 tag_name 即可).
-          tag_name: v0.2.6
+          # tag push / workflow_dispatch --ref v0.3.0 时 github.ref_name 即 tag.
+          # workflow_dispatch 在 main 上手动触发时 ref_name=main 会错 — 请用
+          # `gh workflow run release.yml --ref v0.3.0` 重跑.
+          tag_name: ${{ github.ref_name }}
           files: artifacts/**/*
           generate_release_notes: true
           draft: false
