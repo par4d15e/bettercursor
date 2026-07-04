@@ -21,13 +21,14 @@ jobs:
               src-tauri/target/release/bundle/**/*.deb
               src-tauri/target/release/bundle/**/*.AppImage
           - os: macos-latest
-            # Apple Silicon (aarch64) — `macos-latest` has been ARM-only
+            # Apple Silicon (arm64) — `macos-latest` has been ARM-only
             # since GH Actions switched the default runner in late 2024.
-            artifact_glob: |
-              src-tauri/target/release/bundle/**/*.dmg
-          - os: macos-13
-            # Intel (x86_64) — needs a separate runner since
-            # `macos-latest` no longer produces x64 artifacts.
+            # v0.2.6 release fix: dropped macos-13 (Intel x64) entry.
+            # Rationale: project policy is Apple-Silicon-only; Intel
+            # Macs are out of support since Apple stopped selling them
+            # in 2020. Keeping the matrix entry meant relying on
+            # `macos-13` runners, which are capacity-starved and
+            # frequently stall CI for hours.
             artifact_glob: |
               src-tauri/target/release/bundle/**/*.dmg
           - os: windows-latest
@@ -97,6 +98,25 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm tauri build
+
+      # v0.2.6 release fix: rename the Apple-Silicon dmg from
+      # `_aarch64.dmg` to `_arm64.dmg` so end users see the
+      # Apple-marketing name in the GitHub Release. Tauri 2 derives
+      # the suffix from the Rust target triple (`aarch64-apple-darwin`
+      # → `aarch64`), which is technically correct but unfamiliar to
+      # Apple users. `arm64` matches Apple's documentation, and
+      # makes the "this won't run on Intel" implication obvious.
+      # Only fires on macos-latest since macOS is the only platform
+      # whose bundler appends an arch suffix.
+      - name: Rename dmg aarch64 → arm64
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd src-tauri/target/release/bundle/dmg
+          shopt -s nullglob
+          for f in *_aarch64.dmg; do
+            mv "$f" "${f/_aarch64.dmg/_arm64.dmg}"
+          done
+          ls -la
 
       # Tauri writes bundle artifacts under src-tauri/target/release/bundle/.
       # Globs are matrix-specific (.deb/.AppImage on Linux, .dmg on macOS,

@@ -542,3 +542,40 @@ bettercursor-rs (当前仓库 = ~/workspace/bettercursor)
 这些注释是为了**防止未来自己忘记"这段算法从哪儿演化来的"**. **它们不是依赖声明** — 没有 `pip install`, 没有 pyo3 bindings, 没有 subprocess 调用 python. 整个进程是 native Rust 二进制 + WebView bundle, 内存里不存在 python runtime.
 
 **何时可以把这条注释删掉**: 当没有人再会困惑"这是不是依赖 Python" 的那一天. 当下保留它有信息价值 (一行字解释一种来源 vs 另一种"这里路径格式沿用旧约定"), 因为它帮读者理解为什么是 `md5(cwd)` 而不是 `sha256(cwd)`、为什么 WAL-safe 读法不是先抢锁等显然答案.
+
+---
+
+## 13. v0.3.0 代际关系
+
+**v0.3.0 PR-1 (2026-07-04) = `~/.bettercursor/unified.db` (SYNC_DESIGN §3) 落地**. 不动 sync 架构, 但**首次引入 v0.3.x 大版本的 read-cache + archive + sync_runs 索引**：
+
+- **新建 `core::unified` 模块**: 7 + 1 表 (`schema_version` + `sessions` + `bubbles` + `bubbles_fts` + `blobs` + `composer_data` + `sync_runs` + `archive` + `conflicts`), FTS5 虚表走 `unicode61 remove_diacritics 2` tokenizer (中文按 unigram, 完美分词留 v0.3.1+ 评估 jieba-rs), PRAGMA `journal_mode=WAL` + `foreign_keys=ON` + `synchronous=NORMAL`.
+- **canonical.rs 字段扩展**: `Bubble.parent_bubble_id: Option<String>` (v0.3.0 first cut 全部 None, v0.3.1+ 启发式回填), `ComposerData { full_json, subset_json }`, `CanonicalSession.{composer_data, composer_id}`, `Sources::preferred_endpoint_kind()` (mac > linux_desktop > linux_cli), `Sources::preferred_source_path()`. **L3 cursorDiskKV 解析路径加 composer_data 捕获** (在 `scan_layer3_into` 的 per-composer loop 末尾), 避免后续 unified.db write 时回 L3 重读.
+- **Migration A coexist**: v0.2.6 的 inline-write 路径 (`write_layer2` / `write_layer3` / `fix_latest_root` / `delete_session` L1+L2) **保留**, 4 个 hook 点 (`sync_session` 末尾 / `fix_orphans` per-fixed-uuid + 末尾 / `delete_session` L1/L2 后) 同步写 unified.db. unified.db 是 read-cache + archive + sync_runs, **真实写仍走 L1+L2**. `sync_now` Tauri 命令末尾加 rebuild hook, FTS5 mirror 跟 `<SessionTree>` 列表始终保持一致.
+- **0 新 Cargo dep**: rusqlite + bundled + sha2 + hex + chrono + anyhow + serde + serde_json + tempfile 全部已 in. PR-2 才加 tokio 1 + async-trait (~1.5MB binary 增量).
+- **8 单元测**: `open_creates_eight_tables` / `rebuild_is_idempotent` / `rebuild_writes_content_hash_deterministically` / `archive_and_delete_cascade` / `resolve_conflict_marks_resolved` / `sync_run_record_and_finish` / `rebuild_honors_sources_priority_order` / `content_hash_changes_when_text_changes` + `sources_preferred_helpers_four_cases` + `bubble_helper_round_trip` (10 case 总).
+- **失败容忍**: 所有 unified.db hook 都包在 `if let Ok(...) { let _ = ... }`, inline-write 失败不 cascade 到 unified.db, 反之亦然. **不破 v0.2.6 公开 API surface** (Tauri 命令 async fn 签名不变, 前端不感知).
+
+**v0.3.0 PR-2 关系** (未来): PR-2 在 unified.db 之上加 snapshot codec v4 (`Bubble` + `SourceEndpoint` + `ComposerMeta` + `BlobRef` + `RawBlob`, `SNAPSHOT_VERSION=4`) + Transport trait 转 `async_trait` + `ConflictClass` 5-way enum (`New` / `Identical` / `IncomingNewer` / `LocalAhead` / `Diverged`) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec → unified.db upsert. `conflict::content_hash_from_bubbles` 从 PR-1 的 unified.rs private helper 上提到 conflict.rs 公共 API. UI (SyncPeersDialog / ConflictResolveDialog) + 离线 outbox + structured `core::lock` 升级都留 v0.3.1+.
+
+---
+
+## 14. macOS 支持策略 — arm64 only (2026-07-04 拍板)
+
+**拍板**: bettercursor 只支持 Apple Silicon (arm64) Mac. Intel x64 Mac **不在支持范围**.
+
+**动机**:
+
+1. **Apple 2020 起停售 Intel Mac** — 截至 2026-07 距最后一款 Intel Mac (Mac Pro 2019) 上市已 6+ 年, 新装机市场早已 100% Apple Silicon. M1/M2/M3/M4 用户占绝对主流.
+2. **GitHub Actions `macos-13` runner pool 容量长期不足** — 2026 年 Apple 把 default runner 推 `macos-14` / `macos-15`, `macos-13` (Intel x64) 只剩 dedicated pool, 容量小、优先级低. v0.2.6 release 因 `macos-13` runner 排不上 queue 卡死 1h42m+, 直接阻塞整个 release pipeline (因为 `publish-release` job `needs: build` 依赖整个 build matrix).
+3. **维护成本不对称** — 一旦支持 Intel 就得 `cross` 或 dual-target, `tauri-bundler` 的 dmg 输出要出 2 份 (or 一份 universal binary 但 build time +30%), 调试栈多一条路, README 多一段 x86_64 caveat.
+4. **开发者本身已是 arm64-only** — Eric 自己用 M-series, 真要修 Intel bug 也只能在 CI 上盲改, 效率低.
+
+**怎么落地**:
+
+- **删 `.github/workflows/release.yml` matrix 里的 `macos-13` entry** (v0.2.5 housekeeping 加进去的, v0.2.6 release fix 删掉). 整个 release matrix 从 4 个 job 减到 3 个: `ubuntu-latest` (deb + AppImage) / `macos-latest` (arm64 dmg) / `windows-latest` (msi + exe).
+- **dmg rename step**: Tauri 2 派生 dmg 文件名时从 Rust target triple `aarch64-apple-darwin` 抽 `aarch64` 当 suffix, 这是 hardcoded 在 `tauri-bundler/src/bundle/macos/dmg.rs` 里的 (Tauri 没暴露 config 字段覆盖它). 加一个 `if: matrix.os == 'macos-latest'` 的 shell step, `mv *_aarch64.dmg ${f/_aarch64.dmg/_arm64.dmg}`. 输出文件名变 `bettercursor_0.2.6_arm64.dmg`, 跟 Apple marketing 命名一致, **Intel 用户一眼能看出不兼容**.
+- **README.md** "System requirements" 段更新为 "macOS 11.0+ on Apple Silicon (M1/M2/M3/M4). Intel Macs not supported."
+- **背景依据** (`PRD.md §0.5`): v0.2.5 housekeeping 那行 `macos-13` 标 `❌ superseded by v0.2.6 release fix`, 加 `v0.2.6 release fix` 行说明 + 拍板依据.
+
+**未来重开 Intel 支持** 的条件 (如果哪天 Apple 出了 RISC-V Mac 之类, 让 Intel 用户重新变多): 加一个 `macos-13` matrix entry + Rust `--target x86_64-apple-darwin` 双 target 编译 + `tauri-bundler` 出 universal binary (lipo). 当前不做.
