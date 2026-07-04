@@ -33,6 +33,7 @@ HANDOFF.md
 
 # ── Vendored sub-repos (have their own git history) ─────────
 vendored/cursaves/
+vendored/cursor-history/
 
 # ── Python (legacy daemon code & tests, kept for reference) ──
 __pycache__/

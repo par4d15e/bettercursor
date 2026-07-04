@@ -9,7 +9,7 @@
 > **状态**: 设计稿. v0.2-alpha + v0.2.1 已落地 (见 §0.5 callout). §3 unified.db / §4 transport 适配器 / §6 冲突解决 / §7 lock module 升级 仍是待拍板.
 >
 > **章节 map**:
-> §0 背景与现状 → §1 核心架构 → §2 Snapshot codec → §3 unified.db schema → §4 传输适配器层 → §5 SSH/rsync (default) → §6 冲突解决 → §7 锁画像 → §8 多端接力 → §9 Cursor 集成 → §10 路线图 → §11 文件清单 → §12 决策 → §13 风险.
+> §0 背景与现状 → §1 核心架构 → §2 Snapshot codec → §3 unified.db schema → §4 传输适配器层 → §5 SSH/rsync (default) → §6 冲突解决 → §7 锁画像 → §8 多端接力 → §9 Cursor 集成 → §10 路线图 → §11 文件清单 (**含 §11.5 vendored 借鉴索引**) → §12 决策 → §13 风险.
 
 ### Reading guide: 旧章节 → 新章节 映射表
 
@@ -439,9 +439,35 @@ pub fn write_snapshot_file(
 ) -> anyhow::Result<std::path::PathBuf>;
 ```
 
-### 2.7 跟 Python 参考的关系
+### 2.7 跟上游参考的关系
 
-> Python 参考 ([`bettercursor/snapshot.py`](bettercursor/snapshot.py)) 是 v3 gzip 实现, **跟新版不兼容**. 我们保留它作为 reference, 新版用 Rust 写. 不要试图从 v3 gzip → v4 plain text 自动 upgrade — 让用户手动 export/import 一次, 显式选择 codec 版本.
+| 参考源 | 格式 | 与 v4 codec 关系 | 可借鉴 |
+|--------|------|-----------------|--------|
+| [`bettercursor/snapshot.py`](bettercursor/snapshot.py) | v3 gzip blob-level | **不兼容** v4 | 历史对照 only |
+| [`vendored/cursaves/cursor_saves/export.py`](../vendored/cursaves/cursor_saves/export.py) | v3 gzip + agentBlobs + messageContexts + checkpoints | **不采用** v3 作主格式 (见 §2.4) | ancillary 字段清单、`_extract_agent_blob_ids`、`_trim_message_contexts` |
+| [`vendored/cursaves/cursor_saves/importer.py`](../vendored/cursaves/cursor_saves/importer.py) | 导入 + 冲突五态 + workspace 注册 | v4 import 路径参考 | `_check_conflict`、agent_blobs 写入、`repair_missing_blobs` |
+| [`vendored/cursor-history/specs/`](vendored/cursor-history/specs/) | bubble-level 消息模型 | **语义对齐** v4 `bubbles[]` | spec 010 timestamp / 012 完整性 / 013 tool 不截断 |
+
+> **不要**从 v3 gzip → v4 plain text 自动 upgrade — 让用户手动 export/import 一次, 显式选择 codec 版本.
+>
+> cursaves v3 gzip 与 bettercursor v4 plain text 是**有意分叉**; 借鉴的是字段清单与算法, 不是文件格式.
+
+### 2.8 L3 bubble 解析深度缺口 (cursor-history 对标)
+
+> v0.2.2 三路合并已落地, 但 L3 读路径仍过浅: `decode_l3_bubble_blob` 基本只取 `text` 字段. Desktop agent 气泡大量内容在 `toolFormerData` / `thinking.text` / `codeBlocks[]`, 导致对话展开常显示空或残缺 assistant 气泡.
+
+**目标**: 在 `canonical.rs` 新增 `extract_l3_bubble_text()` + 结构化 `tool_calls`, 协议变更同步 `src/lib/types.ts`.
+
+| 能力 | cursor-history 参考 | bettercursor 落点 | 优先级 |
+|------|-------------------|------------------|--------|
+| `toolFormerData` → 可读文本 + `ToolCall` | `storage.ts::extractBubbleText` / `extractToolCalls` | `canonical.rs::decode_l3_bubble_blob` | **高** |
+| `read_file_v2` / `edit_file_v2` / terminal output 存储层不截断 | spec 013 | 同上; UI 层再做 preview 截断 | **高** |
+| Timestamp 多级 fallback + `fillTimestampGaps` | spec 010, `storage.ts::extractTimestamp` | `decode_l3_bubble_blob` + `merge_bubbles_three_way` 排序 | **高** |
+| Token / model / session usage | spec 009 | `Bubble` 扩展 → `unified.rs` ingest | 中 |
+| 降级标记 `source: workspace-fallback` / `metadata.corrupted` | spec 012 | `Conversation` + UI 警告条 | 中 |
+| Message type 过滤 (user/assistant/tool/thinking) | spec 008 | `MessageList` 过滤器 (依赖上表 tool 识别) | 低 |
+
+**反模式** (spec 013 FR-008): Display 层截断逻辑**不得**下沉到 Rust 存储/提取层 — 会损害 unified.db FTS 与 v4 codec 完整性.
 
 ---
 
@@ -1501,6 +1527,21 @@ pub fn backup_existing(path: &Path) -> anyhow::Result<std::path::PathBuf>;
 pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<()>;
 ```
 
+### 9.8 agentKv 与 L3 写路径补全 (cursaves 对标)
+
+> cursaves 文档与实测均表明: 无 `agentKv:blob:{hex}` 时 Desktop agent `--resume` 会报 **Blob not found**. bettercursor v0.2-alpha 的 `write_layer3` 尚未系统写入 agentKv; v4 snapshot `raw_blobs` 也依赖这块.
+
+| 能力 | cursaves 参考 | bettercursor 落点 | 状态 |
+|------|--------------|------------------|------|
+| 从 composerData / bubbles 提取 agent blob id 列表 | `export.py::_extract_agent_blob_ids` | `sync.rs` protobuf walker 扩展 或新 `core/agent_blobs.rs` | ⚪ |
+| 导入/补层时写入 `agentKv:blob:{hex}` | `importer.py` agent_blobs 段 | `write_layer3` / `inject.rs` | ⚪ |
+| 从 snapshot 修复缺失 blob | `importer.py::repair_missing_blobs` | v4 import + Doctor command | ⚪ |
+| L3 `write_batch` + backup 保留 N 份 | `db.py::write_batch` / `backup_db(keep=2)` | 扩展 `storage.rs` 写侧; 统一 `sync.rs` backup 策略 | ⚪ 部分 |
+| DB fingerprint 跳过无效全量 rescan | `watch.py::_get_db_fingerprint` | `watcher.rs` debounce 前 cheap check | ⚪ |
+| L3 purge (删 global DB 行) | `importer.py::purge_chats` | **不做** — PRD 刻意跳过 L3 delete, 避免损坏 Electron |
+
+**写路径铁律不变**: 仍走 §9.1 七步 (进程锁 → backup → staging → mutation → atomic_rename → verify). agentKv 写入是 mutation 扩展, 不是旁路直写 live DB.
+
 ---
 
 ## §10 实现路线图
@@ -1519,7 +1560,9 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.2.6 housekeeping** (2026-07-04) | v0.2.6 旁路 housekeeping — CI matrix 加 `macos-13` (Intel x64 dmg 跟 Apple Silicon dmg 一起出) + Node 20 → 22 + vitest 2 + jsdom 25 + `@testing-library/react` 16 + 15 case 测 `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware fallback. **零业务代码改动**. | 0.5d | **✅ 已落地 2026-07-04** |
 | **v0.2.6** (2026-07-04) | **跨设备 sync — Transport trait 初版 (§4)**. `Transport` trait 4 方法 (push / pull / list_remote / endpoint_id) — **同步 trait** (有意识偏离 §4.4 spec 的 `async_trait`, v0.3.0 上 outbox 时再迁). 1 个 impl: `SshRsyncTransport` (T2, 调系统 `ssh` / `rsync`, **0 新 Cargo dep**). 最小 `SessionSnapshot` 载体 (8 字段, metadata-only, 不含 bubbles/blobs). `~/.bettercursor/transports.json` peer 配置 (新文件, 跟 config.json 分开). 4 个 Tauri 命令 `transport_list_peers` / `transport_test` / `transport_push` / `transport_pull`. **无 UI** (SyncPeersDialog 推迟到 v0.3.0). 20 个 Rust 单元测试 + `tests/fixtures/fake-{ssh,rsync}.sh` mock. | 3-3.5d | **✅ 已落地 2026-07-04** |
 | **v0.3.0 PR-1** (2026-07-04) | **`~/.bettercursor/unified.db` (§3) — read-cache + archive + sync_runs**. 8 表 (`schema_version` / `sessions` / `bubbles` / `bubbles_fts` / `blobs` / `composer_data` / `sync_runs` / `archive` / `conflicts`) + FTS5 虚表 (无 triggers 手动维护, `unicode61` tokenizer) + `UnifiedDb::rebuild_from_cursor_state` 幂等 ingest + `record_archive` / `record_conflict` / `record_sync_run` / `finish_sync_run` / `search_bubbles` / `delete_session_row` / `unresolved_conflicts` helpers + `paths::unified_db_path()`. `Bubble.parent_bubble_id: Option<String>` + `ComposerData { full_json, subset_json }` + `CanonicalSession.{composer_data, composer_id}` + `Sources::preferred_endpoint_kind()` + `Sources::preferred_source_path()`. **Migration A coexist**: v0.2.6 inline-write 路径保留, 4 个 hook 点 (`sync_session` / `fix_orphans` / `delete_session` / `sync_now`) 同步写 unified.db. **0 新 Cargo dep** (rusqlite + bundled + sha2 + hex 已 in). 8 单元测 + 4 canonical 字段测 = ~12 case PR-1 阶段. | 3-4d | **✅ PR-1 已落地 2026-07-04** |
-| **v0.3.0 PR-2** | snapshot codec v4 (§2, bubbles / blob_refs / raw_blobs, `SNAPSHOT_VERSION=4`) + `Transport` trait 转 `async_trait` (§4) + `ConflictClass` 5-way enum (§6, New/Identical/IncomingNewer/LocalAhead/Diverged) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec + unified.db upsert + Conflict 分类 (New/Identical/IncomingNewer → upsert; LocalAhead → 跳过; Diverged → auto_merge + archive). `core::transport::snapshot` 改名 `core::transport::snapshot_meta` (给新 `core::snapshot` 让位). 新增 2 个 Cargo dep: `tokio = "1"` (full features) + `async-trait = "0.1"` (~1.5MB binary 增量, 跟 v0.3.1 outbox `tokio::time::interval` 自然衔接). | 3-4d | ⚪ PR-2 待开 |
+| **v0.3.0 pre-PR-2** | **读路径补全 (§2.8 + §11.5)**: `extract_l3_bubble_text` + `extractToolCalls` 移植; Cursor 3.0+ session discovery (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*`); timestamp fallback (spec 010); cursor-history spec 010–013 → Rust parity fixtures. **不**改 Transport / unified.db schema. | 2-3d | ⚪ 建议 PR-2 前先做 |
+| **v0.3.0 PR-2** | snapshot codec v4 (§2, bubbles / blob_refs / raw_blobs, `SNAPSHOT_VERSION=4`) + `Transport` trait 转 `async_trait` (§4) + `ConflictClass` 5-way enum (§6, New/Identical/IncomingNewer/LocalAhead/Diverged) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec + unified.db upsert + Conflict 分类 (New/Identical/IncomingNewer → upsert; LocalAhead → 跳过; Diverged → auto_merge + archive). **含 §9.8 agentKv 写入**. `core::transport::snapshot` 改名 `core::transport::snapshot_meta` (给新 `core::snapshot` 让位). 冲突算法参考 `vendored/cursaves/cursor_saves/importer.py::_check_conflict`. 新增 2 个 Cargo dep: `tokio = "1"` (full features) + `async-trait = "0.1"` (~1.5MB binary 增量, 跟 v0.3.1 outbox `tokio::time::interval` 自然衔接). | 3-4d | ⚪ PR-2 待开 |
+| **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + SSH workspace 路径解析 + git remote 项目标识 (§11.5 中优先级项). 默认 dry-run; **不** auto-create workspace (借鉴 cursaves 注册逻辑, 不借鉴 `find_or_create_workspace`). | 2d | ⚪ PR-2 后 |
 | **v0.3.1** | SSH/rsync default transport 切到 outbox path (§5.2) + `<SyncPeersDialog>` UI (§9) + `<ConflictResolveDialog>` (§6.7) + `core::lock` structured 升级 (§7.4) | 5-7d | ⚪ 待拍板 |
 | **v0.3.2** | T3 Git adapter (路线图) — 历史可视化 | 5d | ⚪ 待拍板 |
 | **v0.3.3** | T4 S3 / T5 Tailscale adapter (路线图) | 4d | ⚪ 待拍板 |
@@ -1621,6 +1664,69 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | `bettercursor/layer3.py` | 189 | (同上) |
 
 > Python 仅作**设计参考**, 不要尝试双跑 (新 doc 不强行兼容 Python codec).
+
+### 11.5 vendored 上游借鉴索引 (2026-07-04)
+
+> 子 agent 对 `vendored/cursaves/` + `vendored/cursor-history/` 与主项目代码级对比的结论. **算法级重写**, 不搬运源码 (cursaves AGPL-3.0).
+
+#### 三者定位
+
+| 项目 | 栈 | 存储范围 | 强项 |
+|------|-----|---------|------|
+| cursaves | Python CLI | L3 + workspace 索引 | 导入导出、冲突、agentKv、Doctor、git 同步 |
+| cursor-history | TS 库 + CLI | L3 (workspace + global) | bubble 文本提取、session recovery、spec+测试 |
+| bettercursor | Tauri + Rust | **L1 + L2 + L3** | 三路合并、L2↔L3 补层、transport、GUI、进程锁 |
+
+#### 高优先级 — 建议落地顺序
+
+| # | 借鉴什么 | 上游文件 | bettercursor 落点 |
+|---|---------|---------|------------------|
+| 1 | L3 bubble 完整文本 + toolCalls | `cursor-history/src/core/storage.ts` | `canonical.rs` — 见 §2.8 |
+| 2 | Cursor 3.0+ 多源 composer ID 发现 | cursaves `paths.py::get_workspace_composer_ids`; cursor-history `storage.ts::listSessions` | `canonical.rs::scan_layer3_into`; 可选 `core/workspace.rs` |
+| 3 | Timestamp fallback | cursor-history spec 010 | `decode_l3_bubble_blob` + merge 排序 |
+| 4 | Parity fixtures | cursor-history `tests/unit/storage.test.ts` + spec 012/013 | `canonical.rs::tests` + `tests/fixtures/cursor-history/` |
+| 5 | agentKv 提取/写入/修复 | cursaves `export.py` / `importer.py` | `sync.rs` / §9.8 |
+| 6 | L3 write batch + backup | cursaves `db.py` | `storage.rs` 写侧 |
+| 7 | 冲突五态 + diverged fork | cursaves `importer.py::_check_conflict`; `bettercursor/conflict.py` | `core/conflict.rs` — §6 |
+| 8 | v4 ancillary 字段 (messageContexts, checkpoints, agentBlobs) | cursaves `export.py::export_conversation` | `core/snapshot.rs` — §2 |
+
+#### 中优先级
+
+| 借鉴什么 | 上游 | 落点 |
+|---------|------|------|
+| Doctor 孤儿审计/恢复 | cursaves `doctor_audit` / `doctor_recover` | 新 Tauri command + `core/doctor.rs` |
+| Git remote 项目标识 | cursaves `paths.py::get_project_identifier` | `paths.rs` + snapshot `project_slug` |
+| SSH workspace 路径 | cursaves `paths.py::list_all_workspaces` | `paths.rs` |
+| 导入后 workspace 注册 (不自动建 workspace) | cursaves `importer.py::_register_in_*` | 对齐 `inject.rs` |
+| DB fingerprint 减扫 | cursaves `watch.py::_get_db_fingerprint` | `watcher.rs` |
+| 跨设备路径重写 | cursaves `importer.py::rewrite_paths` | v4 import / `sync.rs` |
+| TokenUsage / 降级标记 | cursor-history spec 009/012 | `Bubble` / `Conversation` / UI |
+| 轻量 spec 驱动 (parser 契约) | cursor-history `specs/` 结构 | `docs/PARSER_SPEC.md` (仅协议级变更时) |
+
+#### 不建议借鉴
+
+| 项 | 原因 |
+|----|------|
+| 直接 import cursaves Python | AGPL-3.0 |
+| cursaves v3 gzip 作主 snapshot 格式 | 已选 v4 bubble-level plain text (§2.4) |
+| `find_or_create_workspace()` | bettercursor 要求用户先在 Cursor 打开项目 |
+| L3 purge / 强制删 global DB | PRD 跳过 L3 delete |
+| cursaves 60s mtime 轮询 watch | 已有 notify + debounce |
+| cursor-history 整体 TS 库 + sidecar | 已选 Tauri+Rust 单栈 |
+| 仅 workspaceStorage 模型 | 丢失 L1/L2 CLI session |
+| `generations` 时间窗拼 session | 质量低于 global bubble + L1 |
+| live npm/pip 依赖 vendored | 只读参考 |
+| Display 截断下沉存储层 | spec 013 反模式; 损害 FTS/codec |
+
+#### bettercursor 已更强 (无需回退对齐)
+
+- 三层存储统一 + `Sources` 三色标签
+- `merge_bubbles_three_way` 字段级 LWW
+- L2 orphan 修复 (`fix_latest_root`)
+- 可写 sync + 进程锁 (含 `cursor-agent`) + 写前备份
+- SSH/rsync transport + `unified.db`
+- notify 实时监听 + Windows 支持 + 桌面 GUI + i18n
+- Rust 单测覆盖 (`canonical.rs` 等)
 
 ---
 
@@ -1726,6 +1832,11 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | 实施计划 | [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) §3 (commands) |
 | Tailscale 历史 | [mihomo-tailscale-fakeip-conflict.md](mihomo-tailscale-fakeip-conflict.md) (旧 v0.2 设计参考, 已不作为 default) |
 | Cursor 存储路径 | [vendored/cursaves/cursor_saves/paths.py](../vendored/cursaves/cursor_saves/paths.py) (Python 参考) |
+| vendored 借鉴索引 | [§11.5](SYNC_DESIGN.md) (cursaves + cursor-history 对比结论) |
+| L3 bubble 解析缺口 | [§2.8](SYNC_DESIGN.md) (cursor-history `extractBubbleText` 对标) |
+| agentKv / L3 写补全 | [§9.8](SYNC_DESIGN.md) (cursaves export/importer 对标) |
+| cursor-history bubble 解析 | [vendored/cursor-history/src/core/storage.ts](../vendored/cursor-history/src/core/storage.ts) |
+| cursor-history 测试/spec | [vendored/cursor-history/specs/010–013](../vendored/cursor-history/specs/) |
 
 ### C. 后续待补的 doc (TODO)
 

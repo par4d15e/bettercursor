@@ -403,6 +403,7 @@ def infer_workspace_id(mac_session, jsonl_path):
 | 2026-07-03 凌晨 | **架构反转**: CPU 实测确认 Mac 是本地 Electron + SSH 文件 (模型 A), 不是 thin client. 推翻"Linux source of truth". Mac 不开 SSH server → 选反向推送架构. |
 | 2026-07-03 | **BACKGROUND 完善**: 补 CPU 实测证据 / 4 层架构细节 / 17 session 分布表 / chat_root MD5 验证 / 空草稿过滤逻辑 / Mac 双 workspaceStorage 解释 / 6 个待回答 |
 | 2026-07-03 午后 | **cursaves 摸排完成**: 在 Linux 装 Callum-Ward/cursaves, 拿到 c1ea7999 snapshot. 80 agentBlobs (76 JSON + 4 protobuf tree nodes), key = SHA256(raw bytes) 验证通过. cursaves importer 第 416 行揭示: store.db 的 key 格式是 `agentKv:blob:<id>`, 与 cursor-agent CLI 完全一致. |
+| 2026-07-04 晚 | **cursor-history 纳入 vendored/**: clone [S2thend/cursor-history](https://github.com/S2thend/cursor-history) 到 `vendored/cursor-history/`. 子 agent 对比 cursaves + cursor-history + bettercursor, 结论写入 [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) (借鉴索引)、§2.8 (L3 解析缺口)、§9.8 (agentKv). PRD §0.5 补待做项. |
 | 2026-07-03 午后 | **Linux adapter POC 完成**: 发现 c1ea7999 的 store.db 已有 4 blobs 但 `meta[0].latestRootBlobId = ""` (空字符串) → cursor-agent --resume 失败. 写 `adapter/fix_orphan_sessions.py` (172 行) 自动找 root 候选. **修复后 cursor-agent --resume 工作, agent 记得全部上下文** (验证问"我之前问过你什么"答"你觉得够健硕吗"). |
 
 ---
@@ -515,16 +516,27 @@ Mac client 介入后:
 但代码里多处出现"Ported from bettercursor/*py" 的历史引用, 这里澄清这些引用的实际链路:
 
 ```
-Callum-Ward/cursaves (上游, Python)
+Callum-Ward/cursaves (上游, Python, AGPL)
         │
-        │ Eric fork + 加 Layer 1 JSONL / chair_root MD5 等适配
+        │ Eric fork + 加 Layer 1 JSONL / chat_root MD5 等适配
         ▼
 bettercursor-py (Eric 自己的早期 Python 版, ~2024–2025 初)
         │
         │ Eric 推倒重写为 Tauri + Rust (2026-06)
         ▼
 bettercursor-rs (当前仓库 = ~/workspace/bettercursor)
+        ▲
+        │ 只读算法参考 (不 runtime 依赖)
+        │
+S2thend/cursor-history (上游, TypeScript, MIT)
 ```
+
+**vendored 快照** (2026-07-04 纳入 `vendored/`):
+
+| 目录 | 借鉴侧重 | 完整索引 |
+|------|---------|---------|
+| `vendored/cursaves/` | 写路径、agentKv、冲突、导入导出、Doctor | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) |
+| `vendored/cursor-history/` | L3 bubble 解析、session recovery、测试契约 | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) |
 
 **Rust 端对 Python 端的具体借鉴 (算法 / 格式约定, 非代码搬运)**:
 
@@ -532,7 +544,7 @@ bettercursor-rs (当前仓库 = ~/workspace/bettercursor)
 |---|---|
 | `src-tauri/src/core/paths.rs` | `chat_root_for(cwd)` 用 `md5(cwd_as_string)` 作为 Layer 2 路径 hash; `sanitize_project_path("/a/b") → "a-b"` 的 slug 规则 |
 | `src-tauri/src/core/storage.rs` | WAL-safe SQLite 读模式: 把 db + wal + shm 三件套先拷到 `tempfile::tempdir()`, 然后 `PRAGMA wal_checkpoint(TRUNCATE)`, 再打开只读. 避开和正在运行的 Cursor 的锁争用. |
-| `src-tauri/src/core/canonical.rs` | 三层优先级 (Layer 1 内容最丰富 > Layer 2 元数据 > Layer 3 老格式); UUID 作 merge key; preview 截断 120 chars; broken-session 规则 (`latestRootBlobId == ""`) |
+| `src-tauri/src/core/canonical.rs` | 三层优先级 (Layer 1 内容最丰富 > Layer 2 元数据 > Layer 3 老格式); UUID 作 merge key; preview 截断 120 chars; broken-session 规则 (`latestRootBlobId == ""`). **待补**: L3 `extract_l3_bubble_text` (cursor-history), session discovery (cursaves + cursor-history) — 见 SYNC_DESIGN §2.8 / §11.5 |
 | `src-tauri/src/core/watcher.rs` | **完全从零写**, Python 版没有 watcher 这一层 (Python 版只在 CLI 启动时 scan 一次, E 是 v0.2 全新加的) |
 | `src-tauri/src/core/incremental.rs` (未来) | 同上, 增量合并是当前 Rust 才有的 |
 

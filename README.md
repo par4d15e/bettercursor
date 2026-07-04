@@ -397,8 +397,9 @@ v0.3.2+           T3 Git · T4 S3 · T5 Tailscale adapters
 - UI paradigm: [farion1231/cc-switch](https://github.com/farion1231/cc-switch)
 - Old Python daemon (`bettercursor/`, `adapter/`) provided the parsing
   algorithm reference
-- `vendored/cursaves/` is a snapshot of the upstream Cursor parsing
-  library
+- `vendored/cursaves/` (AGPL, read-only) and `vendored/cursor-history/` (MIT,
+  read-only) are upstream Cursor parsing library snapshots; borrowable algorithms
+  are indexed in [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md)
 
 ---
 

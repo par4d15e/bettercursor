@@ -317,7 +317,7 @@ v0.3.2+           T3 Git · T4 S3 · T5 Tailscale adapter
 
 - UI 范式来自 [farion1231/cc-switch](https://github.com/farion1231/cc-switch)
 - 旧版 Python 守护进程 (`bettercursor/`, `adapter/`) 提供了解析算法参考
-- `vendored/cursaves/` 是上游 Cursor 解析库的快照
+- `vendored/cursaves/` (AGPL, 只读) 与 `vendored/cursor-history/` (MIT, 只读) 是上游 Cursor 解析库快照; 可借鉴算法索引见 [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md)
 
 ---
 

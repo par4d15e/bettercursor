@@ -12,8 +12,22 @@ bettercursor/
 ├── tests/                   # Python 兼容性 / parity 测试
 ├── bettercursor/, adapter/  # 旧版 Python 守护进程(存档,不维护,仅做算法参考)
 ├── vendored/                # 上游 Cursor 解析库快照(子仓库,只读参考)
+│   ├── cursaves/            # Python — 写路径 / 导入导出 / agentKv / 冲突 / Doctor
+│   └── cursor-history/      # TypeScript — L3 bubble 解析 / session recovery / spec+测试
 ├── README.md  PRD.md  SYNC_DESIGN.md  TAURI_RUST_PLAN.md  BACKGROUND.md  goal.md
 ```
+
+### vendored 上游参考(只读)
+
+| 子目录 | 上游 | 许可 | 借鉴范围 |
+|--------|------|------|----------|
+| `vendored/cursaves/` | [Callum-Ward/cursaves](https://github.com/Callum-Ward/cursaves) | **AGPL-3.0** | WAL 写 batch、agentKv、冲突五态、导入导出 ancillary、Doctor、workspace 注册、DB fingerprint |
+| `vendored/cursor-history/` | [S2thend/cursor-history](https://github.com/S2thend/cursor-history) | MIT | `extractBubbleText` / `extractToolCalls`、global session recovery、timestamp fallback、parity fixtures、spec 010–013 |
+
+**硬性约束**(与 [PRD.md §12.5](PRD.md) 一致):
+
+- **不** install / import / 放入 `sys.path` / 加入 Cargo workspace / npm 依赖
+- **只** 算法级重写 + Rust 单测 parity; 完整可借鉴项索引见 [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md)
 
 ### 关键目录职责
 

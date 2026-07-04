@@ -99,7 +99,9 @@ bettercursor/
 │       ├── tauri.ts               ← invoke() wrappers
 │       └── types.ts               ← CanonicalSession (TS mirror)
 ├── bettercursor/                  ← Python 参考实现 (保留, 不进 runtime)
-├── vendored/cursaves/             ← 只读参考
+├── vendored/
+│   ├── cursaves/                  ← 只读参考 (AGPL-3.0): 写路径 / agentKv / 冲突 / Doctor
+│   └── cursor-history/            ← 只读参考 (MIT): L3 bubble 解析 / recovery / spec+测试
 ├── cc-switch-session.png          ← UI 参照
 ├── goal.md
 ├── PRD.md
@@ -249,11 +251,28 @@ tempfile = "3"
 - [cc-switch-session.png](cc-switch-session.png) — UI 1:1 参照
 - [PRD.md §4.1](PRD.md) — CanonicalSession 字段定义
 - [PRD.md §4.2](PRD.md) — 4 层存储路径表
-- [vendored/cursaves/cursor_saves/paths.py](../vendored/cursaves/cursor_saves/paths.py) — 路径解析参考
-- [vendored/cursaves/cursor_saves/db.py](../vendored/cursaves/cursor_saves/db.py) — WAL-safe SQLite 读参考
+- [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) — **vendored 借鉴索引** (cursaves + cursor-history 对比, 优先级与落点)
+- [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) — L3 bubble 解析缺口 (`extractBubbleText` 对标)
+- [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) — agentKv / L3 写路径补全
+
+**cursaves (Python, AGPL — 只读算法参考)**:
+
+- [vendored/cursaves/cursor_saves/paths.py](../vendored/cursaves/cursor_saves/paths.py) — 路径解析、workspace 枚举、composer ID 多源发现
+- [vendored/cursaves/cursor_saves/db.py](../vendored/cursaves/cursor_saves/db.py) — WAL-safe SQLite 读写、write_batch、backup
+- [vendored/cursaves/cursor_saves/export.py](../vendored/cursaves/cursor_saves/export.py) — agentKv 提取、ancillary 导出
+- [vendored/cursaves/cursor_saves/importer.py](../vendored/cursaves/cursor_saves/importer.py) — 冲突五态、导入、Doctor、workspace 注册
+- [vendored/cursaves/cursor_saves/watch.py](../vendored/cursaves/cursor_saves/watch.py) — DB fingerprint (cheap dirty check)
+
+**cursor-history (TypeScript, MIT — 只读算法参考)**:
+
+- [vendored/cursor-history/src/core/storage.ts](../vendored/cursor-history/src/core/storage.ts) — `extractBubbleText` / `extractToolCalls` / session recovery
+- [vendored/cursor-history/specs/010–013](../vendored/cursor-history/specs/) — timestamp / 完整性 / tool 不截断 契约
+- [vendored/cursor-history/tests/unit/storage.test.ts](../vendored/cursor-history/tests/unit/storage.test.ts) — parity fixture 场景来源
+
+**本仓库 Python 端口源**:
+
 - [bettercursor/paths.py](paths.py) — Python 端口源 (182 行)
 - [bettercursor/storage.py](storage.py) — Python 端口源 (254 行, 只读部分)
-- [vendored/cursaves/cursor_saves/watch.py](../vendored/cursaves/cursor_saves/watch.py) — 4 层扫表参考 (Python 端用过的 scan 函数)
 
 ---
 

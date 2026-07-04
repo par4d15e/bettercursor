@@ -126,6 +126,13 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.3.0 PR-1 — 单元测试 10 case (`open_creates_eight_tables` / `rebuild_is_idempotent` / `rebuild_writes_content_hash_deterministically` / `archive_and_delete_cascade` / `resolve_conflict_marks_resolved` / `sync_run_record_and_finish` / `rebuild_honors_sources_priority_order` / `content_hash_changes_when_text_changes` / `sources_preferred_helpers_four_cases` / `bubble_helper_round_trip`)** | `core/unified.rs::tests` | **v0.3.0 PR-1 ✅** |
 | 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **Transport trait 落地 (v0.2.6 ✅)**; unified.db 落地 (v0.3.0 PR-1 ✅); codec v4 / outbox / UI / 5-way conflict / CLI binary 推迟到 v0.3.0 PR-2 + v0.3.1 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
+| **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | ⚪ 待做 — 参考 `vendored/cursor-history/src/core/storage.ts` |
+| **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ 待做 — cursaves + cursor-history 均有实现 |
+| **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 待做 — 参考 `vendored/cursaves/cursor_saves/export.py` |
+| **L3 统一写 API** (batch + backup 保留 N 份 + verify) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 部分 — `sync.rs` 有 inline write; 缺 agentKv batch 与 cursaves 级 backup 策略 |
+| **`core::conflict.rs` 五态分类** | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | ⚪ PR-2 — 算法参考 `bettercursor/conflict.py` + `vendored/cursaves/cursor_saves/importer.py` |
+| **Doctor 孤儿会话审计/恢复** (L3 有 composerData 但未注册 sidebar) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ 待做 — 参考 cursaves `doctor_audit` / `doctor_recover` |
+| **parity fixtures** (cursor-history spec 010–013 场景 → Rust 单测) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ 待做 |
 | UI: SyncPeersDialog / 推送按钮 / sync history | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | 设计稿 (v0.3.0) |
 | Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | **v0.2.5 ✅** (Apple Silicon) + **v0.2.6 ✅** (Intel x64 via `macos-13` matrix) |
 
@@ -458,7 +465,7 @@ const orphans = await invoke<FixOrphansReport>('fix_orphans');
 | **Python 参考实现** | `bettercursor/paths.py` (182) + `storage.py` (254) + `layer2.py` (183) + `blob_dag.py` (188) + `snapshot.py` (198) + `conflict.py` (96) + `layer3.py` (189) |
 | **c1ea7999 验证** | `tests/test_layer2_import.py` 端到端 PASS |
 
-**注**: Python 代码**不进 runtime**, 作为 Rust 端口的参考. `vendored/cursaves/` 继续只读参考.
+**注**: Python 代码**不进 runtime**, 作为 Rust 端口的参考. `vendored/cursaves/` 与 `vendored/cursor-history/` 继续只读参考; 可借鉴项见 [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md).
 
 ### Phase T0 — Tauri 项目骨架 (半天, #54)
 
@@ -662,7 +669,11 @@ tempfile = "3"
 
 ### 12.5 许可证注意
 
-- cursaves: AGPL-3.0 — `vendored/cursaves/` 仅作源码参考, **不 install 不 import**, **不放入 sys.path / cargo workspace**
-- bettercursor: **MIT**
+| 目录 | 许可 | 约束 |
+|------|------|------|
+| `vendored/cursaves/` | **AGPL-3.0** | 仅作源码参考; **不** install / import / 放入 `sys.path` / cargo workspace |
+| `vendored/cursor-history/` | MIT | 仅作源码参考; **不** npm 依赖 / 运行时耦合 |
+| bettercursor 本体 | **MIT** | — |
 
-- vendored/cursaves/ 单独保留 LICENSE 文件, 标注"仅作源码参考, 非运行时依赖"
+- 两个 vendored 子目录均保留各自 LICENSE, 标注「仅作源码参考, 非运行时依赖」
+- 可借鉴算法索引与优先级见 [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md); 代际关系见 [BACKGROUND.md §12](BACKGROUND.md)
