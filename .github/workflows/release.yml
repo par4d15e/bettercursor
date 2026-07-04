@@ -21,6 +21,13 @@ jobs:
               src-tauri/target/release/bundle/**/*.deb
               src-tauri/target/release/bundle/**/*.AppImage
           - os: macos-latest
+            # Apple Silicon (aarch64) — `macos-latest` has been ARM-only
+            # since GH Actions switched the default runner in late 2024.
+            artifact_glob: |
+              src-tauri/target/release/bundle/**/*.dmg
+          - os: macos-13
+            # Intel (x86_64) — needs a separate runner since
+            # `macos-latest` no longer produces x64 artifacts.
             artifact_glob: |
               src-tauri/target/release/bundle/**/*.dmg
           - os: windows-latest
@@ -37,7 +44,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22 LTS — Node 24 is what GH Actions currently forces
+          # onto Node 20 jobs, but pnpm 9.15+ (installed below) has
+          # some churn on Node 24. Pin to 22 LTS for stability.
+          node-version: 22
         # NOTE: cache: pnpm removed — setup-node@v4 invokes
         # `pnpm store path` which pnpm 9.x breaks with
         # "ERROR packages field missing or empty". Use the
