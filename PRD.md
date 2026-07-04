@@ -10,7 +10,10 @@
 >
 > **状态**:
 >   - **v0.1** (2026-07-03 完工) = **只读 session 查看器**, 1:1 还原 cc-switch 界面. 详见 §0.
->   - **v0.2+** = 加 sync (本机 Desktop↔CLI, 跨设备 Mac↔Linux). 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md).
+>   - **v0.2-alpha** (2026-07-03 完工) = **手动单 session L2↔L3 补层 sync**, 单按钮一键补齐缺失层. 详见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
+>   - **v0.2.1** (2026-07-04 完工) = 修 orphan (latestRootBlobId 空字符串) + 删除 session (L1 + L2, L3 跳). 详见 [SYNC_DESIGN.md §9](SYNC_DESIGN.md).
+>   - **v0.2.2** (2026-07-04 完工) = 对话记录展开 — L1+L2+L3 三路合并 (bubble-id 对账 + 字段级 LWW) + `<MessageList>` 薄包装 (sticky header + 浮动跳转 + stable key). 详见 [SYNC_DESIGN.md §7](SYNC_DESIGN.md).
+>   - **v0.2.3+** = 全量 sync loop / 跨设备. 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §9.
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -76,12 +79,22 @@ Layer 3 (state.vscdb)─┘                            ↓
 
 | 能力 | 在哪设计 | 状态 |
 |------|---------|------|
-| 写 store.db / state.vscdb (delete 或 sync 都需要) | [SYNC_DESIGN.md §3](SYNC_DESIGN.md) | 设计稿 |
-| 修 `latestRootBlobId` (orphan session 修复) | [SYNC_DESIGN.md §3.3](SYNC_DESIGN.md) | 设计稿 + Python 参考已实现 (`bettercursor/blob_dag.py`) |
-| 后台 tokio sync loop (5min 间隔 + notify 触发) | [SYNC_DESIGN.md §5](SYNC_DESIGN.md) | 设计稿 |
-| `sync_now` / `set_auto_sync` / `get_sync_status` command | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | 设计稿 |
-| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | 设计稿 |
-| 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | 设计稿 |
+| 写 store.db / state.vscdb (delete 或 sync 都需要) | [SYNC_DESIGN.md §3](SYNC_DESIGN.md) | **v0.2-alpha ✅** (单 session L2/L3 补层) |
+| 修 `latestRootBlobId` (orphan session 修复) | [SYNC_DESIGN.md §3.3](SYNC_DESIGN.md) | **v0.2-alpha ✅** (inline `fix_latest_root` in `core::sync`) + Python 参考已实现 (`bettercursor/blob_dag.py`) |
+| 手动 L2↔L3 补层 sync (`sync_session_layer23` command) | [SYNC_DESIGN.md §4.3](SYNC_DESIGN.md) | **v0.2-alpha ✅** (UI 单按钮) |
+| Cursor 进程检测 (sync 安全锁) | `src-tauri/src/core/process.rs` | **v0.2-alpha ✅** |
+| **v0.2.1 — Tauri command `fix_orphans` (扫所有 store.db, 自动修 root)** | [SYNC_DESIGN.md §4.1](SYNC_DESIGN.md) | **v0.2.1 ✅** |
+| **v0.2.1 — Tauri command `delete_session` (Layer 1 + Layer 2 直 rm, L3 跳)** | [SYNC_DESIGN.md §4.1](SYNC_DESIGN.md) | **v0.2.1 ✅** |
+| **v0.2.1 — UI: SessionTree 头部 "Wrench" 按钮 + toast** | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | **v0.2.1 ✅** |
+| **v0.2.1 — UI: SessionDetail 单条 "修复 Layer 2" + 启用 "删除" + 原生 `<dialog>` 确认** | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | **v0.2.1 ✅** |
+| **v0.2.2 — 对话记录展开 (L1+L2+L3 三路合并 + bubble-id 对账 + 字段级 LWW)** | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
+| **v0.2.2 — `<MessageList>` 薄包装 (sticky header + 三态文案 + 浮动跳转底部 + stable key)** | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | **v0.2.2 ✅** |
+| **v0.2.2 — `Bubble` 加 `id` / `created_at_ms` (均 `#[serde(default)]`)** | `src-tauri/src/core/canonical.rs` | **v0.2.2 ✅** |
+| **v0.2.2 — `paths::find_layer1_jsonl_for` 合并两份 finder + `inject::LayerBubble` 改为 `canonical::Bubble` 别名** | `src-tauri/src/core/paths.rs` + `src-tauri/src/core/inject.rs` | **v0.2.2 ✅** |
+| 后台 tokio sync loop (5min 间隔 + notify 触发) | [SYNC_DESIGN.md §5](SYNC_DESIGN.md) | 设计稿 (v0.2.3) |
+| `sync_now` / `set_auto_sync` / `get_sync_status` command | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | 设计稿 (v0.2.3) |
+| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | 设计稿 (v0.2.4) |
+| 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | UI: SyncToggle / SyncNowButton / 状态显示 | [SYNC_DESIGN.md §4.3](SYNC_DESIGN.md) | 设计稿 |
 | Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | 设计稿 |
 
@@ -325,19 +338,31 @@ await invoke<void>('refresh_sessions');
 // 后端重新扫 3 层, 更新 AppState, emit 'sessions-updated'
 ```
 
-### 5.5 `delete_session` (Phase 2, 不在 v0.1)
+### 5.5 `delete_session` + `fix_orphans` (v0.2.1 ✅)
 
 ```typescript
-await invoke<void>('delete_session', { uuid });
-// 删 Layer 2 store.db 行 + JSONL 文件 (不删 Layer 3, 因为那需要 Cursor 配合)
+// 删除 session 的 Layer 1 (JSONL) + Layer 2 (store.db). L3 强制跳过.
+const report = await invoke<DeleteReport>('delete_session', {
+  uuid: '...',
+  cwd: '/path/to/project',         // 必须 — 算 L2 md5 bucket
+  projectSlug: 'home-user-proj',  // 来自 CanonicalSession — 算 L1 path
+});
+// report.removed_l1 / removed_l2 / skipped_l1 / skipped_l2 / cursor_running
+
+// 全量扫所有 chats/<md5>/<uuid>/store.db, 修空 latestRootBlobId
+const orphans = await invoke<FixOrphansReport>('fix_orphans');
+// orphans.fixed / skipped / scanned
 ```
+
+`delete_session` 前置 `cursor_processes_running` 锁 (跟 `sync_session_layer23` 一致).
+`fix_orphans` 修之前自动留 `.backup_<ts>` 兄弟文件, 写非破坏.
 
 ### 5.6 不在范围内 (强调)
 
 - 不存在 `export` / `import` (无跨端)
-- 不存在 `doctor` / `fix_orphans` (无修根, 因为不写)
-- 不存在 `set_auto_sync` / `sync_now` (无同步)
+- 不存在 `set_auto_sync` / `sync_now` (全量 sync loop, v0.2.3)
 - 不存在 `start_daemon` / `stop_daemon` (无 daemon)
+- 不存在 `Layer 3 delete` (Cursor 自己管)
 
 ---
 
@@ -438,14 +463,19 @@ await invoke<void>('delete_session', { uuid });
 | 刷新按钮 | 调 `refresh_sessions` 重扫 |
 | 选中高亮 | 点行高亮, 详情同步 |
 
-### Phase T3 — 删除 (可选, v0.2, 用户没明确要求)
+### Phase T3 — 删除 + 修复 orphan (v0.2.1 ✅)
 
 | 任务 | 验收 |
 |------|------|
-| `core/layer2.rs` 写函数 (port from `bettercursor/layer2.py`) | store.db 行 + JSONL 删 |
-| `commands::delete_session` | UI 红按钮触发, 弹确认框 |
+| `core::sync::fix_orphans` (pub fn) | 扫所有 chats/<md5>/<uuid>/store.db, 修空 latestRootBlobId |
+| `core::sync::delete_session` (pub fn) | L1 (JSONL) + L2 (store.db) `remove_dir_all`, L3 跳 |
+| Tauri command `fix_orphans` | 注册到 `invoke_handler!` |
+| Tauri command `delete_session` | 注册到 `invoke_handler!`, 吃 `uuid / cwd / project_slug` |
+| UI: SessionTree 头部 "Wrench" 按钮 + 4s toast | `fix_orphans` 全量入口 |
+| UI: SessionDetail 单条 "修复 Layer 2" 按钮 (仅 broken 时) | `fix_orphans` 单条入口 (同一后端) |
+| UI: SessionDetail "删除" 启用 + 原生 `<dialog>` 确认 (L1/L2 checkbox + L3 disabled) | `delete_session` 入口, cursor_running 时按钮 disabled |
 
-**为什么不是 v0.1 范围**: goal.md #1 只说"查看", 没说"删除". cc-switch 有删, 但用户没明确说要. 留 Phase T3 待用户确认.
+**v0.2.1 期间达成**: 用户在 v0.1 反馈里提了两个明确要求 ("希望有修复"、"希望有删除"), 在 v0.2.1 一次性落地. L3 删除策略拍板: 跳过 (Cursor Desktop 自己管).
 
 ### Phase T4 — 跨平台 (可选, v0.2)
 

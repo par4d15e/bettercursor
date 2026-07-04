@@ -6,6 +6,7 @@ import { SourceBadge } from "./SourceBadge";
 import { BrokenBadge } from "./BrokenBadge";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
+import { fixOrphans, refreshSessions, type FixOrphansReport } from "../lib/tauri";
 import {
   ChevronLeft,
   ChevronDown,
@@ -15,6 +16,9 @@ import {
   ArrowUpDown,
   ListFilter,
   Radio,
+  Wrench,
+  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
 
 function detectSource(s: CanonicalSession): SourceLayer | null {
@@ -37,15 +41,58 @@ export function SessionTree() {
   const init = useSessionStore((s) => s.init);
   const sortMode = useSessionStore((s) => s.sortMode);
   const cycleSortMode = useSessionStore((s) => s.cycleSortMode);
-  const autoSyncEnabled = useSessionStore((s) => s.autoSyncEnabled);
+  // v0.2-alpha removed the auto-sync toggle (#103). The watcher always
+  // runs and always re-scans on fs events. `autoSyncLive` is kept only
+  // for the "LIVE" badge diagnostic in the toolbar — drives no UI affordance.
+  const autoSyncLive = useSessionStore((s) => s.autoSyncLive);
   const watcherDirs = useSessionStore((s) => s.watcherDirs);
-  const toggleAutoSync = useSessionStore((s) => s.toggleAutoSync);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // v0.2.1 — 头部 Wrench 按钮 (批量修复 orphan). 状态独立于
+  // SessionDetail 的单条修复按钮 (两边调同一个 fixOrphans).
+  // `orphanToast` 是 3s 自动消失的横幅.
+  const [fixingOrphans, setFixingOrphans] = useState(false);
+  const [orphanToast, setOrphanToast] = useState<
+    | { kind: "ok" | "err"; text: string; report?: FixOrphansReport }
+    | null
+  >(null);
 
   useEffect(() => {
     init();
   }, [init]);
+
+  // 3s 自动消失. useEffect 挂在新 toast 上, 卸载时清理 timer.
+  useEffect(() => {
+    if (!orphanToast) return;
+    const id = window.setTimeout(() => setOrphanToast(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [orphanToast]);
+
+  const handleFixOrphans = async () => {
+    setFixingOrphans(true);
+    setOrphanToast(null);
+    try {
+      const report = await fixOrphans();
+      await refreshSessions().catch(() => undefined);
+      setOrphanToast({
+        kind: "ok",
+        text: `扫描 ${report.scanned} 条 orphan, 修复 ${report.fixed.length} 条${
+          report.skipped.length > 0
+            ? `, 跳过 ${report.skipped.length} 条`
+            : ""
+        }`,
+        report,
+      });
+    } catch (e: unknown) {
+      setOrphanToast({
+        kind: "err",
+        text: `修复失败: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    } finally {
+      setFixingOrphans(false);
+    }
+  };
 
   const toggle = (slug: string) => {
     setCollapsed((prev) => {
@@ -77,29 +124,18 @@ export function SessionTree() {
         <span className="px-1.5 py-0.5 rounded bg-bg-tertiary text-fg-primary font-mono">
           {total}
         </span>
-        {/* Auto-sync toggle (ccswitch-style). Click to flip; persists
-            to ~/.bettercursor/config.json via the set_auto_sync Tauri
-            command. The watcher thread is always alive — this gate
-            just controls whether scan_all() actually fires. */}
-        <button
-          onClick={toggleAutoSync}
-          title={
-            autoSyncEnabled
-              ? `自动同步开启 — 监听 ${watcherDirs.join(", ")} (点击关闭)`
-              : "自动同步关闭 — 点击开启"
-          }
-          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
-            autoSyncEnabled
-              ? "bg-accent-green/15 border-accent-green/40 text-accent-green hover:bg-accent-green/25"
-              : "bg-bg-tertiary border-border text-fg-muted hover:bg-bg-hover"
-          }`}
-        >
-          <Radio
-            size={10}
-            className={autoSyncEnabled ? "animate-pulse" : ""}
-          />
-          <span>{autoSyncEnabled ? "LIVE" : "OFF"}</span>
-        </button>
+        {/* v0.2-alpha (#103): 移除 auto-sync toggle — watcher 始终启用.
+            仅在 watcher 线程实际在线时显示一个只读 "LIVE" 指示器,
+            点击无副作用, 作为 fs-watcher 工作状态的视觉反馈. */}
+        {autoSyncLive && (
+          <span
+            title={`自动同步运行中 — 监听 ${watcherDirs.join(", ")}`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-accent-green/15 border-accent-green/40 text-accent-green"
+          >
+            <Radio size={10} className="animate-pulse" />
+            <span>LIVE</span>
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             className="p-1 rounded hover:bg-bg-hover"
@@ -117,6 +153,18 @@ export function SessionTree() {
             <span className="text-[10px]">{SORT_LABELS[sortMode]}</span>
           </button>
           <button
+            data-testid="fix-orphans-button"
+            className="p-1 rounded hover:bg-bg-hover"
+            onClick={handleFixOrphans}
+            title="修复所有 Layer 2 orphan session (latestRootBlobId 是空字符串). 已自动备份 store.db."
+            disabled={fixingOrphans}
+          >
+            <Wrench
+              size={14}
+              className={fixingOrphans ? "animate-spin" : ""}
+            />
+          </button>
+          <button
             className="p-1 rounded hover:bg-bg-hover"
             onClick={() => refresh()}
             title="刷新"
@@ -126,6 +174,27 @@ export function SessionTree() {
           </button>
         </div>
       </div>
+
+      {/* v0.2.1 — fix_orphans toast. 顶部居中, 跟 Search 与 List
+          之间无遮挡; 4s 自动消失. ok 时 acc-green, err 时 accent-red. */}
+      {orphanToast && (
+        <div
+          data-testid="fix-orphans-toast"
+          role="status"
+          className={`mx-3 mt-2 px-2.5 py-1.5 rounded border text-xs flex items-start gap-2 ${
+            orphanToast.kind === "ok"
+              ? "bg-accent-green/10 border-accent-green/40 text-accent-green"
+              : "bg-accent-red/10 border-accent-red/40 text-accent-red"
+          }`}
+        >
+          {orphanToast.kind === "ok" ? (
+            <CheckCircle2 size={12} className="shrink-0 mt-px" />
+          ) : (
+            <AlertTriangle size={12} className="shrink-0 mt-px" />
+          )}
+          <div className="flex-1">{orphanToast.text}</div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="px-3 py-2 border-b border-border">

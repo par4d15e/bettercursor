@@ -1,8 +1,12 @@
-# bettercursor — Tauri + Rust 实施计划 (MINIMAL SCOPE)
+# bettercursor — Tauri + Rust 实施计划 (MINIMAL SCOPE → v0.2.1 增量)
 
-> **范围收紧**: 参照 [cc-switch-session.png](cc-switch-session.png) 的会话管理界面, **只做本机 Cursor session 的只读浏览 + 来源标注**. 不做同步, 不做 daemon, 不做 SSH, 不做删除以外的写操作. 这是个**只读查看器**.
+> **范围演化**:
+> - **v0.1** (MINIMAL SCOPE, 2026-07-03 完工) = 只读 session 查看器. 不做同步, 不做 daemon, 不做 SSH, 不做删除以外的写操作.
+> - **v0.2-alpha** (2026-07-03 增量) = 加**手动单 session L2↔L3 补层 sync** (单按钮一键补齐). 不是全量 sync loop. 详见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
+> - **v0.2.1** (2026-07-04 完工) = 修 orphan (latestRootBlobId 空字符串) + 删除 session (L1 + L2, L3 跳). 详见 [SYNC_DESIGN §9](SYNC_DESIGN.md).
+> - **v0.2.2+** = 对话记录展开 / 全量 sync loop / 跨设备. 详见 [SYNC_DESIGN §9](SYNC_DESIGN.md).
 
-> 配套: [PRD.md](PRD.md) 是产品需求, [BACKGROUND.md](BACKGROUND.md) 是调研考古, [goal.md](goal.md) 是用户原始需求 (注: goal.md #2 #3 已与本文件对齐, 不再实现).
+> 配套: [PRD.md](PRD.md) 是产品需求, [BACKGROUND.md](BACKGROUND.md) 是调研考古, [SYNC_DESIGN.md](SYNC_DESIGN.md) 是 v0.2+ 设计稿.
 
 ---
 
@@ -10,7 +14,8 @@
 
 | 选项 | 决策 |
 |------|------|
-| **产品范围** | **只读 session 查看器**. 对应 cc-switch 的"会话管理"那一屏, 删掉 cc-switch 的"添加 Provider / 删除 Provider"和"添加 MCP"等写操作. |
+| **v0.1 产品范围** | **只读 session 查看器**. 对应 cc-switch 的"会话管理"那一屏, 删掉 cc-switch 的"添加 Provider / 删除 Provider"和"添加 MCP"等写操作. |
+| **v0.2-alpha 增量范围** | 单 session L2↔L3 补层 sync. 单按钮. Cursor/cursor-agent 进程检测 + 硬锁. |
 | **Tauri 版本** | **Tauri v2**. |
 | **语言** | **Rust + React/TypeScript**. 单一语言, 无 sidecar. |
 | **SQLite 库** | **rusqlite + r2d2**, 读模式. WAL-safe 读. |
@@ -116,8 +121,14 @@ bettercursor/
 | `refresh_sessions` | — | `Vec<CanonicalSession>` (重扫) | Phase 1 |
 | `delete_session` | `uuid: String` | `()` (删除 store.db 行 + JSONL) | Phase 2 |
 | `get_provider_name` | — | `"Cursor"` (硬编码) | Phase 1 |
+| `dry_run_inject_layer3` | — | — | 已迁移到 `sync_session_layer23` (v0.2-alpha) |
+| `prepare_inject_layer3` | — | — | 已迁移到 `sync_session_layer23` (v0.2-alpha) |
+| `inspect_prepared_layer3` | — | — | 已迁移到 `sync_session_layer23` (v0.2-alpha) |
+| `sync_session_layer23` | `uuid: String`, `cwd: Option<String>` | `core::sync::SyncReport` (单 session L2/L3 补层) | **v0.2-alpha ✅** |
+| `fix_orphans` | — | `core::sync::FixOrphansReport` (扫所有 store.db, 修 root 空字符串) | **v0.2.1 ✅** |
+| `delete_session` | `uuid: String`, `cwd: Option<String>`, `project_slug: Option<String>` | `core::sync::DeleteReport` (L1 + L2 直 rm, L3 跳) | **v0.2.1 ✅** |
 
-**为什么没有 `set_auto_sync` / `sync_now` / `import_snapshot`**: 不在范围内.
+**为什么没有 `set_auto_sync` / `sync_now` / `import_snapshot`**: 不在 v0.1 / v0.2-alpha / v0.2.1 范围内. 见 [SYNC_DESIGN §4-§5](SYNC_DESIGN.md) (v0.2.3 待做).
 
 ---
 

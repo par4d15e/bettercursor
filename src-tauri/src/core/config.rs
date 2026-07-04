@@ -1,14 +1,10 @@
 //! bettercursor user preferences — `~/.bettercursor/config.json`.
 //!
-//! Persisted across restarts. v0.2 currently stores only one key
-//! (`auto_sync_enabled`), but the schema is forward-compatible: read
-//! returns `Preferences::default()` if the file is missing or malformed,
-//! write always serializes the full struct.
-//!
-//! Why JSON, not SQLite: at <10 keys and human-edited occasionally,
-//! JSON keeps the file trivial to `cat`, diff, and back up. SQLite
-//! would be overkill and adds a bundled dep we already avoid for
-//! read-side storage.
+//! v0.2-alpha simplified: the only previous preference (`auto_sync_enabled`)
+//! was removed (#103). Now `Preferences` is an empty struct kept around
+//! as a placeholder for future settings (theme, sort default, watch dirs).
+//! The load path is preserved so callers can ask "do you have any
+//! config yet?" without churn when new keys are added.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -21,26 +17,8 @@ use std::path::Path;
 
 use super::paths;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Preferences {
-    /// Whether the fs watcher thread should re-scan when its child
-    /// directories change. Default false (user must opt in, matching
-    /// ccswitch's local-route toggle).
-    #[serde(default = "default_false")]
-    pub auto_sync_enabled: bool,
-}
-
-const fn default_false() -> bool {
-    false
-}
-
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            auto_sync_enabled: false,
-        }
-    }
-}
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Preferences {}
 
 /// Read preferences from disk. Missing or unreadable file → defaults.
 /// Malformed JSON → logged warn + defaults (don't break startup).
@@ -66,7 +44,9 @@ pub fn load() -> Preferences {
 
 /// Persist preferences atomically: write to a temp file in the same
 /// directory, then rename. Avoids half-written config if the process
-/// dies mid-flush.
+/// dies mid-flush. Currently unused (no Preferences fields) but
+/// kept for future keys.
+#[allow(dead_code)]
 pub fn save(prefs: &Preferences) -> Result<()> {
     let path = paths::config_file();
     if let Some(parent) = path.parent() {
@@ -81,15 +61,6 @@ pub fn save(prefs: &Preferences) -> Result<()> {
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("rename tmp → {}", path.display()))?;
     Ok(())
-}
-
-/// Update a single field and persist. Convenience for the
-/// `set_auto_sync(enabled)` Tauri command path.
-pub fn set_auto_sync(enabled: bool) -> Result<Preferences> {
-    let mut prefs = load();
-    prefs.auto_sync_enabled = enabled;
-    save(&prefs)?;
-    Ok(prefs)
 }
 
 /// Diagnostic: emit the path string for the runtime log.
@@ -120,7 +91,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
         let p = load_from(&path);
-        assert!(!p.auto_sync_enabled);
+        // Empty Preferences defaults — no auto_sync_enabled to test anymore.
+        let _ = p;
     }
 
     #[test]
@@ -129,24 +101,30 @@ mod tests {
         let path = dir.path().join("config.json");
         std::fs::write(&path, "this is not json {").unwrap();
         let p = load_from(&path);
-        assert!(!p.auto_sync_enabled);
+        let _ = p;
     }
 
     #[test]
-    fn parses_explicit_false() {
+    fn parses_empty_object() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{}"#).unwrap();
+        let p = load_from(&path);
+        let _ = p;
+    }
+
+    /// Stale `auto_sync_enabled` keys in user config files are
+    /// silently ignored after the toggle removal (#103). Without
+    /// `#[serde(default)]` on the field, deserialization would fail
+    /// for users who haven't deleted the key.
+    #[test]
+    fn parses_legacy_auto_sync_key() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(&path, r#"{"auto_sync_enabled": false}"#).unwrap();
+        // Must NOT panic — extra unknown fields are fine (or we could
+        // add #[serde(deny_unknown_fields)] if we wanted strictness).
         let p = load_from(&path);
-        assert!(!p.auto_sync_enabled);
-    }
-
-    #[test]
-    fn parses_explicit_true() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(&path, r#"{"auto_sync_enabled": true}"#).unwrap();
-        let p = load_from(&path);
-        assert!(p.auto_sync_enabled);
+        let _ = p;
     }
 }

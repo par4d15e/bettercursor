@@ -37,10 +37,21 @@ export interface BubbleToolUse {
 }
 
 export interface Bubble {
+  /// v0.2.2: stable 36-char GUID. Filled by the Rust side via
+  /// `inject::deterministic_bubble_id` for L1 bubbles; L3 bubbles use
+  /// the `<bid>` portion of `bubbleId:<uuid>:<bid>`; L2 blobs without
+  /// an explicit id get a deterministic synthesized one. Empty string
+  /// is treated as "no id" — `MessageList` falls back to `idx-${i}` so
+  /// React still has a unique key.
+  id?: string;
   role: string; // "user" | "assistant"
   text: string;
   tool_calls: BubbleToolUse[];
   files: string[];
+  /// v0.2.2: epoch ms. L1 JSONL often has no reliable timestamp and
+  /// returns 0; L3 rows and L2 blobs have it when present. Optional
+  /// here (defaults to 0) so old hardcoded fixtures keep type-checking.
+  created_at_ms?: number;
 }
 
 export interface Conversation {
@@ -57,11 +68,12 @@ export async function getConversation(uuid: string): Promise<Conversation> {
 
 // ── Live fs watcher (auto-sync) ────────────────────────────────
 
+/// Diagnostics for the always-on fs watcher (v0.2-alpha removed the
+/// user toggle — see #103). The watcher thread always runs and always
+/// re-scans on fs events. This struct is kept only for the "live" /
+/// "stopped" badge in the sidebar header.
 export interface WatcherStatus {
   active: boolean;
-  /// User opt-in for the auto-sync behavior (ccswitch-style toggle).
-  /// When `false`, the watcher thread is still alive but skips scans.
-  enabled: boolean;
   dirs: string[];
 }
 
@@ -69,88 +81,91 @@ export async function watcherStatus(): Promise<WatcherStatus> {
   return invoke<WatcherStatus>("watcher_status");
 }
 
-/// Toggle the auto-sync preference. Persists to
-/// `~/.bettercursor/config.json`. Returns the fresh status after the
-/// toggle completes so the UI badge can refresh in one round-trip.
-export async function setAutoSync(enabled: boolean): Promise<WatcherStatus> {
-  return invoke<WatcherStatus>("set_auto_sync", { enabled });
-}
+// ── v0.2-alpha 一键 L2↔L3 补层同步 ────────────────────────
 
-// ── Layer 3 injection (CLI session → Desktop Sidebar) ─────────
-
-export interface InjectSources {
-  layer1_jsonl: string | null;
-  layer2_store_db: string | null;
-  layer2_meta_json: string | null;
-  cwd: string | null;
-  title: string | null;
-  created_at_ms: number | null;
-}
-
-export interface InjectMutation {
-  op: "item_table_upsert" | "disk_kv_upsert";
-  key: string;
-  value_hex: string;
-}
-
-export interface InjectPlan {
+/// Result of one manual sync. Mirrors `core::sync::SyncReport` in
+/// Rust. `wrote_layer2` / `wrote_layer3` indicate which missing
+/// layers were synthesized on disk. `skipped` is the soft-skip list
+/// (e.g. "cursor_running", "already_synced") — never empty for a
+/// successful call where no writes happened.
+export interface SyncReport {
   uuid: string;
-  mutations: InjectMutation[];
-  sources: InjectSources;
-  /// When non-null, the injector skipped building mutations and the
-  /// UI should surface this message instead of a "Confirm" button.
-  skip_reason: string | null;
+  wrote_layer2: boolean;
+  wrote_layer3: boolean;
+  skipped: string[];
+  /** Hex SHA256 of the root blob, when Layer 2 was written. */
+  root_blob_id: string | null;
+  duration_ms: number;
 }
 
-/** Result of staging a Layer 3 injection to disk. The user must
- *  quit Cursor Electron and then run `apply_command` themselves —
- *  bettercursor never touches state.vscdb while Cursor holds it
- *  open (see #84). */
-export interface PrepareResult {
+/// Run the manual L2↔L3 补层 sync for one session. `cwd` is supplied
+/// from the session's `project_path` (sourced from L3's
+/// `workspaceIdentifier.uri.fsPath` when available). The Rust side
+/// refuses to proceed if Cursor or `cursor-agent` is running — the
+/// caller should surface that error verbatim in the UI.
+export async function syncSessionLayer23(
+  uuid: string,
+  cwd: string | null,
+): Promise<SyncReport> {
+  return invoke<SyncReport>("sync_session_layer23", { uuid, cwd });
+}
+
+// ── v0.2.1 修复 orphan + 删除 session ──────────────────────
+
+/// Result of one bulk `fix_orphans` run. Mirrors
+/// `core::sync::FixOrphansReport` in Rust. `fixed` lists the uuids that
+/// got their `latestRootBlobId` filled in (and a `.backup_<ts>` left on
+/// disk). `skipped` lists uuids the repair failed for (per-session
+/// error message). `scanned` is the total session count walked across
+/// all `~/.cursor/chats/*/store.db` files.
+export interface FixOrphansReport {
+  fixed: string[];
+  skipped: string[];
+  scanned: number;
+}
+
+/// Result of a `delete_session` call. Mirrors `core::sync::DeleteReport`.
+/// Each layer gets an independent removal flag + an optional skip
+/// reason (`"l1_not_present"` / `"l2_not_present"` / `"slug_not_provided"`
+/// / `"invalid_slug"` / `"io_error: ..."`). When `cursorRunning` is
+/// `true` the call short-circuited — both removed_* flags are `false`,
+/// both skipped_* are `null`, and `runningProcesses` lists the pids
+/// that triggered the guard.
+export interface DeleteReport {
   uuid: string;
-  /** Absolute path to `~/.bettercursor/queue/inject-<uuid>.json`. */
-  queue_path: string;
-  /** One-liner the user copies-and-pastes after closing Cursor.
-   *  Format: `python3 ~/.bettercursor/apply.py <queue_path>`. */
-  apply_command: string;
-  /** Count of mutations the apply script will run, useful for the
-   *  "准备离线注入包 → N 条变更即将落地" preview. */
-  mutations: number;
+  removed_l1: boolean;
+  removed_l2: boolean;
+  skipped_l1: string | null;
+  skipped_l2: string | null;
+  cursor_running: boolean;
+  running_processes: string[];
 }
 
-/** Returned by `inspectPreparedLayer3`: tells the UI whether the
- *  queue file exists and whether apply.py has already finished for
- *  this uuid (detected by sidecar `.applied` marker). */
-export interface Prepared {
-  uuid: string;
-  queue_path: string;
-  applied: boolean;
-  marker_path: string;
-  apply_command: string;
+/// Walk every `~/.cursor/chats/*/<uuid>/store.db` and repair sessions
+/// whose `meta[0].latestRootBlobId` is an empty string. Each repaired
+/// store.db gets a `.backup_<ts>` sibling left on disk — the call is
+/// non-destructive. Returns the per-session outcome list.
+export async function fixOrphans(): Promise<FixOrphansReport> {
+  return invoke<FixOrphansReport>("fix_orphans");
 }
 
-/// Build a previewable plan for synthesizing the Layer 3 entries
-/// that would make this CLI-originated session visible in Cursor
-/// Electron Desktop's Sidebar. Pure read; no disk writes.
-export async function dryRunInjectLayer3(uuid: string): Promise<InjectPlan> {
-  return invoke<InjectPlan>("dry_run_inject_layer3", { uuid });
-}
-
-/// Stage a Layer 3 injection: writes the plan envelope to
-/// `~/.bettercursor/queue/inject-<uuid>.json`. Idempotent — calling
-/// again overwrites with a fresh plan. Refuses to queue if the
-/// plan carries a `skip_reason` (no source data).
-///
-/// The returned `apply_command` must be run manually by the user
-/// after quitting Cursor Electron. bettercursor does NOT run it
-/// for them — see #84 for why live writes lost data.
-export async function prepareInjectLayer3(uuid: string): Promise<PrepareResult> {
-  return invoke<PrepareResult>("prepare_inject_layer3", { uuid });
-}
-
-/// Inspect a previously staged injection. Returns `null` when no
-/// queue file exists yet (use this to decide whether to show the
-/// "已应用" badge or the "准备离线注入包" call-to-action).
-export async function inspectPreparedLayer3(uuid: string): Promise<Prepared | null> {
-  return invoke<Prepared | null>("inspect_prepared_layer3", { uuid });
+/// Delete one session's Layer 1 (JSONL) + Layer 2 (store.db) from
+/// disk. Layer 3 (state.vscdb composerData) is intentionally skipped
+/// by the backend — Cursor Desktop owns that storage. `cwd` powers the
+/// L2 path (`md5(cwd)` is the bucket name under `~/.cursor/chats/`).
+/// `projectSlug` (from `CanonicalSession.project_slug`) is needed for
+/// the L1 path under `~/.cursor/projects/<slug>/agent-transcripts/`;
+/// pass `null` to skip L1. The call refuses to mutate anything while
+/// Cursor / cursor-agent is running — check `cursor_running` on the
+/// returned report.
+export async function deleteSession(
+  uuid: string,
+  cwd: string | null,
+  projectSlug: string | null,
+): Promise<DeleteReport> {
+  return invoke<DeleteReport>("delete_session", {
+    uuid,
+    cwd,
+    projectSlug,
+  });
 }

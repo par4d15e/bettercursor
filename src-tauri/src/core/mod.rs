@@ -7,10 +7,14 @@
 //!   - watcher    — fs watcher for auto-sync (notify + poll fallback)
 //!   - config     — user preferences (~/.bettercursor/config.json)
 //!   - inject     — Layer 3 entry synthesis (CLI session → Desktop Sidebar)
+//!   - sync       — v0.2-alpha one-click L2↔L3 补层 sync
+//!   - process    — Cursor / cursor-agent process detection (sync safety check)
 
 pub mod canonical;
 pub mod config;
 pub mod inject;
 pub mod paths;
+pub mod process;
 pub mod storage;
+pub mod sync;
 pub mod watcher;

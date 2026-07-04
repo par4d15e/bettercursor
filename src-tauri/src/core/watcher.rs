@@ -10,6 +10,13 @@
 //!   - Optional polling fallback every 30s (catches anything notify
 //!     missed on weird FS / cross-mount); notify handles 95% of cases.
 //!
+//! v0.2-alpha simplification: there is **no user toggle** anymore.
+//! The watcher thread always runs, and `run_scan` always re-scans on
+//! fs events. Previously a `set_auto_sync` toggle gated `run_scan`
+//! but the listener itself stayed alive regardless — so the toggle
+//! didn't actually save any resources and only confused users
+//! ("why is the toggle in the way?"). Removed in #103.
+//!
 //! Future work (out of MVP scope):
 //!   - True incremental merge keyed by uuid
 //!   - Write-side fs actions (broken-session repair button)
@@ -167,21 +174,11 @@ fn is_interesting(ev: &Event) -> bool {
 /// Single re-scan + emit. Errors are logged but never abort — a single
 /// failed scan must not kill the watcher thread.
 ///
-/// Honors the user's `auto_sync_enabled` preference. When disabled
-/// (ccswitch-style opt-out), the call silently returns without scanning
-/// or emitting — the frontend state stays as last user-initiated
-/// refresh had it. The watcher thread itself stays alive in both cases
-/// (no inotify handle churn from toggling).
+/// v0.2-alpha: no gate. The watcher thread always runs and always
+/// re-scans on fs events; there is no user toggle. This matches the
+/// product expectation that "open bettercursor and see current
+/// sessions" works out of the box.
 fn run_scan(app: &AppHandle, trigger: &str) {
-    // Gate: check preference before doing any IO.
-    let enabled = app
-        .try_state::<AppState>()
-        .map(|s| *s.auto_sync_enabled.lock().unwrap())
-        .unwrap_or(false);
-    if !enabled {
-        log::debug!("auto-sync [{trigger}]: disabled by user, skipping");
-        return;
-    }
     match canonical::scan_all() {
         Ok(sessions) => {
             let count = sessions.len();

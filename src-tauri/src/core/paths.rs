@@ -85,7 +85,9 @@ pub fn store_db_for(cwd: impl AsRef<Path>, composer_id: &str) -> PathBuf {
     chat_dir_for(cwd, composer_id).join("store.db")
 }
 
-/// `~/.bettercursor/` — bettercursor state directory.
+/// `~/.bettercursor/` — bettercursor state directory. Currently
+/// only `config.json` lives here (post-v0.2-alpha: no queue files,
+/// no offline apply scripts — sync.rs writes inline).
 pub fn bettercursor_dir() -> PathBuf {
     let p = home::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -99,39 +101,48 @@ pub fn config_file() -> PathBuf {
     bettercursor_dir().join("config.json")
 }
 
-/// `~/.bettercursor/queue/` — staged injection plans awaiting
-/// manual application via `apply.py`. Why not apply immediately?
-/// Because state.vscdb is held open by Cursor Electron — racing
-/// its WAL flush reliably overwrites our writes. The Python
-/// script refuses to run unless Cursor is closed.
-pub fn queue_dir() -> PathBuf {
-    let p = bettercursor_dir().join("queue");
-    let _ = std::fs::create_dir_all(&p);
-    p
-}
-
-/// `~/.bettercursor/queue/inject-<uuid>.json` — the staging filename
-/// for a Layer 3 injection plan. Stable across regenerations so
-/// re-running `prepare_inject_layer3` overwrites the same file.
-pub fn inject_queue_path(uuid: &str) -> PathBuf {
-    queue_dir().join(format!("inject-{uuid}.json"))
-}
-
-/// `~/.bettercursor/apply.py` — offline companion that reads a queued
-/// JSON plan, verifies no Cursor process holds the file, then does
-/// tmpdir-copy + apply + integrity_check + atomic rename. Lives in
-/// the user-data dir so it survives project moves; copy from repo
-/// `scripts/apply.py` on demand via `ensure_apply_script()`.
-pub fn apply_script_path() -> PathBuf {
-    bettercursor_dir().join("apply.py")
-}
-
 /// Convert `/Users/x/y` → `Users-x-y` (cursaves' format for Layer 1 path segment).
 pub fn sanitize_project_path(project_path: &str) -> String {
     project_path
         .trim_matches('/')
         .replace('/', "-")
         .replace('\\', "-")
+}
+
+/// Locate the Layer 1 JSONL transcript for a given session uuid.
+///
+/// Cursor stores each session as either:
+///   (a) `<chat_root>/agent-transcripts/<uuid>/<uuid>.jsonl`, or
+///   (b) `<chat_root>/agent-transcripts/<uuid>.jsonl` (older layout).
+///
+/// Either is returned when present.
+///
+/// v0.2.2: unified from the previously-duplicated
+/// `core::canonical::find_jsonl_for` and `core::inject::find_layer1_jsonl`
+/// into a single canonical home in `paths`. Both old callers have been
+/// migrated (`canonical::read_conversation` and
+/// `inject::parse_layer1_bubbles`'s caller `core::sync::read_layer1`).
+pub fn find_layer1_jsonl_for(uuid: &str) -> Option<PathBuf> {
+    let projects = cursor_projects_dir();
+    if !projects.exists() {
+        return None;
+    }
+    let entries = std::fs::read_dir(&projects).ok()?;
+    for project in entries.flatten() {
+        let transcripts = project.path().join("agent-transcripts");
+        if !transcripts.is_dir() {
+            continue;
+        }
+        let in_dir = transcripts.join(uuid).join(format!("{uuid}.jsonl"));
+        if in_dir.is_file() {
+            return Some(in_dir);
+        }
+        let flat = transcripts.join(format!("{uuid}.jsonl"));
+        if flat.is_file() {
+            return Some(flat);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

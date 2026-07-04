@@ -28,12 +28,30 @@ pub struct BubbleToolUse {
 ///
 /// `role` is `"user"` or `"assistant"` (empty string for orphan events
 /// such as `turn_ended` / errors, which are filtered out downstream).
+///
+/// `id` and `created_at_ms` (both `#[serde(default)]`) were added in
+/// v0.2.2 to support 3-layer bubble reconciliation in `merge_bubbles_three_way`.
+/// L1 (JSONL) bubbles have id filled by `inject::deterministic_bubble_id`
+/// (SHA256-derived 36-char GUID keyed on uuid|role|ts|ordinal) and
+/// `created_at_ms` populated from the line's `timestamp` field (0 when
+/// missing). The two new fields are intentionally defaulted so existing
+/// `Conversation { bubbles: [...] }` payloads — including the unit tests
+/// in this file that construct `Bubble { role, text, tool_calls, files }`
+/// inline — keep deserializing cleanly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bubble {
+    /// Stable 36-char GUID (SHA256-derived). Defaulted so missing
+    /// fields in old serialized payloads don't break decoding.
+    #[serde(default)]
+    pub id: String,
     pub role: String,
     pub text: String,
     pub tool_calls: Vec<BubbleToolUse>,
     pub files: Vec<String>,
+    /// Epoch milliseconds. Defaulted because L1 JSONL often has no
+    /// reliable timestamp; L2/L3 bubbles have it set.
+    #[serde(default)]
+    pub created_at_ms: i64,
 }
 
 /// Full transcript for a single session uuid, resolved from Layer 1.
@@ -119,9 +137,39 @@ pub struct CanonicalSession {
 pub fn scan_all() -> Result<Vec<CanonicalSession>> {
     let mut by_uuid: HashMap<String, CanonicalSession> = HashMap::new();
 
-    scan_layer1_into(&mut by_uuid);
-    scan_layer2_into(&mut by_uuid);
+    // Layer 1 (JSONL) is **scanned last** and is treated as a transcript
+    // only — it does not stamp any source-layer tag, because the same
+    // file layout is produced by both Cursor Desktop Electron and the
+    // CLI. See #87 for the bug it caused when stamped as `linux_cli`.
+    //
+    // Layer 3 (state.vscdb) and Layer 2 (store.db) carry **origin**
+    // information:
+    //   - state.vscdb → Desktop (or Mac)
+    //   - store.db   → CLI only
+    // We run them in priority order so the higher-fidelity writer
+    // wins: Layer 3 first (sets linux_desktop), Layer 2 second (sets
+    // linux_cli), Layer 1 last (fills preview/indexable_text without
+    // touching sources).
     scan_layer3_into(&mut by_uuid);
+    scan_layer2_into(&mut by_uuid);
+    scan_layer1_into(&mut by_uuid);
+
+    // Reconcile derived fields. `merge_source` historically set
+    // `is_empty_draft` whenever it was called with a real source
+    // layer; with the new ordering (#87/#88) Layer 1 seeds entries
+    // directly and bypasses that check, so we walk all entries once
+    // at the end and recompute the derived fields uniformly.
+    for entry in by_uuid.values_mut() {
+        // `is_empty_draft` = zero bubbles AND no source at any layer.
+        // A session that has Layer 1/2/3 data but `bubble_count == 0`
+        // is **not** empty — the conversation exists, we just can't
+        // count it (e.g. older JSONL format). Only mark empty when
+        // we have nothing.
+        let has_any_source = entry.sources.mac.is_some()
+            || entry.sources.linux_cli.is_some()
+            || entry.sources.linux_desktop.is_some();
+        entry.is_empty_draft = entry.bubble_count == 0 && !has_any_source;
+    }
 
     // Sort by last_updated_at descending.
     let mut out: Vec<CanonicalSession> = by_uuid.into_values().collect();
@@ -176,27 +224,52 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
             let (preview, _files) = read_jsonl_preview(&jsonl_path);
             let indexable = read_jsonl_indexable(&jsonl_path);
 
-            merge_source(
-                by_uuid,
-                &uuid,
-                SourceInfo {
-                    last_seen_at: modified,
-                    layer: "1".into(),
-                    path: display_path,
-                },
-                SourceLayer::LinuxCli,
-                &project_slug,
-                "".to_string(),
-                modified,
-                preview,
-            );
-
-            // `indexable_text` is set directly (not via merge_source) because
-            // it's a per-Layer-1-only property; first writer wins.
-            if let Some(entry) = by_uuid.get_mut(&uuid) {
-                if entry.indexable_text.is_empty() {
-                    entry.indexable_text = indexable;
-                }
+            // Layer 1 (JSONL transcript) is **not** a proof of origin —
+            // Cursor Desktop Electron writes the same JSONL files when
+            // it hosts a session, so we can't distinguish a CLI
+            // transcript from a Desktop one by file presence alone. The
+            // source-layer tag therefore comes from Layer 2 (store.db,
+            // CLI-only) or Layer 3 (state.vscdb, Desktop-only). Layer 1
+            // only seeds metadata that's uniquely available here:
+            //   - first_user_message_preview (only Layer 1 has user
+            //     message text, not the blob IDs Layer 2/3 store)
+            //   - project_slug (Layer 1 directory is named after the
+            //     project; we fall back to this when Layer 2/3 don't
+            //     carry a workspaceIdentifier)
+            //   - indexable_text (per-conversation full-text index)
+            //   - last_updated_at (file mtime as a coarse floor)
+            // Do NOT call `merge_source` here with any SourceLayer —
+            // doing so previously caused cfa4177f (a Desktop session
+            // with no Layer 2) to be incorrectly tagged
+            // `linux_cli:L1 + linux_desktop:L3` (#87).
+            let entry = by_uuid.entry(uuid.clone()).or_insert_with(|| CanonicalSession {
+                uuid: uuid.clone(),
+                project_slug: project_slug.clone(),
+                project_path: String::new(),
+                chat_root: String::new(),
+                name: String::new(),
+                last_updated_at: modified,
+                bubble_count: 0,
+                is_empty_draft: true,
+                is_broken: false,
+                broken_reason: None,
+                sources: Sources::default(),
+                first_user_message_preview: String::new(),
+                files_referenced: vec![],
+                indexable_text: String::new(),
+                layer_3_present: false,
+            });
+            if !preview.is_empty() && entry.first_user_message_preview.is_empty() {
+                entry.first_user_message_preview = preview;
+            }
+            if entry.project_slug.is_empty() {
+                entry.project_slug = project_slug.clone();
+            }
+            if modified > entry.last_updated_at {
+                entry.last_updated_at = modified;
+            }
+            if entry.indexable_text.is_empty() {
+                entry.indexable_text = indexable;
             }
         }
     }
@@ -430,13 +503,98 @@ fn read_store_db_meta(path: &Path) -> (String, i64, u32, Option<String>) {
 }
 
 fn derive_slug_from_chat_root(chat_root: &str) -> String {
-    // Best effort: scan ~/.cursor/projects/* for a directory whose
-    // 0-byte (placeholder) content matches. Otherwise return chat_root.
-    // v0.1 just uses the chat_root as a synthetic slug.
+    // Layer 2's `~/.cursor/chats/<md5(cwd)>/<uuid>/store.db` uses
+    // md5(cwd) as the project bucket name. md5 is not directly
+    // reversible, so we go through Cursor's own bookkeeping:
+    //   - `~/.config/Cursor/User/workspaceStorage/<hash>/workspace.json`
+    //     records each opened folder's URI. md5(folder_path) == chat_root
+    //     is the canonical mapping.
+    //   - When a match exists, return the human-readable path itself
+    //     (sanitized) instead of the workspaceStorage hash — matches
+    //     how `~/.cursor/projects/` slugs look to the user.
+    //   - When no match exists, fall back to `chat-<md5>` so the session
+    //     is still uniquely groupable; it just won't merge with the
+    //     real project. (#99/#100)
+    if let Some(slug) = reverse_chat_root_via_workspace_storage(chat_root) {
+        return slug;
+    }
     format!("chat-{chat_root}")
 }
 
+/// Reverse-lookup via `~/.config/Cursor/User/workspaceStorage/<hash>/workspace.json`.
+/// If md5 of any `folder` URI matches the chat_root, return the
+/// sanitized path as the project slug. This is the canonical mapping
+/// because Cursor itself stores `folder` URIs there — md5(folder) is
+/// exactly the chat_root the Layer 2 store.db lives under.
+fn reverse_chat_root_via_workspace_storage(chat_root: &str) -> Option<String> {
+    let ws_dir = paths::workspace_storage_dir().ok()?;
+    if !ws_dir.is_dir() {
+        return None;
+    }
+    let entries = std::fs::read_dir(&ws_dir).ok()?;
+    for entry in entries.flatten() {
+        let ws_json = entry.path().join("workspace.json");
+        if !ws_json.is_file() {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&ws_json) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else { continue };
+        let folder = v.get("folder").and_then(|x| x.as_str()).unwrap_or("");
+        let path = folder.strip_prefix("file://").unwrap_or(folder).trim_end_matches('/');
+        if path.is_empty() {
+            continue;
+        }
+        let computed = paths::chat_root_for(path);
+        if computed == chat_root {
+            // Use the workspaceStorage hash as the slug — it matches
+            // what Layer 3 `workspaceIdentifier.id` references, so all
+            // three layers converge on the same group. The user sees
+            // the hash in the sidebar but it's stable and clickable.
+            return Some(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 // ── Layer 3: Electron state.vscdb ─────────────────────────────
+
+/// Extract the project path from a `composerData` value's
+/// `workspaceIdentifier`. Cursor writes it as either a bare string
+/// (older / simpler form) or as a full URI object — both shapes
+/// are seen in the wild on 2026/07 versions:
+///
+///   (a) `"workspaceIdentifier": "/home/eric/workspace/foo"`
+///   (b) `"workspaceIdentifier": {
+///          "id": "a2a619...",
+///          "uri": {
+///            "fsPath": "/home/eric/workspace/foo",
+///            "external": "file:///home/eric/workspace/foo",
+///            "path":    "/home/eric/workspace/foo",
+///            "scheme":  "file"
+///          }
+///        }`
+///
+/// Returns empty string when neither shape is present (some
+/// legacy / synthetic entries we inject have `null`).
+fn extract_workspace_path(v: &serde_json::Value) -> String {
+    let Some(wi) = v.get("workspaceIdentifier") else {
+        return String::new();
+    };
+    if let Some(s) = wi.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = wi.as_object() {
+        if let Some(uri) = obj.get("uri").and_then(|u| u.as_object()) {
+            for key in ["fsPath", "path", "external"] {
+                if let Some(s) = uri.get(key).and_then(|x| x.as_str()) {
+                    // Strip `file://` scheme prefix if present.
+                    return s.strip_prefix("file://").unwrap_or(s).to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
 
 fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
     let global_db = match paths::global_db_path() {
@@ -471,20 +629,37 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
-                let project_path = v
-                    .get("workspaceIdentifier")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let project_path = extract_workspace_path(&v);
                 let project_slug = if !project_path.is_empty() {
                     paths::sanitize_project_path(&project_path)
                 } else {
-                    format!("desktop-{uuid}")
+                    // Cursor Desktop can create a session in an empty
+                    // window (no folder opened yet) — those rows have
+                    // no `workspaceIdentifier.uri.fsPath`. The previous
+                    // fallback `desktop-<uuid>` looked like a real
+                    // Cursor project name and confused users (#99).
+                    // We collapse all such orphans into a single
+                    // `"no-workspace"` group slug so the left tree can
+                    // render one collapsible section instead of 30+
+                    // unique-looking rows. Per-session identity is
+                    // preserved via `uuid` (which is what the rest of
+                    // the codebase uses for selection / resume).
+                    "no-workspace".to_string()
                 };
                 let created_at = v
                     .get("createdAt")
                     .and_then(|x| x.as_i64())
                     .unwrap_or(0);
+                // `lastUpdatedAt` is Cursor's own per-session ms timestamp —
+                // the real "this session was last touched at". Use it for
+                // `last_updated_at` instead of the global state.vscdb mtime
+                // (which is shared by ALL sessions and changes on every
+                // write, making the sidebar order jitter — #102).
+                let json_last_updated_at = v
+                    .get("lastUpdatedAt")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or(0);
+                let last_updated_at = json_last_updated_at.max(created_at);
                 let bubble_count = v
                     .get("bubbleCount")
                     .and_then(|x| x.as_u64())
@@ -508,7 +683,7 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                     source.clone(),
                     &project_slug,
                     name,
-                    modified.max(created_at),
+                    last_updated_at,
                     String::new(),
                 );
                 if let Some(entry) = by_uuid.get_mut(uuid) {
@@ -539,17 +714,22 @@ fn walk_composer_data(
     for c in all_composers {
         let Some(uuid) = c.get("composerId").and_then(|x| x.as_str()) else { continue };
         let name = c.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let workspace = c
-            .get("workspaceIdentifier")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
+        let workspace = extract_workspace_path(c);
         let project_slug = if !workspace.is_empty() {
             paths::sanitize_project_path(&workspace)
         } else {
             format!("desktop-{uuid}")
         };
         let created_at = c.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+        // Prefer the per-session `lastUpdatedAt` over the global mtime
+        // for the same reason as `scan_layer3_into` above (#102):
+        // allComposers live in a shared table; their mtimes are useless
+        // for ordering by recency.
+        let json_last_updated_at = c
+            .get("lastUpdatedAt")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0);
+        let last_updated_at = json_last_updated_at.max(created_at);
         merge_source(
             by_uuid,
             uuid,
@@ -561,7 +741,7 @@ fn walk_composer_data(
             source.clone(),
             &project_slug,
             name,
-            modified.max(created_at),
+            last_updated_at,
             String::new(),
         );
     }
@@ -623,10 +803,9 @@ fn merge_source(
     if last_updated_at > entry.last_updated_at {
         entry.last_updated_at = last_updated_at;
     }
-    entry.is_empty_draft = entry.bubble_count == 0
-        && entry.sources.mac.is_none()
-        && entry.sources.linux_cli.is_none()
-        && entry.sources.linux_desktop.is_none();
+    // NOTE: `is_empty_draft` is reconciled once at the end of
+    // `scan_all` (#87/#88) so Layer 1's direct entry insertion is
+    // also reflected. Don't recompute it here.
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -646,50 +825,32 @@ fn _path_helper(p: PathBuf) -> PathBuf {
 
 // ── Layer 1 conversation reader ──────────────────────────────
 
-/// Locate the Layer 1 JSONL transcript for a given session uuid.
-///
-/// Cursor stores each session as either:
-///   (a) `<chat_root>/agent-transcripts/<uuid>/<uuid>.jsonl`, or
-///   (b) `<chat_root>/agent-transcripts/<uuid>.jsonl` (older layout).
-///
-/// Either is returned when present.
-pub fn find_jsonl_for(uuid: &str) -> Option<PathBuf> {
-    let projects = paths::cursor_projects_dir();
-    if !projects.exists() {
-        return None;
-    }
-    let entries = std::fs::read_dir(&projects).ok()?;
-    for project in entries.flatten() {
-        let transcripts = project.path().join("agent-transcripts");
-        if !transcripts.is_dir() {
-            continue;
-        }
-        let in_dir = transcripts.join(uuid).join(format!("{uuid}.jsonl"));
-        if in_dir.is_file() {
-            return Some(in_dir);
-        }
-        let flat = transcripts.join(format!("{uuid}.jsonl"));
-        if flat.is_file() {
-            return Some(flat);
-        }
-    }
-    None
-}
-
 /// Read all bubbles from the Layer 1 JSONL for `uuid`.
 ///
 /// Returns an empty `Conversation` (with `source_path = None`) when no
 /// JSONL exists. Lines that fail to parse are counted but never panic.
+///
+/// v0.2.2: this function now reads from all three layers (Layer 1
+/// JSONL + Layer 2 store.db + Layer 3 state.vscdb) and merges them via
+/// [`merge_bubbles_three_way`]. The signature is unchanged — the frontend
+/// still calls `get_conversation(uuid)` and gets back a single
+/// `Conversation` with the merged `bubbles` array.
 pub fn read_conversation(uuid: &str) -> Conversation {
-    match find_jsonl_for(uuid) {
-        None => Conversation {
-            uuid: uuid.to_string(),
-            bubbles: vec![],
-            source_path: None,
-            total_lines: 0,
-            parse_errors: 0,
-        },
-        Some(path) => read_conversation_from_path(uuid, &path),
+    let cwd = "";
+    let jsonl_path = paths::find_layer1_jsonl_for(uuid);
+    let (l1, total_lines, parse_errors) = match jsonl_path.as_ref() {
+        None => (Vec::new(), 0usize, 0usize),
+        Some(path) => read_layer1_bubbles_from_path(uuid, path),
+    };
+    let l2 = read_layer2_bubbles(uuid, cwd);
+    let l3 = read_layer3_bubbles(uuid);
+    let merged = merge_bubbles_three_way(l1, l2, l3);
+    Conversation {
+        uuid: uuid.to_string(),
+        bubbles: merged,
+        source_path: jsonl_path.map(|p| p.display().to_string()),
+        total_lines,
+        parse_errors,
     }
 }
 
@@ -697,21 +858,31 @@ pub fn read_conversation(uuid: &str) -> Conversation {
 ///
 /// Useful for tests and for callers that already know the file location.
 pub fn read_conversation_from_path(uuid: &str, path: &Path) -> Conversation {
-    let Ok(body) = std::fs::read_to_string(path) else {
-        return Conversation {
-            uuid: uuid.to_string(),
-            bubbles: vec![],
-            source_path: Some(path.display().to_string()),
-            total_lines: 0,
-            parse_errors: 0,
-        };
+    let (bubbles, total_lines, parse_errors) = match std::fs::read_to_string(path) {
+        Ok(body) => read_layer1_bubbles_from_body(uuid, &body),
+        Err(_) => (Vec::new(), 0usize, 0usize),
     };
+    Conversation {
+        uuid: uuid.to_string(),
+        bubbles,
+        source_path: Some(path.display().to_string()),
+        total_lines,
+        parse_errors,
+    }
+}
 
+/// v0.2.2: parse raw JSONL bytes into a [`Vec<Bubble>`] plus counters.
+/// Split out from `read_conversation_from_path` so the 3-layer merge in
+/// [`read_conversation`] can reuse the exact same L1 logic. The
+/// `Bubble.id` is filled by [`super::inject::deterministic_bubble_id`]
+/// keyed on `(uuid, role, created_at_ms, ordinal)` so L1 bubbles can
+/// participate in [`merge_bubbles_three_way`] by id.
+pub(crate) fn read_layer1_bubbles_from_body(uuid: &str, body: &str) -> (Vec<Bubble>, usize, usize) {
     let mut bubbles: Vec<Bubble> = vec![];
     let mut total_lines = 0usize;
     let mut parse_errors = 0usize;
 
-    for line in body.lines() {
+    for (ordinal, line) in body.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
@@ -812,20 +983,350 @@ pub fn read_conversation_from_path(uuid: &str, path: &Path) -> Conversation {
             continue;
         }
 
+        let created_at_ms = v
+            .get("timestamp")
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+        let id = super::inject::deterministic_bubble_id(uuid, &role, created_at_ms, ordinal);
+
         bubbles.push(Bubble {
+            id,
             role,
             text: text_parts.join("\n\n"),
             tool_calls,
             files,
+            created_at_ms,
         });
     }
 
-    Conversation {
-        uuid: uuid.to_string(),
-        bubbles,
-        source_path: Some(path.display().to_string()),
-        total_lines,
-        parse_errors,
+    (bubbles, total_lines, parse_errors)
+}
+
+/// v0.2.2: read all L1 JSONL bubbles for `uuid`, returning a
+/// `(bubbles, total_lines, parse_errors)` triple. Returns `(Vec::new(),
+/// 0, 0)` when no JSONL exists for the uuid. Wraps
+/// [`read_layer1_bubbles_from_body`] so the public entry point can
+/// locate the file via [`paths::find_layer1_jsonl_for`] and the
+/// internal parser stays file-system-agnostic (and easier to unit-test).
+pub fn read_layer1_bubbles_from_path(uuid: &str, path: &Path) -> (Vec<Bubble>, usize, usize) {
+    match std::fs::read_to_string(path) {
+        Ok(body) => read_layer1_bubbles_from_body(uuid, &body),
+        Err(_) => (Vec::new(), 0usize, 0usize),
+    }
+}
+
+// ── Layer 2 reader (v0.2.2: surface store.db bubbles) ───────
+
+/// v0.2.2: read Layer 2 (CLI `~/.cursor/chats/<md5>/<uuid>/store.db`)
+/// bubbles for `uuid`.
+///
+/// Best-effort: walks every row in the `blobs` table and tries to
+/// decode each blob's bytes as JSON. Two decode shapes are accepted:
+///
+/// 1. **v0.2-alpha synthesized** (what `core::sync::write_layer2`
+///    writes today): `{role, text, createdAt}` — a plain JSON object.
+/// 2. **Full canonical** (for future L2 writes that round-trip through
+///    `Bubble`): `{role, text, tool_calls, files, createdAt, id}`.
+///
+/// Any blob that doesn't decode either way is silently skipped (with a
+/// `tracing::warn!` at the call site). The current production corpus is
+/// mostly cursor-agent's native protobuf-DAG blobs, which we don't
+/// parse in v0.2.2 — those are best-effort ignored, the merge will
+/// still surface them via L1/L3 if available.
+///
+/// `cwd` is the project working directory the CLI used to start the
+/// session; it determines the chat_dir (`md5(cwd)`). Pass `""` to
+/// fall back to an empty chat_dir (uncommon — most callers have a
+/// real `cwd` from the session's `project_path`).
+pub fn read_layer2_bubbles(uuid: &str, cwd: &str) -> Vec<Bubble> {
+    let store_db = paths::store_db_for(cwd, uuid);
+    if !store_db.exists() {
+        return Vec::new();
+    }
+    let Ok(r) = storage::open_read(&store_db) else {
+        return Vec::new();
+    };
+    let blob_ids = match r.list_blob_ids() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (ordinal, blob_id) in blob_ids.iter().enumerate() {
+        let Some(bytes) = r.get_item_binary(blob_id, "blobs").ok().flatten() else {
+            continue;
+        };
+        if let Some(b) = decode_l2_blob(uuid, blob_id, &bytes, ordinal) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// Attempt to decode one L2 blob as a [`Bubble`]. Returns `None` for
+/// blobs that don't match either supported JSON shape (the most common
+/// case being cursor-agent's native protobuf-DAG blobs).
+fn decode_l2_blob(uuid: &str, blob_id: &str, bytes: &[u8], ordinal: usize) -> Option<Bubble> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+
+    // Shape (a): full canonical — matches what `Bubble` looks like when
+    // round-tripped through serde. The `id` field is honored when
+    // present so we don't re-hash a bubble we already named.
+    if let Some(b) = try_decode_canonical_bubble(&v) {
+        let b = if b.id.is_empty() {
+            Bubble {
+                id: super::inject::deterministic_bubble_id(
+                    uuid,
+                    &b.role,
+                    b.created_at_ms,
+                    ordinal,
+                ),
+                ..b
+            }
+        } else {
+            b
+        };
+        return Some(b);
+    }
+
+    // Shape (b): v0.2-alpha synthesized — `{role, text, createdAt}`.
+    // Used by `core::sync::write_layer2`'s JSON-blob fallback (the
+    // `blobs.is_empty() && !bubbles.is_empty()` branch, sync.rs:295).
+    let role = v.get("role").and_then(|x| x.as_str())?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+    let text_body = v
+        .get("text")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if text_body.trim().is_empty() {
+        return None;
+    }
+    let created_at_ms = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let id = if blob_id.is_empty() {
+        super::inject::deterministic_bubble_id(uuid, role, created_at_ms, ordinal)
+    } else {
+        blob_id.to_string()
+    };
+    Some(Bubble {
+        id,
+        role: role.to_string(),
+        text: text_body,
+        tool_calls: Vec::new(),
+        files: Vec::new(),
+        created_at_ms,
+    })
+}
+
+/// Decode a JSON value as a full [`Bubble`] (Shape (a)). Returns `None`
+/// when the shape is incomplete or has non-string `role`.
+fn try_decode_canonical_bubble(v: &serde_json::Value) -> Option<Bubble> {
+    let role = v.get("role").and_then(|x| x.as_str())?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let created_at_ms = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let tool_calls: Vec<BubbleToolUse> = v
+        .get("tool_calls")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|tc| {
+                    let name = tc.get("name").and_then(|x| x.as_str())?.to_string();
+                    let input = tc.get("input").cloned();
+                    Some(BubbleToolUse { name, input })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let files: Vec<String> = v
+        .get("files")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|f| f.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if text.trim().is_empty() && tool_calls.is_empty() && files.is_empty() {
+        return None;
+    }
+    Some(Bubble {
+        id,
+        role: role.to_string(),
+        text,
+        tool_calls,
+        files,
+        created_at_ms,
+    })
+}
+
+// ── Layer 3 reader (v0.2.2: surface state.vscdb composerData.bubbleBlobs) ──
+
+/// v0.2.2: read Layer 3 (Cursor Desktop `state.vscdb`) bubbles for
+/// `uuid`. Walks every `bubbleId:<uuid>:<bid>` row in the
+/// `cursorDiskKV` table and decodes each blob as a [`Bubble`].
+///
+/// Cursor's native bubble blob shape (reverse-engineered from
+/// `c1ea7999-…`, mirror in `inject::compose_bubble_blobs`):
+/// ```json
+/// { "_v": 3, "type": 1 or 2, "text": "...", ...other_fields... }
+/// ```
+/// `type: 1` maps to `role: "user"`, `type: 2` maps to `"assistant"`.
+/// The `<bid>` portion of the row key becomes the bubble's `id` so
+/// L3 entries are stable across reads (matches what Cursor uses
+/// internally for diff/render).
+///
+/// Returns `Vec::new()` when `state.vscdb` doesn't exist or the
+/// `cursorDiskKV` table is missing (e.g. on a CLI-only install).
+pub fn read_layer3_bubbles(uuid: &str) -> Vec<Bubble> {
+    let db_path = match paths::global_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return Vec::new(),
+    };
+    let Ok(r) = storage::open_read(&db_path) else {
+        return Vec::new();
+    };
+    let prefix = format!("bubbleId:{uuid}:");
+    let keys = match r.list_keys(&prefix, "cursorDiskKV") {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(bid) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(v) = r.get_json(&key, "cursorDiskKV").ok().flatten() else {
+            continue;
+        };
+        if let Some(b) = decode_l3_bubble_blob(bid, &v) {
+            out.push(b);
+        }
+    }
+    // Stable sort by id so merge layer-priority is deterministic.
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Decode one L3 `bubbleId:*` blob as a [`Bubble`]. Returns `None` when
+/// the blob doesn't have the expected `_v`/`type`/`text` triple or
+/// `type` is something other than 1/2.
+fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
+    let typ = v.get("type").and_then(|x| x.as_i64()).unwrap_or(0);
+    let role = match typ {
+        1 => "user",
+        2 => "assistant",
+        _ => return None,
+    };
+    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let created_at_ms = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    Some(Bubble {
+        id: bid.to_string(),
+        role: role.to_string(),
+        text,
+        tool_calls: Vec::new(),
+        files: Vec::new(),
+        created_at_ms,
+    })
+}
+
+// ── 3-way merge (v0.2.2: bubble-id reconciliation) ───────────
+
+/// v0.2.2: reconcile bubbles from L1 (JSONL), L2 (store.db), and L3
+/// (state.vscdb) into a single ordered list.
+///
+/// Algorithm:
+///   1. L3 bubbles form the **main chain** (they're what Cursor Desktop
+///      actually shows users — most authoritative).
+///   2. L2 bubbles are overlaid by `id`: when an L2 bubble's id matches
+///      an L3 bubble, L2 fields take precedence **only when L2's value
+///      is non-empty / non-zero** (LWW by non-empty). This handles the
+///      common case where `core::sync::write_layer2` re-wrote a blob
+///      after L3 had it.
+///   3. L1 bubbles participate by their synthetic id
+///      (`deterministic_bubble_id(uuid, role, ts, ordinal)`) and act as
+///      **fallback source**: an L1 bubble is included only when neither
+///      L3 nor L2 has a bubble with the same id. L1 is the most
+///      lossy layer (it can't carry tool-call structure), so we treat
+///      it as a backstop, not a leader.
+///   4. Final ordering: `(created_at_ms ASC, id ASC)`. L1/L2 bubbles
+///      with `created_at_ms == 0` (the common case for JSONL) sort to
+///      the front but are still differentiated by their synthetic id.
+///
+/// Duplicate ids across L1+L2+L3 collapse to one row; duplicate text
+/// within a single layer is preserved (we don't dedupe by content).
+pub fn merge_bubbles_three_way(
+    l1: Vec<Bubble>,
+    l2: Vec<Bubble>,
+    l3: Vec<Bubble>,
+) -> Vec<Bubble> {
+    use std::collections::HashMap;
+
+    // 1. Index L3 by id (main chain).
+    let mut by_id: HashMap<String, Bubble> = HashMap::with_capacity(l3.len());
+    for b in l3 {
+        by_id.insert(b.id.clone(), b);
+    }
+
+    // 2. Overlay L2 onto L3 by id (LWW by non-empty field).
+    for b in l2 {
+        merge_into(&mut by_id, b);
+    }
+
+    // 3. L1 fallback: only insert bubbles whose id is absent.
+    for b in l1 {
+        if !by_id.contains_key(&b.id) {
+            by_id.insert(b.id.clone(), b);
+        }
+    }
+
+    // 4. Sort by (created_at_ms ASC, id ASC).
+    let mut out: Vec<Bubble> = by_id.into_values().collect();
+    out.sort_by(|a, b| {
+        a.created_at_ms
+            .cmp(&b.created_at_ms)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out
+}
+
+/// Field-level LWW merge of `incoming` into `existing` (looked up in
+/// `by_id` by `incoming.id`). A field on `incoming` overwrites the
+/// existing value **only when** it carries data (non-empty string /
+/// non-zero integer / non-empty vec). This lets a "downgrade" from a
+/// richer L3 bubble to a degraded v0.2-alpha L2 blob (which only has
+/// `{role, text, createdAt}`) leave the L3 fields like `tool_calls`
+/// intact instead of blanking them.
+fn merge_into(by_id: &mut std::collections::HashMap<String, Bubble>, incoming: Bubble) {
+    let key = incoming.id.clone();
+    let existing = match by_id.get_mut(&key) {
+        Some(e) => e,
+        None => {
+            by_id.insert(key, incoming);
+            return;
+        }
+    };
+    if !incoming.text.is_empty() {
+        existing.text = incoming.text;
+    }
+    if !incoming.role.is_empty() && (existing.role.is_empty() || existing.role == "assistant") {
+        // Only override role when existing is empty/ambiguous — don't
+        // ever let a degraded blob flip a known role.
+        existing.role = incoming.role;
+    }
+    if incoming.created_at_ms != 0 {
+        existing.created_at_ms = incoming.created_at_ms;
+    }
+    if !incoming.tool_calls.is_empty() {
+        existing.tool_calls = incoming.tool_calls;
+    }
+    if !incoming.files.is_empty() {
+        existing.files = incoming.files;
     }
 }
 
@@ -1235,5 +1736,461 @@ mod tests {
         });
         let (_name, _ts, root) = parse_store_meta_json(&meta);
         assert!(root.is_none());
+    }
+
+    /// Live diagnostic: print every session's source-layer composition.
+    /// Used to verify Layer 1-only sessions are NOT mistakenly tagged
+    /// linux_cli just because a JSONL exists (see #87). Run with:
+    ///   `cargo test --lib canonical::tests::diag_print_all_sessions -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diag_print_all_sessions() {
+        let sessions = crate::core::canonical::scan_all().expect("scan_all");
+        eprintln!("uuid (8) | sources                          | L3 | project");
+        eprintln!("---------+----------------------------------+----+--------");
+        for s in &sessions {
+            let mut bits = Vec::new();
+            if let Some(info) = &s.sources.linux_cli {
+                bits.push(format!("linux_cli:L{}", info.layer));
+            }
+            if let Some(info) = &s.sources.linux_desktop {
+                bits.push(format!("linux_desktop:L{}", info.layer));
+            }
+            if let Some(info) = &s.sources.mac {
+                bits.push(format!("mac:L{}", info.layer));
+            }
+            let summary = if bits.is_empty() { "(none!)".to_string() } else { bits.join(" + ") };
+            eprintln!("{} | {:32} | {} | {}",
+                &s.uuid[..8.min(s.uuid.len())],
+                summary,
+                if s.layer_3_present { "✓" } else { "·" },
+                &s.project_slug);
+        }
+    }
+
+    #[test]
+    fn extract_workspace_path_handles_object_form() {
+        // Real Cursor writes workspaceIdentifier as an object with a
+        // nested uri. Before this helper existed, scan_layer3_into
+        // tried `.as_str()` on the object and got an empty string,
+        // falling through to `desktop-<uuid>` slug (#88).
+        let v = serde_json::json!({
+            "workspaceIdentifier": {
+                "id": "a2a619b49a9779a3952a95ce4c9579bf",
+                "uri": {
+                    "fsPath": "/home/eric/workspace/enenzuo",
+                    "external": "file:///home/eric/workspace/enenzuo",
+                    "path": "/home/eric/workspace/enenzuo",
+                    "scheme": "file"
+                }
+            }
+        });
+        assert_eq!(extract_workspace_path(&v), "/home/eric/workspace/enenzuo");
+    }
+
+    #[test]
+    fn extract_workspace_path_handles_legacy_string_form() {
+        // Older / synthetic entries may use the bare-string shape.
+        let v = serde_json::json!({"workspaceIdentifier": "/Users/x/y"});
+        assert_eq!(extract_workspace_path(&v), "/Users/x/y");
+    }
+
+    #[test]
+    fn extract_workspace_path_handles_missing_field() {
+        let v = serde_json::json!({"name": "no workspace"});
+        assert_eq!(extract_workspace_path(&v), "");
+        let v2 = serde_json::json!({"workspaceIdentifier": null});
+        assert_eq!(extract_workspace_path(&v2), "");
+    }
+
+    #[test]
+    fn extract_workspace_path_strips_file_scheme() {
+        // When only `external` is present, must strip `file://`.
+        let v = serde_json::json!({
+            "workspaceIdentifier": {
+                "uri": {"external": "file:///foo/bar"}
+            }
+        });
+        assert_eq!(extract_workspace_path(&v), "/foo/bar");
+    }
+
+    /// #102: `last_updated_at` for Layer 3 sessions must come from
+    /// the per-session JSON `lastUpdatedAt` field, NOT from the shared
+    /// state.vscdb mtime. Otherwise every Layer 3 session in a single
+    /// refresh shares the same `last_updated_at` (the file mtime at
+    /// scan time), and the sidebar order degenerates to insertion
+    /// order — looking like the rows are "jumping around" any time a
+    /// write touches state.vscdb.
+    ///
+    /// We exercise this by feeding `merge_source` two Layer-3-style
+    /// payloads with deliberately different `lastUpdatedAt` values
+    /// but the same `last_seen_at` mtime. The merged entries must
+    /// preserve the per-session timestamps.
+    #[test]
+    fn layer3_last_updated_at_uses_json_field_not_mtime() {
+        let mut by_uuid: HashMap<String, CanonicalSession> = HashMap::new();
+        let mtime = 1_700_000_000_000_i64; // shared mtime — same for both
+        let a_updated = 1_700_000_500_000_i64; // A is 500s newer
+        let b_updated = 1_700_000_100_000_i64; // B is 100s newer
+        let a_created = 1_699_999_000_000_i64;
+        let b_created = 1_699_998_500_000_i64;
+        // Simulate scan_layer3_into's merge_source call signature:
+        // last_updated_at comes from the JSON (lastUpdatedAt.max(createdAt)),
+        // NOT from mtime.
+        merge_source(
+            &mut by_uuid,
+            "uuid-a",
+            SourceInfo { last_seen_at: mtime, layer: "3".into(), path: "state.vscdb".into() },
+            SourceLayer::LinuxDesktop,
+            "no-workspace",
+            "A".into(),
+            a_updated.max(a_created),
+            String::new(),
+        );
+        merge_source(
+            &mut by_uuid,
+            "uuid-b",
+            SourceInfo { last_seen_at: mtime, layer: "3".into(), path: "state.vscdb".into() },
+            SourceLayer::LinuxDesktop,
+            "no-workspace",
+            "B".into(),
+            b_updated.max(b_created),
+            String::new(),
+        );
+        let a = by_uuid.get("uuid-a").unwrap();
+        let b = by_uuid.get("uuid-b").unwrap();
+        assert_eq!(a.last_updated_at, a_updated, "A must keep its JSON lastUpdatedAt");
+        assert_eq!(b.last_updated_at, b_updated, "B must keep its JSON lastUpdatedAt");
+        assert!(a.last_updated_at > b.last_updated_at);
+        // The bug (pre-#102) would have both equal to `mtime`, defeating
+        // the sidebar's "updated_desc" sort. Explicitly assert they differ.
+        assert_ne!(a.last_updated_at, b.last_updated_at);
+    }
+
+    /// When JSON has no `lastUpdatedAt`, fall back to `createdAt`
+    /// (matches the pre-#102 behavior for old/malformed rows). This
+    /// guarantees we never fall back to the misleading shared mtime.
+    #[test]
+    fn layer3_last_updated_at_falls_back_to_created_at() {
+        let mut by_uuid: HashMap<String, CanonicalSession> = HashMap::new();
+        let mtime = 1_700_000_000_000_i64;
+        let created = 1_699_999_000_000_i64;
+        // Pre-#102 callers might have called merge_source with
+        // `mtime.max(created_at)`. After #102 we expect callers to
+        // pass `json_last_updated_at.max(created_at)` instead. If
+        // json_last_updated_at is 0 (missing), the result must equal
+        // `created`, NOT `mtime`.
+        merge_source(
+            &mut by_uuid,
+            "uuid-x",
+            SourceInfo { last_seen_at: mtime, layer: "3".into(), path: "state.vscdb".into() },
+            SourceLayer::LinuxDesktop,
+            "no-workspace",
+            "X".into(),
+            0_i64.max(created), // mirrors the new code path
+            String::new(),
+        );
+        let x = by_uuid.get("uuid-x").unwrap();
+        assert_eq!(x.last_updated_at, created);
+        assert_ne!(x.last_updated_at, mtime, "must NOT fall back to global mtime");
+    }
+
+    // ─── v0.2.2: 3-layer bubble merge tests ─────────────────
+
+    /// L1 bubbles (parsed from JSONL) must carry a stable 36-char
+    /// GUID. Same input parsed twice → same id (deterministic).
+    #[test]
+    fn read_layer1_assigns_deterministic_ids() {
+        let body = r#"{"role":"user","message":{"content":[{"type":"text","text":"hi"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
+"#;
+        let (a, _tl, _pe) = read_layer1_bubbles_from_body("uuid-x", body);
+        let (b, _tl, _pe) = read_layer1_bubbles_from_body("uuid-x", body);
+        assert_eq!(a.len(), 2);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.id, y.id, "id must be deterministic across calls");
+            assert_eq!(x.id.len(), 36);
+            assert_eq!(x.id.chars().filter(|c| *c == '-').count(), 4);
+        }
+        // Different uuids → different ids even at the same ordinal.
+        let (c, _, _) = read_layer1_bubbles_from_body("uuid-y", body);
+        assert_ne!(a[0].id, c[0].id);
+    }
+
+    /// v0.2-alpha degraded blob: `{role, text, createdAt}` should decode
+    /// successfully into a `Bubble`. Mirrors what
+    /// `core::sync::write_layer2`'s JSON-blob fallback writes today
+    /// (sync.rs:295-323).
+    #[test]
+    fn decode_l2_blob_handles_v0_2_alpha_degraded_shape() {
+        let json = serde_json::json!({
+            "role": "user",
+            "text": "hello world",
+            "createdAt": 1_700_000_000_000_i64,
+        })
+        .to_string();
+        let b = decode_l2_blob("uuid-a", "blob-1", json.as_bytes(), 0)
+            .expect("should decode degraded shape");
+        assert_eq!(b.role, "user");
+        assert_eq!(b.text, "hello world");
+        assert_eq!(b.created_at_ms, 1_700_000_000_000);
+        assert!(!b.id.is_empty(), "id must be filled even on degraded blob");
+    }
+
+    /// Full canonical shape: `{role, text, tool_calls, files, createdAt, id}`.
+    /// Every field round-trips through `try_decode_canonical_bubble`.
+    #[test]
+    fn decode_l2_blob_handles_full_canonical_shape() {
+        let json = serde_json::json!({
+            "role": "assistant",
+            "text": "checking...",
+            "tool_calls": [{"name": "Glob", "input": {"pattern": "*.rs"}}],
+            "files": ["src/main.rs"],
+            "createdAt": 42_i64,
+            "id": "explicit-bubble-id",
+        })
+        .to_string();
+        let b = decode_l2_blob("uuid-a", "blob-1", json.as_bytes(), 0).unwrap();
+        assert_eq!(b.role, "assistant");
+        assert_eq!(b.text, "checking...");
+        assert_eq!(b.tool_calls.len(), 1);
+        assert_eq!(b.tool_calls[0].name, "Glob");
+        assert_eq!(b.files, vec!["src/main.rs".to_string()]);
+        assert_eq!(b.created_at_ms, 42);
+        assert_eq!(b.id, "explicit-bubble-id", "id from JSON wins");
+    }
+
+    /// Garbage bytes (not UTF-8, or non-JSON) must skip silently
+    /// rather than panicking. This is the dominant case in practice
+    /// (cursor-agent's native L2 blobs are protobuf, not JSON).
+    #[test]
+    fn decode_l2_blob_skips_garbage_gracefully() {
+        // Random bytes that aren't valid UTF-8 in a meaningful way.
+        let garbage = &[0x00, 0xFF, 0xAB, 0xCD, 0xEF];
+        let r = decode_l2_blob("uuid-a", "blob-1", garbage, 0);
+        assert!(r.is_none(), "must skip non-UTF-8 blob");
+
+        // Valid UTF-8 but not JSON.
+        let not_json = b"this is plain text, not JSON";
+        let r = decode_l2_blob("uuid-a", "blob-1", not_json, 0);
+        assert!(r.is_none(), "must skip non-JSON blob");
+
+        // JSON but no `role` field.
+        let no_role = serde_json::json!({"text": "orphan", "createdAt": 1}).to_string();
+        let r = decode_l2_blob("uuid-a", "blob-1", no_role.as_bytes(), 0);
+        assert!(r.is_none(), "must skip blob without role");
+
+        // JSON with non-user/assistant role (system events etc).
+        let system_role = serde_json::json!({"role": "system", "text": "x"}).to_string();
+        let r = decode_l2_blob("uuid-a", "blob-1", system_role.as_bytes(), 0);
+        assert!(r.is_none(), "must skip blob with role != user|assistant");
+    }
+
+    /// L3 decode: `{_v, type, text}` from a `bubbleId:*` row.
+    /// `type: 1` → user, `type: 2` → assistant.
+    #[test]
+    fn decode_l3_bubble_blob_handles_known_types() {
+        let user_v = serde_json::json!({
+            "_v": 3,
+            "type": 1,
+            "text": "question",
+        });
+        let b = decode_l3_bubble_blob("bid-1", &user_v).unwrap();
+        assert_eq!(b.role, "user");
+        assert_eq!(b.text, "question");
+        assert_eq!(b.id, "bid-1");
+
+        let asst_v = serde_json::json!({
+            "_v": 3,
+            "type": 2,
+            "text": "answer",
+        });
+        let b = decode_l3_bubble_blob("bid-2", &asst_v).unwrap();
+        assert_eq!(b.role, "assistant");
+        assert_eq!(b.text, "answer");
+        assert_eq!(b.id, "bid-2");
+
+        // Unknown type (e.g. tool result 3) → skip.
+        let tool_v = serde_json::json!({"_v": 3, "type": 3, "text": "x"});
+        assert!(decode_l3_bubble_blob("bid-3", &tool_v).is_none());
+    }
+
+    /// 3-way merge: L3 is the main chain. L2 with the same id overlays
+    /// only non-empty fields (LWW). L1 fills gaps.
+    #[test]
+    fn merge_three_way_l3_wins_over_l2_on_empty_overlay() {
+        // L3 has full bubble. L2 has same id but empty text (degraded
+        // shape) — must NOT clobber L3.
+        let mut l3_bubble = Bubble {
+            id: "shared".to_string(),
+            role: "user".to_string(),
+            text: "rich text".to_string(),
+            tool_calls: vec![BubbleToolUse {
+                name: "Glob".into(),
+                input: None,
+            }],
+            files: vec!["a.rs".into()],
+            created_at_ms: 1000,
+        };
+        l3_bubble.tool_calls[0].input = Some(serde_json::json!({"pattern": "*"}));
+        let l2_bubble = Bubble {
+            id: "shared".to_string(),
+            role: "user".to_string(),
+            text: String::new(), // empty → must not overwrite
+            tool_calls: Vec::new(),
+            files: Vec::new(),
+            created_at_ms: 0, // 0 → must not overwrite
+        };
+        let merged = merge_bubbles_three_way(Vec::new(), vec![l2_bubble], vec![l3_bubble]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "rich text", "L3 text preserved");
+        assert_eq!(merged[0].tool_calls.len(), 1, "L3 tool_calls preserved");
+        assert_eq!(merged[0].files, vec!["a.rs".to_string()]);
+        assert_eq!(merged[0].created_at_ms, 1000, "L3 ts preserved");
+    }
+
+    /// 3-way merge: L1 bubbles fill gaps when neither L3 nor L2 have
+    /// the bubble id (e.g. a CLI-only session never synced to L2/L3).
+    #[test]
+    fn merge_three_way_l1_fills_gap() {
+        let l1 = vec![Bubble {
+            id: "l1-only".to_string(),
+            role: "user".to_string(),
+            text: "from jsonl".to_string(),
+            tool_calls: Vec::new(),
+            files: Vec::new(),
+            created_at_ms: 500,
+        }];
+        let merged = merge_bubbles_three_way(l1, Vec::new(), Vec::new());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "l1-only");
+        assert_eq!(merged[0].text, "from jsonl");
+    }
+
+    /// 3-way merge: same id across L1 + L3 must dedup to one row.
+    #[test]
+    fn merge_three_way_dedup_by_id() {
+        let l1 = vec![Bubble {
+            id: "shared".to_string(),
+            role: "user".to_string(),
+            text: "from jsonl".to_string(),
+            tool_calls: Vec::new(),
+            files: Vec::new(),
+            created_at_ms: 0,
+        }];
+        let l3 = vec![Bubble {
+            id: "shared".to_string(),
+            role: "user".to_string(),
+            text: "from desktop".to_string(),
+            tool_calls: Vec::new(),
+            files: Vec::new(),
+            created_at_ms: 1000,
+        }];
+        let merged = merge_bubbles_three_way(l1, Vec::new(), l3);
+        assert_eq!(merged.len(), 1, "same id → one row");
+        assert_eq!(merged[0].text, "from desktop", "L3 wins as main chain");
+    }
+
+    /// 3-way merge: final ordering by `(created_at_ms ASC, id ASC)` —
+    /// guarantees stable render order for the React `<MessageList>`.
+    #[test]
+    fn merge_three_way_preserves_order() {
+        let l3 = vec![
+            Bubble {
+                id: "c".into(),
+                role: "user".into(),
+                text: "third".into(),
+                tool_calls: vec![],
+                files: vec![],
+                created_at_ms: 3000,
+            },
+            Bubble {
+                id: "a".into(),
+                role: "user".into(),
+                text: "first".into(),
+                tool_calls: vec![],
+                files: vec![],
+                created_at_ms: 1000,
+            },
+            Bubble {
+                id: "b".into(),
+                role: "user".into(),
+                text: "second".into(),
+                tool_calls: vec![],
+                files: vec![],
+                created_at_ms: 2000,
+            },
+        ];
+        let merged = merge_bubbles_three_way(Vec::new(), Vec::new(), l3);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].id, "a");
+        assert_eq!(merged[1].id, "b");
+        assert_eq!(merged[2].id, "c");
+    }
+
+    /// `read_conversation` must keep its public signature intact:
+    /// returns `Conversation { uuid, bubbles, source_path, total_lines,
+    /// parse_errors }`. Frontend's `getConversation(uuid)` in
+    /// `src/lib/tauri.ts` types this shape — adding a field would force
+    /// TS changes too. `#[serde(default)]` on the new Bubble fields
+    /// keeps existing payloads compatible.
+    #[test]
+    fn read_conversation_returns_unchanged_signature() {
+        let conv = read_conversation("definitely-not-a-real-uuid-zzzzz");
+        assert_eq!(conv.uuid, "definitely-not-a-real-uuid-zzzzz");
+        assert!(conv.bubbles.is_empty());
+        assert!(conv.source_path.is_none());
+        assert_eq!(conv.total_lines, 0);
+        assert_eq!(conv.parse_errors, 0);
+    }
+
+    /// Live probe: confirm `reverse_chat_root_via_projects` /
+    /// `reverse_chat_root_via_workspace_storage` resolve at least one
+    /// real chat_root on the dev machine. This guards the
+    /// "no more 30+ orphan chat-<md5> rows" promise from #99/#100.
+    /// Skipped by default — run with:
+    ///   cargo test canonical::tests::probe_reverse_chat_root_real -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_reverse_chat_root_real() {
+        let chats = match std::fs::read_dir("/home/eric/.cursor/chats") {
+            Ok(d) => d,
+            Err(_) => return, // dev machine may not have chats/ — silent no-op
+        };
+        let mut hit_ws = 0usize;
+        let mut miss = 0usize;
+        for entry in chats.flatten() {
+            let chat_root = entry.file_name().to_string_lossy().into_owned();
+            if chat_root.len() != 32 { continue; } // skip non-md5 (shouldn't happen but defensive)
+            if let Some(slug) = reverse_chat_root_via_workspace_storage(&chat_root) {
+                eprintln!("chat_root={chat_root} → workspaceStorage.slug={slug}");
+                hit_ws += 1;
+            } else {
+                eprintln!("chat_root={chat_root} → UNRESOLVED (stays as chat-<md5>)");
+                miss += 1;
+            }
+        }
+        // Diagnostic dump: print md5 of every workspaceStorage folder
+        // so we can see what cwd → md5 mapping Cursor actually has on
+        // this dev box. Useful for understanding why the workspaceStorage
+        // reverse-lookup may or may not match the chat_root md5s above.
+        if let Ok(ws) = std::fs::read_dir("/home/eric/.config/Cursor/User/workspaceStorage") {
+            eprintln!("---workspaceStorage → md5(folder)---");
+            for entry in ws.flatten() {
+                let hash = entry.file_name().to_string_lossy().into_owned();
+                let body = std::fs::read_to_string(entry.path().join("workspace.json")).unwrap_or_default();
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                let folder = v["folder"].as_str().unwrap_or("");
+                let path = folder.strip_prefix("file://").unwrap_or(folder);
+                let md5 = paths::chat_root_for(path);
+                eprintln!("hash={hash} path={path} md5={md5}");
+            }
+        }
+        eprintln!("SUMMARY: workspaceStorage={hit_ws} unresolved={miss}");
+        assert!(
+            hit_ws > 0,
+            "no chat_root resolved via workspaceStorage — reverse-lookup is broken"
+        );
     }
 }

@@ -21,25 +21,17 @@ pub struct AppState {
     /// True iff the fs-watcher thread is currently alive. Used so
     /// the spawn site stays idempotent across restart attempts.
     pub watcher_active: Mutex<bool>,
-    /// User preference: whether the watcher should *fire scans* when
-    /// fs events arrive. The watcher thread itself stays alive as
-    /// long as the app runs — it just gates the `scan_all()` calls.
-    /// Default = loaded from `~/.bettercursor/config.json`, falls
-    /// back to `false` (ccswitch-style user-opt-in).
-    pub auto_sync_enabled: Mutex<bool>,
 }
 
 impl AppState {
     fn new() -> Self {
-        // Load user preference from disk. `Preferences::default()`
-        // (auto_sync_enabled = false) is the right starting state when
-        // no config file exists — matches ccswitch's local-route default.
-        let prefs = core::config::load();
+        // v0.2-alpha: the watcher thread always runs and always re-scans
+        // on fs events. There's no user toggle to gate it anymore —
+        // see watcher::run_scan. We don't load any prefs at startup.
         Self {
             sessions: Mutex::new(Vec::new()),
             last_scan_at: Mutex::new(None),
             watcher_active: Mutex::new(false),
-            auto_sync_enabled: Mutex::new(prefs.auto_sync_enabled),
         }
     }
 }
@@ -106,16 +98,12 @@ fn get_conversation(uuid: &str) -> core::canonical::Conversation {
 }
 
 /// Watcher diagnostics for the frontend. Returns the watch dirs
-/// (with `~` substituted for `$HOME`), whether the watcher thread
-/// is currently alive, and whether the user has opted in to
-/// auto-sync (the ccswitch-style toggle).
+/// (with `~` substituted for `$HOME`) and whether the watcher thread
+/// is currently alive. The "enabled" flag was removed in v0.2-alpha:
+/// the watcher always runs and always re-scans on fs events.
 #[derive(serde::Serialize)]
 struct WatcherStatus {
     active: bool,
-    /// True iff the user has enabled the auto-sync toggle. The
-    /// watcher thread stays alive regardless, but skips `scan_all()`
-    /// calls when this is `false`.
-    enabled: bool,
     dirs: Vec<String>,
 }
 
@@ -123,7 +111,6 @@ struct WatcherStatus {
 fn watcher_status(state: State<'_, AppState>) -> WatcherStatus {
     WatcherStatus {
         active: *state.watcher_active.lock().unwrap(),
-        enabled: *state.auto_sync_enabled.lock().unwrap(),
         dirs: core::watcher::watched_dirs()
             .iter()
             .map(|p| core::watcher::dir_label(p))
@@ -131,69 +118,84 @@ fn watcher_status(state: State<'_, AppState>) -> WatcherStatus {
     }
 }
 
-/// Toggle the auto-sync preference. Persists to
-/// `~/.bettercursor/config.json` so the choice survives restarts.
-/// Returns the new full `WatcherStatus` so the frontend can refresh
-/// its badge in one IPC round-trip.
-#[tauri::command]
-fn set_auto_sync(
-    state: State<'_, AppState>,
-    enabled: bool,
-) -> Result<WatcherStatus, String> {
-    // Persist first — if disk write fails, surface to user immediately
-    // rather than silently letting in-memory and disk diverge.
-    let prefs = core::config::set_auto_sync(enabled).map_err(|e| e.to_string())?;
-    *state.auto_sync_enabled.lock().unwrap() = prefs.auto_sync_enabled;
-    log::info!(
-        "auto-sync preference toggled: enabled={}",
-        prefs.auto_sync_enabled
-    );
-    Ok(WatcherStatus {
-        active: *state.watcher_active.lock().unwrap(),
-        enabled: prefs.auto_sync_enabled,
-        dirs: core::watcher::watched_dirs()
-            .iter()
-            .map(|p| core::watcher::dir_label(p))
-            .collect(),
-    })
-}
-
-/// Inject a CLI-originated session into Cursor Desktop's Layer 3
-/// (state.vscdb) so the Electron Sidebar shows it. **Offline only**:
-/// bettercursor never writes to `state.vscdb` while Cursor Electron
-/// holds it open — the rename race silently lost mutations (#84).
-/// Instead, three Tauri commands front the offline pipeline:
-///   1) `dry_run_inject_layer3(uuid)` — pure read; returns an
-///      `InjectPlan` listing every SQLite upsert that *would* run
-///      so the UI can preview the diff.
-///   2) `prepare_inject_layer3(uuid)` — writes a JSON envelope of
-///      that plan to `~/.bettercursor/queue/inject-<uuid>.json`
-///      and returns the queue path + the `python3 ...` apply
-///      command for the UI to show.
-///   3) `inspect_prepared_layer3(uuid)` — checks the queue file +
-///      whether `apply.py` has already run (by sidecar
-///      `.applied` marker). Used by the UI badge for "已应用".
+/// One-click L2↔L3 sync for a single session. The frontend invokes
+/// this from the SessionDetail "补层同步" button (see v0.2-alpha plan).
 ///
-/// The user must (a) quit Cursor Electron and (b) run the apply
-/// command themselves. After it succeeds they reopen Cursor; the
-/// Sidebar will then show the new entry.
+/// `cwd` is supplied by the frontend because the CanonicalSession
+/// doesn't currently carry it (we expose `project_path` which is
+/// sourced from L3's `workspaceIdentifier.uri.fsPath`; if that's
+/// missing, we try `chat_root_for` reverse-lookup by scanning
+/// `~/.cursor/chats/*/`. If both fail, sync returns
+/// `skipped=["no_cwd"]`.)
 #[tauri::command]
-fn dry_run_inject_layer3(uuid: &str) -> Result<core::inject::InjectPlan, String> {
-    core::inject::dry_run_inject(uuid).map_err(|e| e.to_string())
+async fn sync_session_layer23(
+    uuid: String,
+    cwd: Option<String>,
+) -> Result<core::sync::SyncReport, String> {
+    let resolved_cwd = match cwd {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => lookup_cwd_for_session(&uuid).unwrap_or_default(),
+    };
+    core::sync::sync_session(&uuid, &resolved_cwd).map_err(|e| e.to_string())
 }
 
+/// v0.2.1: 全量扫所有 chats/<md5>/<uuid>/store.db, 把每条
+/// `meta[0].latestRootBlobId` 是空字符串的 session 修上. 修之前
+/// 自动备份 store.db 到 `<store.db>.backup_<ts>`. 由前端手动触发
+/// (SessionTree 头部 Wrench 按钮 / SessionDetail 单条"修复"按钮).
+///
+/// Returns: 修了多少 (`fixed`)、跳过了多少 (`scipped`)、扫过多少
+/// (`scanned`).
 #[tauri::command]
-fn prepare_inject_layer3(uuid: &str) -> Result<core::inject::PrepareResult, String> {
-    // First use: copy the bundled apply.py into place so the user's
-    // apply_command actually resolves. Best-effort; failure is
-    // surfaced verbatim so we never queue work the user can't apply.
-    core::inject::ensure_apply_script().map_err(|e| e.to_string())?;
-    core::inject::prepare_inject(uuid).map_err(|e| e.to_string())
+fn fix_orphans() -> Result<core::sync::FixOrphansReport, String> {
+    core::sync::fix_orphans().map_err(|e| e.to_string())
 }
 
+/// v0.2.1: 删除一条 session 的 Layer 1 (JSONL) + Layer 2 (store.db)
+/// 目录. Layer 3 (state.vscdb composerData) 强制跳过 (Cursor Desktop
+/// 自己管, 强制写可能损坏 workspace storage).
+///
+/// 前置 `cursor_processes_running` 守卫 — 跟 sync_session_layer23 一致.
+/// `project_slug` 来自 CanonicalSession 的 project_slug 字段, 后端不重算
+/// (避免 L1 路径猜错). 当 slug 为 None 时跳过 L1 (只删 L2).
 #[tauri::command]
-fn inspect_prepared_layer3(uuid: &str) -> Option<core::inject::Prepared> {
-    core::inject::inspect_prepared(uuid)
+async fn delete_session(
+    uuid: String,
+    cwd: Option<String>,
+    project_slug: Option<String>,
+) -> Result<core::sync::DeleteReport, String> {
+    let cwd_str = cwd.unwrap_or_default();
+    core::sync::delete_session(&uuid, &cwd_str, project_slug.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// Reverse-lookup: scan `~/.cursor/chats/*/<uuid>/` for a matching
+/// directory and return the L2 directory basename (which is
+/// `md5(cwd)`). Used when neither L3 nor L1 surfaced a real cwd.
+///
+/// We can't reverse MD5 → path, but if the uuid lives under exactly
+/// one chats dir we know it's *that* project. For the actual sync
+/// to work, however, we still need cwd to compute the L2 dir
+/// ourselves — so this helper returns the md5 *basename*, and the
+/// caller treats it as a fallback `cwd` (it'll be wrong, but
+/// `write_layer2` will write into a different dir than where the
+/// existing session lives; that's a sync failure we surface).
+///
+/// In practice the frontend always sends `cwd` from the session's
+/// `project_path`, so this fallback is only hit in edge cases.
+fn lookup_cwd_for_session(uuid: &str) -> Option<String> {
+    let chats = core::paths::chats_dir();
+    if !chats.exists() {
+        return None;
+    }
+    let entries = std::fs::read_dir(&chats).ok()?;
+    let mut hits = Vec::new();
+    for entry in entries.flatten() {
+        if entry.path().join(uuid).is_dir() {
+            hits.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    hits.into_iter().next()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -238,10 +240,9 @@ pub fn run() {
             platform_info,
             get_conversation,
             watcher_status,
-            set_auto_sync,
-            dry_run_inject_layer3,
-            prepare_inject_layer3,
-            inspect_prepared_layer3,
+            sync_session_layer23,
+            fix_orphans,
+            delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
