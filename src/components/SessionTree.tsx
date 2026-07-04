@@ -4,18 +4,18 @@ import { useEffect, useState } from "react";
 import { useSessionStore, useGroupedSessions, SORT_LABELS } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
 import { BrokenBadge } from "./BrokenBadge";
+import { SyncNowButton } from "./SyncNowButton";
+import { SyncStatusBadge } from "./SyncStatusBadge";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
-import { fixOrphans, refreshSessions, type FixOrphansReport } from "../lib/tauri";
+import { fixOrphans, syncNow as syncNowTauri, type FixOrphansReport } from "../lib/tauri";
 import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
   Search,
-  RefreshCw,
   ArrowUpDown,
   ListFilter,
-  Radio,
   Wrench,
   CheckCircle2,
   AlertTriangle,
@@ -34,24 +34,18 @@ export function SessionTree() {
   const setSelected = useSessionStore((s) => s.setSelected);
   const search = useSessionStore((s) => s.search);
   const setSearch = useSessionStore((s) => s.setSearch);
-  const refresh = useSessionStore((s) => s.refresh);
   const loading = useSessionStore((s) => s.loading);
   const total = useSessionStore((s) => s.sessions.length);
   const error = useSessionStore((s) => s.error);
   const init = useSessionStore((s) => s.init);
   const sortMode = useSessionStore((s) => s.sortMode);
   const cycleSortMode = useSessionStore((s) => s.cycleSortMode);
-  // v0.2-alpha removed the auto-sync toggle (#103). The watcher always
-  // runs and always re-scans on fs events. `autoSyncLive` is kept only
-  // for the "LIVE" badge diagnostic in the toolbar — drives no UI affordance.
-  const autoSyncLive = useSessionStore((s) => s.autoSyncLive);
-  const watcherDirs = useSessionStore((s) => s.watcherDirs);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // v0.2.1 — 头部 Wrench 按钮 (批量修复 orphan). 状态独立于
   // SessionDetail 的单条修复按钮 (两边调同一个 fixOrphans).
-  // `orphanToast` 是 3s 自动消失的横幅.
+  // `orphanToast` 是 4s 自动消失的横幅.
   const [fixingOrphans, setFixingOrphans] = useState(false);
   const [orphanToast, setOrphanToast] = useState<
     | { kind: "ok" | "err"; text: string; report?: FixOrphansReport }
@@ -62,7 +56,7 @@ export function SessionTree() {
     init();
   }, [init]);
 
-  // 3s 自动消失. useEffect 挂在新 toast 上, 卸载时清理 timer.
+  // 4s 自动消失. useEffect 挂在新 toast 上, 卸载时清理 timer.
   useEffect(() => {
     if (!orphanToast) return;
     const id = window.setTimeout(() => setOrphanToast(null), 4000);
@@ -74,7 +68,7 @@ export function SessionTree() {
     setOrphanToast(null);
     try {
       const report = await fixOrphans();
-      await refreshSessions().catch(() => undefined);
+      await syncNowTauri().catch(() => undefined);
       setOrphanToast({
         kind: "ok",
         text: `扫描 ${report.scanned} 条 orphan, 修复 ${report.fixed.length} 条${
@@ -114,9 +108,13 @@ export function SessionTree() {
           <ChevronLeft size={16} />
         </button>
         <h1 className="text-sm font-semibold text-fg-primary">会话管理</h1>
-        <span className="ml-auto text-[10px] text-fg-muted font-mono">
-          v0.1
+        {/* v0.2.3: replaces the old "LIVE" badge — now shows the
+            watcher state + "Xs 前" counter. Polls watcher_status
+            every 5s, ticks the counter every 1s locally. */}
+        <span className="ml-auto">
+          <SyncStatusBadge />
         </span>
+        <span className="text-[10px] text-fg-muted font-mono">v0.2.3</span>
       </div>
 
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-xs text-fg-secondary">
@@ -124,18 +122,6 @@ export function SessionTree() {
         <span className="px-1.5 py-0.5 rounded bg-bg-tertiary text-fg-primary font-mono">
           {total}
         </span>
-        {/* v0.2-alpha (#103): 移除 auto-sync toggle — watcher 始终启用.
-            仅在 watcher 线程实际在线时显示一个只读 "LIVE" 指示器,
-            点击无副作用, 作为 fs-watcher 工作状态的视觉反馈. */}
-        {autoSyncLive && (
-          <span
-            title={`自动同步运行中 — 监听 ${watcherDirs.join(", ")}`}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-accent-green/15 border-accent-green/40 text-accent-green"
-          >
-            <Radio size={10} className="animate-pulse" />
-            <span>LIVE</span>
-          </span>
-        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             className="p-1 rounded hover:bg-bg-hover"
@@ -164,14 +150,11 @@ export function SessionTree() {
               className={fixingOrphans ? "animate-spin" : ""}
             />
           </button>
-          <button
-            className="p-1 rounded hover:bg-bg-hover"
-            onClick={() => refresh()}
-            title="刷新"
-            disabled={loading}
-          >
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          </button>
+          {/* v0.2.3: extracted from inline button. Same behavior
+              (RefreshCw + spinner), but the icon is now sourced from
+              its own component so the click-debounce / loading
+              derivation lives in one place. */}
+          <SyncNowButton />
         </div>
       </div>
 

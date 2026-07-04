@@ -9,7 +9,7 @@ import {
   fixOrphans,
   getConversation,
   getResumeCommand,
-  refreshSessions,
+  syncNow as syncNowTauri,
   syncSessionLayer23,
   type Conversation,
   type DeleteReport,
@@ -135,7 +135,7 @@ export function SessionDetail() {
   // v0.2-alpha one-click L2↔L3 补层 sync. `cwd` is sourced from the
   // session's `project_path` (Layer 3 workspaceIdentifier when present,
   // otherwise empty → Rust side falls back to chats-dir scan). On
-  // success we `refreshSessions()` so the new `sources.linux_cli` /
+  // success we `syncNowTauri()` so the new `sources.linux_cli` /
   // `layer_3_present` flags propagate to the sidebar badge and the
   // missing[] banner disappears.
   const handleCopyResume = async () => {
@@ -164,7 +164,7 @@ export function SessionDetail() {
       // Whether we wrote anything, refresh so source tags reflect
       // new on-disk state. `cursor_running` skip still leaves state
       // unchanged, but the user expects a refresh either way.
-      await refreshSessions().catch(() => undefined);
+      await syncNowTauri().catch(() => undefined);
     } catch (e: unknown) {
       setSyncError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -183,7 +183,7 @@ export function SessionDetail() {
     try {
       const report = await fixOrphans();
       setRepairReport(report);
-      await refreshSessions().catch(() => undefined);
+      await syncNowTauri().catch(() => undefined);
     } catch (e: unknown) {
       setRepairError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -219,7 +219,7 @@ export function SessionDetail() {
         slug || null,
       );
       setDeleteReport(report);
-      await refreshSessions().catch(() => undefined);
+      await syncNowTauri().catch(() => undefined);
       // 关闭 dialog 仅在真的删了什么的时候 (避免 cursor_running
       // 之类的场景下悄悄把 dialog 关掉, 让用户没法看 reason).
       const deletedSomething =

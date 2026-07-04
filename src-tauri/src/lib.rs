@@ -47,9 +47,13 @@ fn list_sessions(state: State<'_, AppState>) -> Vec<core::canonical::CanonicalSe
 /// Force a fresh scan of the local Cursor storage layers, replace the cache,
 /// and emit `sessions-updated` so the UI refreshes.
 ///
-/// Tauri command — invoked from the React frontend via `invoke('refresh_sessions')`.
+/// v0.2.3 rename: was `refresh_sessions` (v0.1 terminology). Now `sync_now`
+/// matches PRD / SYNC_DESIGN v0.2+ wording. Same semantics — full
+/// `canonical::scan_all()` + emit `sessions-updated` + bump `last_scan_at`.
+///
+/// Tauri command — invoked from the React frontend via `invoke('sync_now')`.
 #[tauri::command]
-fn refresh_sessions(
+fn sync_now(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
@@ -98,23 +102,44 @@ fn get_conversation(uuid: &str) -> core::canonical::Conversation {
 }
 
 /// Watcher diagnostics for the frontend. Returns the watch dirs
-/// (with `~` substituted for `$HOME`) and whether the watcher thread
-/// is currently alive. The "enabled" flag was removed in v0.2-alpha:
-/// the watcher always runs and always re-scans on fs events.
+/// (with `~` substituted for `$HOME`), whether the watcher thread
+/// is currently alive, and when the last scan completed (epoch ms).
+///
+/// v0.2.3: `last_scan_at_ms` added so the frontend can render a
+/// "12s 前" / "3m 前" counter without re-running a Tauri command
+/// every tick. The watcher always runs and always re-scans on fs
+/// events (no user toggle — v0.2-alpha #103).
 #[derive(serde::Serialize)]
 struct WatcherStatus {
     active: bool,
     dirs: Vec<String>,
+    /// Epoch ms of the last successful scan (fs event or polling
+    /// fallback). `None` before the first scan completes. Frontend
+    /// renders this as "Xs 前" / "Xm 前" / "Xh 前".
+    last_scan_at_ms: Option<i64>,
 }
 
 #[tauri::command]
 fn watcher_status(state: State<'_, AppState>) -> WatcherStatus {
+    compute_watcher_status(&state)
+}
+
+/// Pure helper extracted from `watcher_status` so the unit test can
+/// exercise it without spinning up a Tauri runtime. See `tests`
+/// module at the bottom of this file.
+fn compute_watcher_status(state: &AppState) -> WatcherStatus {
+    let last_scan_at_ms = state
+        .last_scan_at
+        .lock()
+        .unwrap()
+        .map(|dt| dt.timestamp_millis());
     WatcherStatus {
         active: *state.watcher_active.lock().unwrap(),
         dirs: core::watcher::watched_dirs()
             .iter()
             .map(|p| core::watcher::dir_label(p))
             .collect(),
+        last_scan_at_ms,
     }
 }
 
@@ -235,7 +260,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
-            refresh_sessions,
+            sync_now,
             get_resume_command,
             platform_info,
             get_conversation,
@@ -246,4 +271,52 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── v0.2.3 unit tests ───────────────────────────────────────────
+//
+// `compute_watcher_status` is the pure helper extracted from the
+// `watcher_status` Tauri command. These tests cover the new
+// `last_scan_at_ms` field added in v0.2.3 without needing a Tauri
+// runtime.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// After at least one scan has completed (fs event or polling
+    /// fallback), `compute_watcher_status` must surface the timestamp
+    /// as epoch ms so the frontend can render "Xs 前".
+    #[test]
+    fn watcher_status_returns_last_scan_at_ms_after_scan() {
+        let state = AppState::new();
+        let before = chrono::Utc::now().timestamp_millis();
+        *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
+        let status = compute_watcher_status(&state);
+        let ms = status
+            .last_scan_at_ms
+            .expect("last_scan_at_ms must be Some after a scan");
+        // Same second granularity is fine for "Xs 前" UI; allow 1s slack.
+        assert!(
+            ms >= before && ms <= before + 1000,
+            "expected last_scan_at_ms in [{before}, {}+1000], got {ms}",
+            before = before,
+            ms = ms,
+        );
+    }
+
+    /// Before any scan has completed (process just started), the
+    /// frontend must see `None` so it can show "尚未扫描" instead of
+    /// "1970-01-01 0s 前".
+    #[test]
+    fn watcher_status_returns_none_before_first_scan() {
+        let state = AppState::new();
+        assert!(state.last_scan_at.lock().unwrap().is_none());
+        let status = compute_watcher_status(&state);
+        assert!(
+            status.last_scan_at_ms.is_none(),
+            "expected last_scan_at_ms None before first scan, got {:?}",
+            status.last_scan_at_ms,
+        );
+    }
 }

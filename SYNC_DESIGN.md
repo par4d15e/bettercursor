@@ -1505,7 +1505,7 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 
 ## §10 实现路线图
 
-> ✅ **v0.2.1 + v0.2.2 已完工** (2026-07-04). 后续 milestone 顺延: v0.2.3 → v0.2.4 → **v0.3.0 大版本** (开本文件所有 §2-§7 的能力) → v0.3.1 (UI 层).
+> ✅ **v0.2.1 + v0.2.2 + v0.2.3 已完工** (2026-07-04). 后续 milestone 顺延: v0.2.4 → **v0.3.0 大版本** (开本文件所有 §2-§7 的能力) → v0.3.1 (UI 层).
 
 ### 10.1 路线图总表
 
@@ -1514,7 +1514,7 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.2-alpha** (2026-07-03) | v0.2-alpha: 单 session L2/L3 补层 + 锁检测 | 1d | ✅ 已落地 |
 | **v0.2.1** (2026-07-04) | v0.2.1: `fix_orphans` + `delete_session` + Lock 模块独立 | 1d | **✅ 已落地 2026-07-04** |
 | **v0.2.2** (2026-07-04) | v0.2.2: 对话记录展开 — L1+L2+L3 三路合并 (`canonical::merge_bubbles_three_way`) + bubble-id 对账 + 字段级 LWW + `<MessageList>` 薄包装 (sticky header + 三态文案 + 浮动跳转底部 + stable key) | 1.5d | **✅ 已落地 2026-07-04** |
-| **v0.2.3** | 本机 sync loop (`sync_now` command + daemon_loop + 5min polling — 暂无 notify) | 2d | 🟡 待做 |
+| **v0.2.3** (2026-07-04) | v0.2.3: 后台 sync loop 收尾 — `refresh_sessions` → `sync_now` 改名; `watcher_status.last_scan_at_ms` 暴露给前端; `<SyncNowButton>` (立即扫描, 替代 SessionTree 内联 refresh 按钮); `<SyncStatusBadge>` ("● 自动同步 · Xs 前", 1Hz local tick + 5s poll). 不复活 `auto_sync_enabled` toggle (沿用 #103 拍板). | 1.5d | **✅ 已落地 2026-07-04** |
 | **v0.2.4** | 跨设备 sync (Tailscale SSH 或 SSH/rsync); 这里**第一次**引入 §4 transport trait | 4-5d | 🟡 待做 |
 | **v0.3.0** | `~/.bettercursor/unified.db` (§3) + snapshot codec (§2) + `Transport` trait (§4) + `Conflict` enum (§6) — 大版本, **推开 v0.2 旧 inline-write 路径** | 5d | ⚪ 待拍板 |
 | **v0.3.1** | SSH/rsync transport (§5) + 离线 outbox (§5.2) + conflict UI (§6.7) + `core::lock` 升级 (§7.4) | 7d | ⚪ 待拍板 |
@@ -1526,7 +1526,7 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 ### 10.2 依赖图
 
 ```
-v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ──► v0.2.4
+v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅ ──► v0.2.4
                                               │
                               (Transport trait 初版, 仅 SSH/rsync 一份)
                                               │

@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import type { CanonicalSession } from "../lib/types";
 import {
   listSessions,
-  refreshSessions,
+  syncNow,
   onSessionsUpdated,
   watcherStatus,
 } from "../lib/tauri";
@@ -43,14 +43,27 @@ interface SessionState {
   /// thread state for diagnostics.
   autoSyncLive: boolean;
   watcherDirs: string[];
+  /// v0.2.3: epoch ms of the last successful scan, sourced from the
+  /// Rust `watcher_status.last_scan_at_ms` field. The SyncStatusBadge
+  /// formats this as "12s 前" / "3m 前" via its `formatAge` helper.
+  /// `null` before the first scan completes.
+  last_scan_at_ms: number | null;
   setSessions: (s: CanonicalSession[]) => void;
   setSelected: (uuid: string | null) => void;
   setSearch: (q: string) => void;
   setSortMode: (m: SortMode) => void;
   cycleSortMode: () => void;
-  refresh: () => Promise<void>;
+  /// v0.2.3 rename: was `refresh()`. Now `syncNow()` matches the Rust
+  /// `sync_now` command and the PRD / SYNC_DESIGN v0.2+ wording. Same
+  /// semantics — full local Cursor re-scan + refresh cache.
+  syncNow: () => Promise<void>;
   init: () => Promise<void>;
   refreshWatcherStatus: () => Promise<void>;
+  /// v0.2.3: kick off a 5-second polling loop that re-fetches
+  /// `watcher_status` so the SyncStatusBadge stays in sync with the
+  /// backend's `AppState.last_scan_at`. Returns an unsubscribe fn —
+  /// the caller must call it on unmount to clear the interval.
+  startWatcherPolling: () => () => void;
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -63,6 +76,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   sortMode: "updated_desc",
   autoSyncLive: false,
   watcherDirs: [],
+  last_scan_at_ms: null,
 
   setSessions: (sessions) => set({ sessions }),
   setSelected: (uuid) => set({ selectedUuid: uuid }),
@@ -75,21 +89,39 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { sortMode: next };
     }),
 
-  refresh: async () => {
+  syncNow: async () => {
     set({ loading: true, error: null });
     try {
-      console.log("[bettercursor] refresh: calling Tauri command...");
-      const count = await refreshSessions();
-      console.log(`[bettercursor] refresh: Rust returned ${count} sessions`);
+      console.log("[bettercursor] syncNow: calling Tauri command...");
+      const count = await syncNow();
+      console.log(`[bettercursor] syncNow: Rust returned ${count} sessions`);
       const fresh = await listSessions();
-      console.log(`[bettercursor] refresh: listSessions returned ${fresh.length} sessions`);
+      console.log(
+        `[bettercursor] syncNow: listSessions returned ${fresh.length} sessions`,
+      );
+      // Re-pull watcher status so the SyncStatusBadge updates its
+      // "Xs 前" counter to ~0 right after the manual scan.
+      let last_scan_at_ms: number | null = null;
+      let autoSyncLive = false;
+      let watcherDirs: string[] = [];
+      try {
+        const w = await watcherStatus();
+        last_scan_at_ms = w.last_scan_at_ms;
+        autoSyncLive = w.active;
+        watcherDirs = w.dirs;
+      } catch (e) {
+        console.warn("[bettercursor] syncNow: watcher_status poll failed:", e);
+      }
       set({
         sessions: fresh,
         lastScanAt: new Date().toISOString(),
         loading: false,
+        last_scan_at_ms,
+        autoSyncLive,
+        watcherDirs,
       });
     } catch (e: any) {
-      console.error(`[bettercursor] refresh failed:`, e);
+      console.error(`[bettercursor] syncNow failed:`, e);
       set({ error: String(e), loading: false });
     }
   },
@@ -97,7 +129,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   init: async () => {
     console.log("[bettercursor] init: starting");
     // Subscribe to backend events (emitted on initial scan + manual
-    // refresh + watcher auto-sync).
+    // sync_now + watcher auto-sync).
     await onSessionsUpdated(async (count) => {
       console.log(`[bettercursor] event: sessions-updated, count=${count}`);
       const fresh = await listSessions();
@@ -119,9 +151,10 @@ export const useSessionStore = create<SessionState>((set) => ({
       set({
         autoSyncLive: w.active,
         watcherDirs: w.dirs,
+        last_scan_at_ms: w.last_scan_at_ms,
       });
       console.log(
-        `[bettercursor] watcher: active=${w.active}, dirs=${w.dirs.length}`,
+        `[bettercursor] watcher: active=${w.active}, last_scan_at_ms=${w.last_scan_at_ms}, dirs=${w.dirs.length}`,
       );
     } catch (e: any) {
       console.warn(`[bettercursor] watcher_status failed:`, e);
@@ -134,10 +167,23 @@ export const useSessionStore = create<SessionState>((set) => ({
       set({
         autoSyncLive: w.active,
         watcherDirs: w.dirs,
+        last_scan_at_ms: w.last_scan_at_ms,
       });
     } catch (e: any) {
       console.warn("[bettercursor] refreshWatcherStatus:", e);
     }
+  },
+
+  startWatcherPolling: () => {
+    // Poll every 5s — watcher scan interval is 30s, so 5s gives us
+    // a smooth "Xs 前" counter without hammering Tauri IPC.
+    const id = setInterval(() => {
+      // Reuse refreshWatcherStatus via getState() to avoid capturing
+      // a stale `set` closure. Safe because Zustand actions are stable
+      // across the lifetime of the store.
+      useSessionStore.getState().refreshWatcherStatus();
+    }, 5000);
+    return () => clearInterval(id);
   },
 }));
 

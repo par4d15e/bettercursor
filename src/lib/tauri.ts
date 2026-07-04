@@ -8,8 +8,12 @@ export async function listSessions(): Promise<CanonicalSession[]> {
   return invoke<CanonicalSession[]>("list_sessions");
 }
 
-export async function refreshSessions(): Promise<number> {
-  return invoke<number>("refresh_sessions");
+/// v0.2.3 rename: was `refreshSessions` (v0.1 terminology). Now
+/// `syncNow` matches the Rust command `sync_now` and the PRD /
+/// SYNC_DESIGN v0.2+ wording. Same semantics: full local Cursor
+/// re-scan, cache refresh, emit `sessions-updated`.
+export async function syncNow(): Promise<number> {
+  return invoke<number>("sync_now");
 }
 
 export async function getResumeCommand(
@@ -72,9 +76,17 @@ export async function getConversation(uuid: string): Promise<Conversation> {
 /// user toggle — see #103). The watcher thread always runs and always
 /// re-scans on fs events. This struct is kept only for the "live" /
 /// "stopped" badge in the sidebar header.
+///
+/// v0.2.3: `last_scan_at_ms` added so the SyncStatusBadge can render
+/// a "12s 前" / "3m 前" counter without re-running a Tauri command
+/// every tick.
 export interface WatcherStatus {
   active: boolean;
   dirs: string[];
+  /// Epoch ms of the last successful scan (fs event or polling
+  /// fallback). `null` before the first scan completes. Format with
+  /// `<SyncStatusBadge>`'s `formatAge` helper.
+  last_scan_at_ms: number | null;
 }
 
 export async function watcherStatus(): Promise<WatcherStatus> {

@@ -13,7 +13,8 @@
 >   - **v0.2-alpha** (2026-07-03 完工) = **手动单 session L2↔L3 补层 sync**, 单按钮一键补齐缺失层. 详见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
 >   - **v0.2.1** (2026-07-04 完工) = 修 orphan (latestRootBlobId 空字符串) + 删除 session (L1 + L2, L3 跳). 详见 [SYNC_DESIGN.md §9](SYNC_DESIGN.md).
 >   - **v0.2.2** (2026-07-04 完工) = 对话记录展开 — L1+L2+L3 三路合并 (bubble-id 对账 + 字段级 LWW) + `<MessageList>` 薄包装 (sticky header + 浮动跳转 + stable key). 详见 [SYNC_DESIGN.md §7](SYNC_DESIGN.md).
->   - **v0.2.3+** = 全量 sync loop / 跨设备. 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §9.
+>   - **v0.2.3** (2026-07-04 完工) = 后台 sync loop 收尾 — `refresh_sessions` 改名为 `sync_now` + `watcher_status.last_scan_at_ms` 暴露给前端 + `<SyncNowButton>` (立即扫描) + `<SyncStatusBadge>` ("● 自动同步 · Xs 前"). 详见 [SYNC_DESIGN.md §10.1](SYNC_DESIGN.md).
+>   - **v0.2.4+** = 跨设备 sync (Tailscale / SSH-rsync). 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md) §9.
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -91,8 +92,10 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.2.2 — `<MessageList>` 薄包装 (sticky header + 三态文案 + 浮动跳转底部 + stable key)** | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | **v0.2.2 — `Bubble` 加 `id` / `created_at_ms` (均 `#[serde(default)]`)** | `src-tauri/src/core/canonical.rs` | **v0.2.2 ✅** |
 | **v0.2.2 — `paths::find_layer1_jsonl_for` 合并两份 finder + `inject::LayerBubble` 改为 `canonical::Bubble` 别名** | `src-tauri/src/core/paths.rs` + `src-tauri/src/core/inject.rs` | **v0.2.2 ✅** |
-| 后台 tokio sync loop (5min 间隔 + notify 触发) | [SYNC_DESIGN.md §5](SYNC_DESIGN.md) | 设计稿 (v0.2.3) |
-| `sync_now` / `set_auto_sync` / `get_sync_status` command | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | 设计稿 (v0.2.3) |
+| 后台 sync loop (notify + 30s polling fallback + 500ms debounce) | [SYNC_DESIGN.md §5](SYNC_DESIGN.md) | **v0.2-alpha ✅** (永跑, 无 toggle, 见 #103) |
+| `sync_now` command (用户手动触发全量扫描) | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | **v0.2.3 ✅** (从 v0.1 `refresh_sessions` 改名) |
+| `get_sync_status` (`watcher_status` 加 `last_scan_at_ms`) | [SYNC_DESIGN.md §4](SYNC_DESIGN.md) | **v0.2.3 ✅** (frontend `<SyncStatusBadge>` 显示 "● 自动同步 · Xs 前") |
+| 不复活 `auto_sync_enabled` toggle (沿用 #103 拍板) | — | **v0.2.3 ✅** (默认行为不变, 只暴露状态) |
 | 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | 设计稿 (v0.2.4) |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | UI: SyncToggle / SyncNowButton / 状态显示 | [SYNC_DESIGN.md §4.3](SYNC_DESIGN.md) | 设计稿 |
@@ -517,7 +520,7 @@ const orphans = await invoke<FixOrphansReport>('fix_orphans');
 | US-3 | 点 session 看到详情 (标题 / 时间 / 项目 / uuid / 来源) | ✅ 实现 (`SessionDetail`) — 对话记录展开 v0.2 计划 (见 [SYNC_DESIGN §7](SYNC_DESIGN.md)) |
 | US-4 | 点 "复制 resume 命令" 按钮, 剪贴板有正确命令 | ✅ 实现 (`get_resume_command` + `plugin-clipboard-manager`) |
 | US-5 | 搜索框过滤有效, 实时高亮 | ✅ 实现 (`useSessionStore.setSearch` + `selectFilteredSessions`) |
-| US-6 | 点 "刷新" 按钮, 1-2 秒内列表更新 | ✅ 实现 (`refresh_sessions` command) |
+| US-6 | 点 "刷新" 按钮, 1-2 秒内列表更新 | ✅ 实现 (`sync_now` command, 原 v0.1 `refresh_sessions` 改名) |
 | US-7 | 重复 UUID (跨层) 不出现两次 | ✅ 实现 (`canonical::scan_all` 按 uuid 合并) |
 
 **显式不做 (v0.1 范围外, 推到 v0.2+ 设计稿 [SYNC_DESIGN.md](SYNC_DESIGN.md))**:
