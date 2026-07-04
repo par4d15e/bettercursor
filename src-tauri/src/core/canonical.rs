@@ -1828,6 +1828,46 @@ fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
 ///
 /// Duplicate ids across L1+L2+L3 collapse to one row; duplicate text
 /// within a single layer is preserved (we don't dedupe by content).
+/// Fill `created_at_ms == 0` gaps using neighbor timestamps (cursor-history spec 010).
+fn fill_timestamp_gaps(bubbles: &mut [Bubble]) {
+    if bubbles.is_empty() {
+        return;
+    }
+    for i in 0..bubbles.len() {
+        if bubbles[i].created_at_ms != 0 {
+            continue;
+        }
+        let mut filled = false;
+        for j in (i + 1)..bubbles.len() {
+            if bubbles[j].created_at_ms != 0 {
+                bubbles[i].created_at_ms = bubbles[j].created_at_ms;
+                filled = true;
+                break;
+            }
+        }
+        if filled {
+            continue;
+        }
+        for j in (0..i).rev() {
+            if bubbles[j].created_at_ms != 0 {
+                bubbles[i].created_at_ms = bubbles[j].created_at_ms;
+                break;
+            }
+        }
+    }
+    let fallback = bubbles
+        .iter()
+        .map(|b| b.created_at_ms)
+        .filter(|&t| t > 0)
+        .max()
+        .unwrap_or(1);
+    for b in bubbles.iter_mut() {
+        if b.created_at_ms == 0 {
+            b.created_at_ms = fallback;
+        }
+    }
+}
+
 pub fn merge_bubbles_three_way(
     l1: Vec<Bubble>,
     l2: Vec<Bubble>,
@@ -1855,6 +1895,7 @@ pub fn merge_bubbles_three_way(
 
     // 4. Sort by (created_at_ms ASC, id ASC).
     let mut out: Vec<Bubble> = by_id.into_values().collect();
+    fill_timestamp_gaps(&mut out);
     out.sort_by(|a, b| {
         a.created_at_ms
             .cmp(&b.created_at_ms)
@@ -2702,6 +2743,101 @@ mod tests {
         assert!(include2 == false);
         let composer_v2 = Some(serde_json::json!({ "name": "x" }));
         assert!(global_bubbles > 0 || composer_v2.is_some());
+    }
+
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/cursor-history")
+            .join(name)
+    }
+
+    #[test]
+    fn parity_fixture_read_file_v2_bubble() {
+        let raw = std::fs::read_to_string(fixture_path("read_file_v2_bubble.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let b = decode_l3_bubble_blob("parity-rf", &v).unwrap();
+        assert!(b.text.contains("read_file_v2"));
+        assert!(b.text.contains("pub fn hello()"));
+    }
+
+    #[test]
+    fn parity_fixture_thinking_codeblocks() {
+        let raw = std::fs::read_to_string(fixture_path("thinking_codeblocks_bubble.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let b = decode_l3_bubble_blob("parity-th", &v).unwrap();
+        assert!(b.text.contains("[Thinking]"));
+        assert!(b.text.contains("```rust"));
+    }
+
+    #[test]
+    fn parity_fixture_composer_headers_ids() {
+        let raw = std::fs::read_to_string(fixture_path("composer_headers_blob.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let ids = collect_composer_ids_from_composer_blob(&v);
+        assert!(ids.contains("11111111-2222-3333-4444-555555555555"));
+        assert!(ids.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+    }
+
+    #[test]
+    fn fill_timestamp_gaps_interpolates_zeros() {
+        let mut bubbles = vec![
+            Bubble {
+                id: "a".into(),
+                role: "user".into(),
+                text: "1".into(),
+                tool_calls: vec![],
+                files: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "b".into(),
+                role: "assistant".into(),
+                text: "2".into(),
+                tool_calls: vec![],
+                files: vec![],
+                created_at_ms: 1000,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "c".into(),
+                role: "user".into(),
+                text: "3".into(),
+                tool_calls: vec![],
+                files: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+        ];
+        fill_timestamp_gaps(&mut bubbles);
+        assert_eq!(bubbles[0].created_at_ms, 1000);
+        assert_eq!(bubbles[2].created_at_ms, 1000);
+    }
+
+    #[test]
+    fn merge_three_way_applies_timestamp_gaps_before_sort() {
+        let l3 = vec![Bubble {
+            id: "z".into(),
+            role: "assistant".into(),
+            text: "late".into(),
+            tool_calls: vec![],
+            files: vec![],
+            created_at_ms: 2000,
+            parent_bubble_id: None,
+        }];
+        let l1 = vec![Bubble {
+            id: "a".into(),
+            role: "user".into(),
+            text: "early".into(),
+            tool_calls: vec![],
+            files: vec![],
+            created_at_ms: 0,
+            parent_bubble_id: None,
+        }];
+        let merged = merge_bubbles_three_way(l1, vec![], l3);
+        assert_eq!(merged.len(), 2);
+        assert!(merged[0].created_at_ms <= merged[1].created_at_ms);
+        assert_eq!(merged[0].id, "a");
     }
 
     /// 3-way merge: L3 is the main chain. L2 with the same id overlays

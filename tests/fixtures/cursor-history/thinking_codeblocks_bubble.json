@@ -1,0 +1,6 @@
+{
+  "_v": 3,
+  "type": 2,
+  "thinking": { "text": "Let me reason about this." },
+  "codeBlocks": [{ "content": "fn main() {}", "languageId": "rust" }]
+}
