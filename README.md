@@ -70,9 +70,23 @@ chmod +x BetterCursor_0.2.5_amd64.AppImage
 
 ### macOS
 
-1. 下载 `BetterCursor_0.2.5_x64.dmg` (Intel) 或 `BetterCursor_0.2.5_aarch64.dmg` (Apple Silicon)
+1. 下载 `BetterCursor_0.2.5_aarch64.dmg` (Apple Silicon) 或 `BetterCursor_0.2.5_x64.dmg` (Intel — pending release fix, see issue tracker)
 2. 双击挂载, 把 `BetterCursor.app` 拖进 `/Applications`
-3. **未签名 dmg**: 首次打开 `右键 → "打开方式" → 打开` 即可 (之后正常双击, Gatekeeper 只卡第一次)
+3. **未签名 dmg 跳过 Gatekeeper** (一次性, 比"右键打开"更彻底):
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/BetterCursor.app
+   ```
+
+   `com.apple.quarantine` 是 Finder 给从 internet 下载的 dmg 应用打的扩展属性, 留着它 Gatekeeper 每次双击都会拦截. `xattr -dr` 递归删掉整个 app bundle 下的所有 quarantine 标记 (包括嵌套 binary / framework), 之后双击就跟装 App Store 一样了.
+
+   兜底 (上一步不生效时): `右键 BetterCursor.app → 打开方式 → 打开` 同样能解锁, 但**每个新下载的 app 都要做一次**.
+
+   全局 sweep (清 /Applications 下所有 quarantined app):
+
+   ```bash
+   find /Applications -name "*.app" -exec xattr -dr com.apple.quarantine {} \; 2>/dev/null
+   ```
 
 ### Windows
 
