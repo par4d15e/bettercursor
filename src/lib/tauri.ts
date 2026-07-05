@@ -264,3 +264,73 @@ export async function transportPull(
 ): Promise<PullReport> {
   return invoke<PullReport>("transport_pull", { peerId, sinceMs });
 }
+
+// ── v0.3.1 LAN 发现 / 配对 / 冲突 ─────────────────────────────
+
+export interface DiscoveredDevice {
+  device_id: string;
+  device_name: string;
+  host: string;
+  port: number;
+}
+
+export interface TrustedPeer {
+  id: string;
+  device_name: string;
+  lan_addr: string;
+  pairing_secret: string;
+  trusted_at_ms: number;
+}
+
+export interface PairingStartReport {
+  code: string;
+  port: number;
+}
+
+export interface ConflictRow {
+  id: number;
+  session_uuid: string;
+  class: string;
+  local_content_hash: string | null;
+  incoming_content_hash: string | null;
+  classified_at_ms: number;
+  resolved_at_ms: number | null;
+  resolved_how: string | null;
+}
+
+export async function discoveryBrowse(): Promise<DiscoveredDevice[]> {
+  return invoke<DiscoveredDevice[]>("discovery_browse");
+}
+
+export async function pairingStart(): Promise<PairingStartReport> {
+  return invoke<PairingStartReport>("pairing_start");
+}
+
+export async function pairingJoin(
+  host: string,
+  port: number,
+  code: string,
+  deviceName: string,
+): Promise<TrustedPeer> {
+  return invoke<TrustedPeer>("pairing_join", {
+    host,
+    port,
+    code,
+    deviceName,
+  });
+}
+
+export async function listTrustedPeers(): Promise<TrustedPeer[]> {
+  return invoke<TrustedPeer[]>("list_trusted_peers");
+}
+
+export async function listUnresolvedConflicts(): Promise<ConflictRow[]> {
+  return invoke<ConflictRow[]>("list_unresolved_conflicts");
+}
+
+export async function resolveConflict(
+  conflictId: number,
+  how: string,
+): Promise<void> {
+  return invoke<void>("resolve_conflict", { conflictId, how });
+}

@@ -276,15 +276,26 @@ fn transport_push(
         .find(|s| s.uuid == uuid)
         .cloned()
         .ok_or_else(|| format!("session '{uuid}' not found in current scan"))?;
-    let cfg = core::transport::TransportConfigFile::load().map_err(|e| e.to_string())?;
-    let peer = cfg
-        .peer(&peer_id)
-        .ok_or_else(|| format!("peer '{peer_id}' not found"))?
-        .clone();
-    let transport = core::transport::SshRsyncTransport::new(peer);
-    let snap =
-        core::transport::SessionSnapshotMeta::from_canonical(&session, &local_hostname());
-    tauri::async_runtime::block_on(transport.push(&snap)).map_err(|e| e.to_string())
+    let resolved = core::transport::resolve_peer(&peer_id).map_err(|e| e.to_string())?;
+    let conv = core::canonical::read_conversation(&uuid);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let snap = core::snapshot::SessionSnapshot::from_canonical_v4(
+        &session,
+        &conv.bubbles,
+        &local_hostname(),
+        now_ms,
+    );
+    let payload = core::transport::PushSnapshot::V4(snap);
+    match resolved {
+        core::transport::ResolvedPeer::Ssh(peer) => {
+            let transport = core::transport::SshRsyncTransport::new(peer);
+            tauri::async_runtime::block_on(transport.push(&payload)).map_err(|e| e.to_string())
+        }
+        core::transport::ResolvedPeer::Lan(peer) => {
+            let transport = core::transport::LanTcpTransport::new(peer);
+            tauri::async_runtime::block_on(transport.push(&payload)).map_err(|e| e.to_string())
+        }
+    }
 }
 
 /// v0.3.0: 从指定 peer 拉 snapshot, 经 conflict 分类后写入 unified.db.
@@ -307,15 +318,20 @@ fn transport_pull(
     use core::conflict::{self, ConflictClass};
     use core::transport::{RemoteSnapshot, Transport};
 
-    let cfg = core::transport::TransportConfigFile::load().map_err(|e| e.to_string())?;
-    let peer = cfg
-        .peer(&peer_id)
-        .ok_or_else(|| format!("peer '{peer_id}' not found"))?
-        .clone();
-    let transport = core::transport::SshRsyncTransport::new(peer);
+    let resolved = core::transport::resolve_peer(&peer_id).map_err(|e| e.to_string())?;
     let since = since_ms.unwrap_or(0);
-    let snaps = tauri::async_runtime::block_on(transport.pull(since))
-        .map_err(|e| e.to_string())?;
+    let snaps = match &resolved {
+        core::transport::ResolvedPeer::Ssh(peer) => {
+            let transport = core::transport::SshRsyncTransport::new(peer.clone());
+            tauri::async_runtime::block_on(transport.pull(since))
+                .map_err(|e| e.to_string())?
+        }
+        core::transport::ResolvedPeer::Lan(peer) => {
+            let transport = core::transport::LanTcpTransport::new(peer.clone());
+            tauri::async_runtime::block_on(transport.pull(since))
+                .map_err(|e| e.to_string())?
+        }
+    };
 
     let unified = core::unified::UnifiedDb::open().map_err(|e| e.to_string())?;
     let started_ms = chrono::Utc::now().timestamp_millis();
@@ -350,8 +366,11 @@ fn transport_pull(
 
         let apply_result = (|| -> anyhow::Result<()> {
             let now_ms = chrono::Utc::now().timestamp_millis();
+            let project_path = v4.composer.project_path.clone();
+            let mut bubbles_to_apply: Option<Vec<core::canonical::Bubble>> = None;
+
             match class {
-                ConflictClass::LocalAhead => Ok(()),
+                ConflictClass::LocalAhead => return Ok(()),
                 ConflictClass::New | ConflictClass::IncomingNewer => {
                     if local_meta.is_some() {
                         let rows = unified.get_bubbles(&uuid)?;
@@ -362,13 +381,12 @@ fn transport_pull(
                     let incoming: Vec<core::canonical::Bubble> =
                         v4.bubbles.iter().map(core::canonical::Bubble::from_snapshot).collect();
                     unified.upsert_session_from_snapshot(v4, &incoming, now_ms)?;
-                    Ok(())
+                    bubbles_to_apply = Some(incoming);
                 }
                 ConflictClass::Identical => {
                     let incoming: Vec<core::canonical::Bubble> =
                         v4.bubbles.iter().map(core::canonical::Bubble::from_snapshot).collect();
                     unified.upsert_session_from_snapshot(v4, &incoming, now_ms)?;
-                    Ok(())
                 }
                 ConflictClass::Diverged => {
                     let local_bubbles = if local_meta.is_some() {
@@ -390,9 +408,24 @@ fn transport_pull(
                         now_ms,
                     )?;
                     unified.upsert_session_from_snapshot(v4, &merged, now_ms)?;
-                    Ok(())
+                    bubbles_to_apply = Some(merged);
                 }
             }
+
+            if let Some(bubbles) = bubbles_to_apply {
+                let apply = core::sync::apply_session_from_snapshot(
+                    &uuid,
+                    &project_path,
+                    &bubbles,
+                )?;
+                if !apply.skipped.is_empty() {
+                    log::warn!(
+                        "transport_pull L2/L3 apply for {uuid} skipped: {:?}",
+                        apply.skipped
+                    );
+                }
+            }
+            Ok(())
         })();
 
         match apply_result {
@@ -443,6 +476,61 @@ fn transport_pull(
         count,
         snapshots,
     })
+}
+
+// ── LAN / 配对 / 冲突 Tauri 命令 (v0.3.1) ─────────────────────
+
+#[derive(serde::Serialize)]
+struct PairingStartReport {
+    code: String,
+    port: u16,
+}
+
+#[tauri::command]
+fn pairing_start() -> Result<PairingStartReport, String> {
+    let pending = core::transport::lan::start_pairing_mode().map_err(|e| e.to_string())?;
+    let port = core::transport::lan::lan_listen_port().unwrap_or(0);
+    Ok(PairingStartReport {
+        code: pending.code,
+        port,
+    })
+}
+
+#[tauri::command]
+fn pairing_join(
+    host: String,
+    port: u16,
+    code: String,
+    device_name: String,
+) -> Result<core::transport::trusted_peers::TrustedPeer, String> {
+    core::transport::lan::pairing_join_client(&host, port, &code, &device_name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_trusted_peers() -> Result<Vec<core::transport::trusted_peers::TrustedPeer>, String> {
+    core::transport::trusted_peers::TrustedPeersFile::load()
+        .map(|f| f.peers)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn discovery_browse() -> Result<Vec<core::discovery::DiscoveredDevice>, String> {
+    core::discovery::browse_devices(3000).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_unresolved_conflicts() -> Result<Vec<core::unified::ConflictRow>, String> {
+    let db = core::unified::UnifiedDb::open().map_err(|e| e.to_string())?;
+    db.unresolved_conflicts().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn resolve_conflict(conflict_id: i64, how: String) -> Result<(), String> {
+    let db = core::unified::UnifiedDb::open().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp_millis();
+    db.resolve_conflict(conflict_id, &how, now)
+        .map_err(|e| e.to_string())
 }
 
 /// 本机 hostname. 给 `transport_push` 用, 把本机 hostname 写进 snapshot.
@@ -519,6 +607,7 @@ pub fn run() {
             if let Err(e) = core::watcher::start(&app.handle()) {
                 log::warn!("fs watcher failed to start: {e:#}");
             }
+            core::sync_loop::start_background_sync(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -535,6 +624,12 @@ pub fn run() {
             transport_test,
             transport_push,
             transport_pull,
+            pairing_start,
+            pairing_join,
+            list_trusted_peers,
+            discovery_browse,
+            list_unresolved_conflicts,
+            resolve_conflict,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

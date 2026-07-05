@@ -703,7 +703,7 @@ pub struct BubbleHit {
 
 ### 4.1 为什么是适配器, 不是单一通道
 
-旧版 (`SYNC_DESIGN.md §6.2`, 2026-07-03) 默认 **Tailscale mesh**, 这要求用户装 Tailscale, 不友好. 新版拆成 **6 层 tier**, 默认走 T2 (SSH/rsync), 但保留 T5 (Tailscale) 作为升级路径, T0 (手动文件) 作为最低 fallback.
+旧版 (`SYNC_DESIGN.md §6.2`, 2026-07-03) 默认 **Tailscale mesh**, 这要求用户装 Tailscale, 不友好. 新版拆成 **6 层 tier + T2 子层**, **默认走 T2a (LAN TCP + mDNS 配对)**, T2b (SSH/rsync) 降为高级/headless 模式; T5 (Tailscale) 作为跨网升级路径, T0 (手动文件) 作为最低 fallback.
 
 ### 4.2 6 层 tier ASCII 栈
 
@@ -712,7 +712,8 @@ pub struct BubbleHit {
 T5   Tailscale / SSH-direct       (auto, both-end daemon)
 T4   S3 / R2 / B2                (auto, cloud)
 T3   Git over SSH/HTTPS          (auto, versioned)
-T2   SSH + rsync      ⭐ default (auto, no third-party)  ← 当前拍板
+T2a  LAN TCP + mDNS + 配对  ⭐ default (同网开箱即用)
+T2b  SSH + rsync                 (高级 / headless, 需 transports.json)
 T1   Folder watcher              (semi-auto, USB / NAS)
 T0   Manual file copy            (manual, fallback)
            ↓ 灵活 ↓              manual     ←── 用户控制方向
@@ -723,8 +724,9 @@ T0   Manual file copy            (manual, fallback)
 | Tier | 传输方式 | Target user | 优点 | 缺点 | 路线图 |
 |------|---------|------------|------|------|--------|
 | T0 | 手动 `scp` / U 盘 / AirDrop | 完全离线 / 临时文件 | 零配置 | 需手动, 容易忘 | ✅ 已能跑 (snapshot 文件本来就在 `~/.bettercursor/snapshots/`) |
-| T1 | 文件夹 watcher (`core::watcher`) | U 盘 / NAS mount | 半自动 | mount point 要固定 | 待 v0.3.1 (?) |
-| **T2** ⭐ | SSH + rsync | 默认 / SSH 已有用户 | **零第三方, 增量, 可恢复** | 需 SSH key | ✅ v0.3.1 拍板 |
+| T1 | 文件夹 watcher (`core::watcher`) | U 盘 / NAS mount | 半自动 | mount point 要固定 | 待 v0.3.2 (?) |
+| **T2a** ⭐ | LAN TCP + mDNS (`_bettercursor._tcp`) + 6 位配对码 | 同网 Mac↔Linux 默认用户 | **零配置发现, 一次配对, 托盘常驻** | 仅限局域网; 无 TLS (v0.3.1 用 pairing secret) | **✅ v0.3.1 默认** |
+| **T2b** | SSH + rsync | 已有 SSH key / headless | 零第三方, 增量, 可恢复 | 需手写 `transports.json` + key | ✅ 高级模式 (v0.2.6 起) |
 | T3 | Git over SSH/HTTPS | 想看 history 的用户 | diff 可视化, 老 snapshot 可回放 | 仓库膨胀, 写冲突 | 待 v0.3.2 (?) |
 | T4 | S3 / R2 / B2 | 多端 ≥3 / 没 SSH | scale, durability | 第三依赖, 1 个 API key 要管 | 待拍板 |
 | T5 | Tailscale mesh | 已有 Tailscale 的用户 | 自动发现, 直连 | 需装 Tailscale | 待 v0.3.x |
@@ -765,20 +767,24 @@ pub struct RemoteSessionMeta {
 }
 ```
 
-### 4.5 拍板: T2 SSH 是 default, T5 Tailscale 是 v0.3.x 候选
+### 4.5 拍板: T2a LAN 是 default, T2b SSH 是高级, T5 Tailscale 是跨网候选
 
-> 拍板时间: 2026-07-03.
+> 拍板时间: 2026-07-05 (v0.3.1 产品转向, 取代 2026-07-03 的「T2 SSH 默认」).
 >
 > **理由**:
-> - 用户 SSH key 是开发者已有能力, **零额外依赖**.
-> - rsync 增量传输, 大 snapshot (15 MB) 只传 delta (通常 <1 MB).
-> - SSH/USER 走用户私网, 隐私好; 不经过任何 SaaS.
+> - 同网接力应对齐剪贴板/KDE Connect 心智: **装一次、自动发现、配对一次**.
+> - mDNS `_bettercursor._tcp` + `trusted_peers.json` 对用户隐藏 JSON 配置.
+> - SSH/rsync **保留不删** (`SshRsyncTransport`), 供 headless / 已有 key 的高级用户; 跨网官方推荐 T5 Tailscale.
 >
-> Tailscale 仅作为 v0.3.x 后话, 让"已经装了 Tailscale 的用户"选 T5, 不强制任何人装.
+> **实现落点** (v0.3.1):
+> - `core::transport::lan` — `BC/1` 协议 (PAIR / PUSH / PUSH v4 body / PULL)
+> - `core::discovery` — mDNS 广播与浏览
+> - `~/.bettercursor/trusted_peers.json` — 配对结果
+> - `~/.bettercursor/outbox/<peer_id>/` — 离线排队 + 5min 后台 flush (`core::sync_loop`)
 
 ---
 
-## §5 SSH/rsync Transport (default)
+## §5 SSH/rsync Transport (T2b 高级模式)
 
 ### 5.1 数据流 ASCII
 
@@ -1563,7 +1569,8 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.3.0 pre-PR-2** | **读路径补全 (§2.8 + §11.5)**: `extract_l3_bubble_text` + `extractToolCalls` 移植; Cursor 3.0+ session discovery (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*`); timestamp fallback (spec 010); cursor-history spec 010–013 → Rust parity fixtures. **不**改 Transport / unified.db schema. | 2-3d | **✅ 已落地 2026-07-05** |
 | **v0.3.0 PR-2** | snapshot codec v4 (§2, bubbles / blob_refs / raw_blobs, `SNAPSHOT_VERSION=4`) + `Transport` trait 转 `async_trait` (§4) + `ConflictClass` 5-way enum (§6, New/Identical/IncomingNewer/LocalAhead/Diverged) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec + unified.db upsert + Conflict 分类 (New/Identical/IncomingNewer → upsert; LocalAhead → 跳过; Diverged → auto_merge + archive). **含 §9.8 agentKv 写入**. `core::transport::snapshot` 改名 `core::transport::snapshot_meta` (给新 `core::snapshot` 让位). 冲突算法参考 `vendored/cursaves/cursor_saves/importer.py::_check_conflict`. 新增 2 个 Cargo dep: `tokio = "1"` (full features) + `async-trait = "0.1"` (~1.5MB binary 增量, 跟 v0.3.1 outbox `tokio::time::interval` 自然衔接). | 3-4d | **✅ PR-2 已落地 2026-07-05** |
 | **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + SSH workspace 路径解析 + git remote 项目标识 (§11.5 中优先级项). 默认 dry-run; **不** auto-create workspace (借鉴 cursaves 注册逻辑, 不借鉴 `find_or_create_workspace`). | 2d | ⚪ PR-2 后 |
-| **v0.3.1** | SSH/rsync default transport 切到 outbox path (§5.2) + `<SyncPeersDialog>` UI (§9) + `<ConflictResolveDialog>` (§6.7) + `core::lock` structured 升级 (§7.4) | 5-7d | ⚪ 待拍板 |
+| **v0.3.1 Phase A** | `transport_push` 改发 v4 snapshot + `transport_pull` 后 `apply_session_from_snapshot` 写 Cursor L2/L3 + 双机 SSH e2e 手册 | 2-3d | **✅ Phase A 已落地** |
+| **v0.3.1 Phase B** | T2a `LanTcpTransport` + mDNS 发现 + 6 位配对 → `trusted_peers` + outbox + 5min 后台 sync loop + `<SyncPeersDialog>` + `<ConflictResolveDialog>` | 5-7d | **✅ Phase B 已落地** |
 | **v0.3.2** | T3 Git adapter (路线图) — 历史可视化 | 5d | ⚪ 待拍板 |
 | **v0.3.3** | T4 S3 / T5 Tailscale adapter (路线图) | 4d | ⚪ 待拍板 |
 
@@ -1641,8 +1648,9 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | `src/lib/tauri.ts` | ✅ v0.2.1 | `syncSessionLayer23` + `fixOrphans` + `deleteSession` wrappers |
 | `src/store/sessionStore.ts` | ✅ v0.1 | Zustand session 列表状态 |
 | `src/components/SyncBanner.tsx` | 🆕 v0.3.1 待拆 | 当前内联在 SessionDetail.tsx |
-| `src/components/ConflictResolveDialog.tsx` | 🆕 v0.3.1 待加 | §6.7 三向 UI |
-| `src/store/syncStore.ts` | 🆕 v0.3.1 待加 | §8.5 4 态状态机 |
+| `src/components/ConflictResolveDialog.tsx` | ✅ v0.3.1 | §6.7 冲突列表 + 接受合并/跳过 |
+| `src/components/SyncPeersDialog.tsx` | ✅ v0.3.1 | mDNS 发现 + 配对 + push/pull |
+| `src/store/syncStore.ts` | ✅ v0.3.1 | 配对/发现/冲突状态 |
 
 ### 11.3 已删除 (历史)
 

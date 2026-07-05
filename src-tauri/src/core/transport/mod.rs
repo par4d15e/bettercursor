@@ -4,15 +4,50 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 pub mod config;
+pub mod lan;
+pub mod outbox;
 pub mod snapshot_meta;
 pub mod ssh;
+pub mod trusted_peers;
 
 pub use config::{PeerConfig, TransportConfigFile};
+pub use lan::LanTcpTransport;
 pub use snapshot_meta::{
     decode_snapshot as decode_snapshot_meta, encode_snapshot as encode_snapshot_meta,
     SessionSnapshot as SessionSnapshotMeta,
 };
 pub use ssh::SshRsyncTransport;
+pub use trusted_peers::TrustedPeersFile;
+
+/// Payload for push — v4 full snapshot (default) or v0.2.6 metadata-only.
+#[derive(Debug, Clone)]
+pub enum PushSnapshot {
+    V4(crate::core::snapshot::SessionSnapshot),
+    Meta(SessionSnapshotMeta),
+}
+
+impl PushSnapshot {
+    pub fn uuid(&self) -> &str {
+        match self {
+            Self::V4(s) => s.composer.composer_id.as_str(),
+            Self::Meta(m) => m.uuid.as_str(),
+        }
+    }
+
+    pub fn host_namespace(&self) -> &str {
+        match self {
+            Self::V4(s) => s.source_endpoint.host.as_str(),
+            Self::Meta(m) => m.host.as_str(),
+        }
+    }
+
+    pub fn encode_body(&self) -> Result<String> {
+        match self {
+            Self::V4(s) => crate::core::snapshot::encode_snapshot(s),
+            Self::Meta(m) => encode_snapshot_meta(m).map_err(Into::into),
+        }
+    }
+}
 
 /// Remote file payload: v4 full snapshot or v0.2.6 metadata-only.
 #[derive(Debug, Clone)]
@@ -23,7 +58,7 @@ pub enum RemoteSnapshot {
 
 #[async_trait]
 pub trait Transport: Send + Sync {
-    async fn push(&self, snap: &SessionSnapshotMeta) -> Result<PushReport>;
+    async fn push(&self, snap: &PushSnapshot) -> Result<PushReport>;
     async fn pull(&self, since_ms: i64) -> Result<Vec<RemoteSnapshot>>;
     async fn list_remote(&self) -> Result<Vec<RemoteSessionMeta>>;
     fn endpoint_id(&self) -> &str;
@@ -70,6 +105,27 @@ impl PeerSummary {
     }
 }
 
+/// 按 peer_id 解析：优先 `trusted_peers.json` (LAN)，否则 `transports.json` (SSH)。
+#[derive(Debug, Clone)]
+pub enum ResolvedPeer {
+    Ssh(PeerConfig),
+    Lan(trusted_peers::TrustedPeer),
+}
+
+pub fn resolve_peer(peer_id: &str) -> Result<ResolvedPeer> {
+    if let Ok(tp) = trusted_peers::TrustedPeersFile::load() {
+        if let Some(p) = tp.peers.iter().find(|p| p.id == peer_id) {
+            return Ok(ResolvedPeer::Lan(p.clone()));
+        }
+    }
+    let cfg = TransportConfigFile::load()?;
+    let peer = cfg
+        .peer(peer_id)
+        .ok_or_else(|| anyhow::anyhow!("peer '{peer_id}' not found"))?
+        .clone();
+    Ok(ResolvedPeer::Ssh(peer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +141,38 @@ mod tests {
         assert_eq!(json["uuid"], "abc-123");
         assert_eq!(json["bytes_written"], 512);
         assert_eq!(json["duration_ms"], 42);
+    }
+
+    #[test]
+    fn push_snapshot_v4_encode_round_trip() {
+        use crate::core::snapshot::{decode_snapshot, ComposerMeta, SessionSnapshot, SourceEndpoint};
+        let snap = SessionSnapshot {
+            version: 4,
+            exported_at: 1,
+            source_endpoint: SourceEndpoint {
+                host: "host-a".into(),
+                os: "linux".into(),
+                user: "eric".into(),
+                endpoint_kind: "linux_desktop".into(),
+                cursor_version: None,
+            },
+            composer: ComposerMeta {
+                composer_id: "uuid-1".into(),
+                last_updated_at: 1,
+                project_path: "/p".into(),
+                project_slug: "slug".into(),
+                workspace_id: "ws".into(),
+                chat_root: "/p".into(),
+            },
+            bubbles: vec![],
+            blob_refs: vec![],
+            raw_blobs: std::collections::HashMap::new(),
+        };
+        let payload = PushSnapshot::V4(snap.clone());
+        assert_eq!(payload.uuid(), "uuid-1");
+        let body = payload.encode_body().unwrap();
+        let back = decode_snapshot(&body).unwrap();
+        assert_eq!(back.composer.composer_id, snap.composer.composer_id);
     }
 
     #[test]

@@ -19,6 +19,8 @@ import { BrokenBadge } from "./BrokenBadge";
 import { SyncNowButton } from "./SyncNowButton";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 import { LanguageSwitcher } from "./LanguageSwitcher";
+import { SyncPeersDialog } from "./SyncPeersDialog";
+import { ConflictResolveDialog } from "./ConflictResolveDialog";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
 import { fixOrphans, syncNow as syncNowTauri, type FixOrphansReport } from "../lib/tauri";
@@ -32,6 +34,7 @@ import {
   Wrench,
   CheckCircle2,
   AlertTriangle,
+  Users,
 } from "lucide-react";
 
 function detectSource(s: CanonicalSession): SourceLayer | null {
@@ -67,6 +70,8 @@ export function SessionTree() {
     | { kind: "ok" | "err"; text: string; report?: FixOrphansReport }
     | null
   >(null);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [conflictsOpen, setConflictsOpen] = useState(false);
 
   useEffect(() => {
     init();
@@ -143,6 +148,22 @@ export function SessionTree() {
             watcher state + "Xs 前" counter. Polls watcher_status
             every 5s, ticks the counter every 1s locally. */}
         <span className="ml-auto inline-flex items-center gap-1.5">
+          <button
+            type="button"
+            className="p-1 rounded hover:bg-bg-hover text-fg-secondary"
+            title={t("sync.peers.title")}
+            onClick={() => setSyncOpen(true)}
+          >
+            <Users size={14} />
+          </button>
+          <button
+            type="button"
+            className="p-1 rounded hover:bg-bg-hover text-fg-secondary"
+            title={t("sync.conflicts.title")}
+            onClick={() => setConflictsOpen(true)}
+          >
+            <AlertTriangle size={14} />
+          </button>
           <SyncStatusBadge />
           <LanguageSwitcher />
         </span>
@@ -312,6 +333,8 @@ export function SessionTree() {
           </div>
         )}
       </div>
+      <SyncPeersDialog open={syncOpen} onClose={() => setSyncOpen(false)} />
+      <ConflictResolveDialog open={conflictsOpen} onClose={() => setConflictsOpen(false)} />
     </div>
   );
 }

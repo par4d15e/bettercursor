@@ -172,6 +172,72 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
     Ok(report)
 }
 
+/// Apply a v4 transport snapshot into Cursor L2/L3 (force write from bubbles).
+/// Used by `transport_pull` after unified.db upsert so the remote session
+/// becomes visible in Cursor Sidebar / `--resume`.
+pub fn apply_session_from_snapshot(
+    uuid: &str,
+    project_path: &str,
+    bubbles: &[canonical::Bubble],
+) -> Result<SyncReport> {
+    let started = Instant::now();
+    let mut report = SyncReport {
+        uuid: uuid.to_string(),
+        wrote_layer2: false,
+        wrote_layer3: false,
+        skipped: Vec::new(),
+        root_blob_id: None,
+        duration_ms: 0,
+    };
+
+    let running = super::process::cursor_processes_running();
+    if !running.is_empty() {
+        report.skipped.push(format!(
+            "cursor_running({} proc, e.g. {})",
+            running.len(),
+            running[0]
+        ));
+        report.duration_ms = started.elapsed().as_millis() as u64;
+        return Ok(report);
+    }
+
+    if bubbles.is_empty() {
+        report.skipped.push("no_bubbles_in_snapshot".to_string());
+        report.duration_ms = started.elapsed().as_millis() as u64;
+        return Ok(report);
+    }
+
+    let cwd = project_path;
+
+    match write_layer2(uuid, cwd, &None, bubbles) {
+        Ok(root) => {
+            report.wrote_layer2 = true;
+            report.root_blob_id = Some(root);
+        }
+        Err(e) => report.skipped.push(format!("l2_write_failed: {e}")),
+    }
+
+    match write_layer3(uuid, cwd, bubbles) {
+        Ok(()) => report.wrote_layer3 = true,
+        Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
+    }
+
+    if let Ok(unified) = super::unified::UnifiedDb::open() {
+        if let Ok(all) = canonical::scan_all() {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let host = crate::core::paths::bettercursor_dir()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("local")
+                .to_string();
+            let _ = unified.rebuild_from_cursor_state(&all, &host, now_ms);
+        }
+    }
+
+    report.duration_ms = started.elapsed().as_millis() as u64;
+    Ok(report)
+}
+
 // ── Layer 1 read (transcript) ────────────────────────────────
 
 type Bubbles = Vec<canonical::Bubble>;

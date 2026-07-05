@@ -184,14 +184,18 @@ impl SshRsyncTransport {
 
 #[async_trait]
 impl Transport for SshRsyncTransport {
-    async fn push(&self, snap: &SessionSnapshotMeta) -> Result<PushReport> {
+    async fn push(&self, snap: &super::PushSnapshot) -> Result<PushReport> {
         let started = std::time::Instant::now();
-        let remote_dir = format!("{}/{}", self.config.remote_snap_dir, snap.host);
-        let final_path = format!("{}/{}.json", remote_dir, snap.uuid);
-        let body = encode_snapshot_meta(snap).context("encode_snapshot for push")?;
+        let remote_dir = format!(
+            "{}/{}",
+            self.config.remote_snap_dir,
+            snap.host_namespace()
+        );
+        let final_path = format!("{}/{}.json", remote_dir, snap.uuid());
+        let body = snap.encode_body().context("encode snapshot for push")?;
         self.ssh_write_atomic(&final_path, &body).await?;
         Ok(PushReport {
-            uuid: snap.uuid.clone(),
+            uuid: snap.uuid().to_string(),
             bytes_written: body.len() as u64,
             duration_ms: started.elapsed().as_millis() as u64,
         })
@@ -363,7 +367,7 @@ mod tests {
             return;
         }
         let t = SshRsyncTransport::with_bins(fake_peer(), fixture, "rsync");
-        let snap = SessionSnapshotMeta {
+        let snap = crate::core::transport::PushSnapshot::Meta(SessionSnapshotMeta {
             uuid: "uuid-test".into(),
             last_updated_at_ms: 1_700_000_000_000,
             host: "local-host".into(),
@@ -372,7 +376,7 @@ mod tests {
             source_path: "/test/path/file.jsonl".into(),
             text_preview: "hello".into(),
             bubble_count: 3,
-        };
+        });
         let report = t.push(&snap).await.expect("push should succeed with fake ssh");
         assert_eq!(report.uuid, "uuid-test");
         assert!(report.bytes_written > 0, "must report body bytes");
@@ -383,7 +387,7 @@ mod tests {
     #[tokio::test]
     async fn push_ssh_failure_surfaces_stderr() {
         let t = SshRsyncTransport::with_bins(fake_peer(), "false", "rsync");
-        let snap = SessionSnapshotMeta {
+        let snap = crate::core::transport::PushSnapshot::Meta(SessionSnapshotMeta {
             uuid: "x".into(),
             last_updated_at_ms: 0,
             host: "h".into(),
@@ -392,7 +396,7 @@ mod tests {
             source_path: String::new(),
             text_preview: String::new(),
             bubble_count: 0,
-        };
+        });
         let r = t.push(&snap).await;
         assert!(r.is_err());
         let msg = r.unwrap_err().to_string();

@@ -12,7 +12,7 @@
     "header": {
       "title": "会话管理",
       "back": "返回",
-      "version": "v0.2.5"
+      "version": "v0.3.1"
     },
     "toolbar": {
       "sessionCount": "会话列表",
@@ -132,5 +132,31 @@
     "switch": "语言",
     "zh-CN": "中文",
     "en": "English"
+  },
+  "sync": {
+    "peers": {
+      "title": "跨设备同步",
+      "pairing": "配对",
+      "showCode": "显示配对码",
+      "code": "配对码 {{code}}（端口 {{port}}）",
+      "nearby": "附近设备",
+      "rescan": "重新扫描",
+      "codePlaceholder": "6 位码",
+      "join": "配对",
+      "paired": "配对成功",
+      "noNearby": "未发现附近设备",
+      "trusted": "已信任设备",
+      "noTrusted": "尚无已配对设备",
+      "push": "推送",
+      "pull": "拉取",
+      "pushed": "已推送当前会话",
+      "pulled": "已拉取 {{count}} 条快照"
+    },
+    "conflicts": {
+      "title": "同步冲突",
+      "none": "无未解决冲突",
+      "acceptMerged": "接受合并",
+      "skip": "跳过"
+    }
   }
 }

@@ -134,7 +134,7 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.3.0 PR-2 — `snapshot_meta.rs` 重命名** (v0.2.6 8-field push 载体保留) | `core/transport/snapshot_meta.rs` | **v0.3.0 PR-2 ✅** |
 | **v0.3.0 PR-2 — agentKv 写入 (最小切片)** (`write_layer3` 从 `conversationState` 提取 blob id 并复制 `agentKv:blob:{hex}`) | `core/sync.rs` | **v0.3.0 PR-2 ✅** |
 | **v0.3.0 PR-2 — 单元测试 28+ 新 case** (snapshot 5 / conflict 8 / ssh async 4 / sync agentKv 1; 全量 `cargo test --lib` 126 case) | 各 `::tests` | **v0.3.0 PR-2 ✅** |
-| 跨设备 (Mac↔Linux via Tailscale mesh) | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **Transport trait (v0.2.6 ✅)**; unified.db (PR-1 ✅); codec v4 + 5-way conflict + async pull (PR-2 ✅); outbox / UI 推迟 v0.3.1 |
+| 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对 + `SyncPeersDialog` / `ConflictResolveDialog`; SSH (T2b) 保留为高级模式 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |

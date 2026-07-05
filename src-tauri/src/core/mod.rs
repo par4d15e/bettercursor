@@ -18,12 +18,14 @@
 pub mod canonical;
 pub mod config;
 pub mod conflict;
+pub mod discovery;
 pub mod inject;
 pub mod paths;
 pub mod process;
 pub mod snapshot;
 pub mod storage;
 pub mod sync;
+pub mod sync_loop;
 pub mod transport;
 pub mod unified;
 pub mod watcher;
