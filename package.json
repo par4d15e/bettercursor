@@ -1,7 +1,7 @@
 {
   "name": "bettercursor",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Tauri + Rust read-only viewer for local Cursor sessions",
   "author": "Eric Shen",
   "license": "MIT",
