@@ -305,183 +305,27 @@ fn transport_push(
 }
 
 /// v0.3.0: 从指定 peer 拉 snapshot, 经 conflict 分类后写入 unified.db.
-/// `since_ms` 默认 0 (拉全部). 仍返回远端元数据列表供 UI 展示.
+/// `since_ms` 默认 0 (拉全部). 返回 per-session apply 结果 (v0.3.6 G4).
 ///
 /// Tauri command — invoked from the React frontend via
 /// `invoke('transport_pull', { peerId, sinceMs })`.
-#[derive(serde::Serialize)]
-struct PullReport {
-    peer_id: String,
-    count: usize,
-    snapshots: Vec<core::transport::RemoteSessionMeta>,
-}
-
 #[tauri::command]
 fn transport_pull(
     peer_id: String,
     since_ms: Option<i64>,
-) -> Result<PullReport, String> {
-    use core::conflict::{self, ConflictClass};
-    use core::transport::{RemoteSnapshot, Transport};
-
-    let resolved = core::transport::resolve_peer(&peer_id).map_err(|e| e.to_string())?;
+) -> Result<core::transport_pull::PullReport, String> {
     let since = since_ms.unwrap_or(0);
-    let snaps = match &resolved {
-        core::transport::ResolvedPeer::Ssh(peer) => {
-            let transport = core::transport::SshRsyncTransport::new(peer.clone());
-            tauri::async_runtime::block_on(transport.pull(since))
-                .map_err(|e| e.to_string())?
-        }
-        core::transport::ResolvedPeer::Lan(peer) => {
-            let transport = core::transport::LanTcpTransport::new(peer.clone());
-            tauri::async_runtime::block_on(transport.pull(since))
-                .map_err(|e| e.to_string())?
-        }
-    };
+    core::transport_pull::pull_and_apply_from_peer(&peer_id, since).map_err(|e| e.to_string())
+}
 
-    let unified = core::unified::UnifiedDb::open().map_err(|e| e.to_string())?;
-    let started_ms = chrono::Utc::now().timestamp_millis();
-    let run_id = unified
-        .record_sync_run(&peer_id, "pull", started_ms)
-        .map_err(|e| e.to_string())?;
+#[tauri::command]
+fn get_preferences() -> core::config::Preferences {
+    core::config::load()
+}
 
-    let mut processed = 0u32;
-    let mut failed = 0u32;
-    let mut pull_error: Option<String> = None;
-
-    for snap in &snaps {
-        let RemoteSnapshot::V4(v4) = snap else {
-            continue;
-        };
-        let uuid = v4.composer.composer_id.clone();
-        let incoming_hash = v4.content_hash();
-        let incoming_updated = v4.composer.last_updated_at;
-        let local_meta = unified.get_session_meta(&uuid).map_err(|e| e.to_string())?;
-        let local_hash = local_meta.as_ref().map(|m| m.content_hash.as_str());
-        let local_updated = local_meta
-            .as_ref()
-            .map(|m| m.last_updated_at_ms)
-            .unwrap_or(0);
-
-        let class = conflict::classify(
-            local_hash,
-            local_updated,
-            &incoming_hash,
-            incoming_updated,
-        );
-
-        let apply_result = (|| -> anyhow::Result<()> {
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let project_path = v4.composer.project_path.clone();
-            let mut bubbles_to_apply: Option<Vec<core::canonical::Bubble>> = None;
-
-            match class {
-                ConflictClass::LocalAhead => return Ok(()),
-                ConflictClass::New | ConflictClass::IncomingNewer => {
-                    if local_meta.is_some() {
-                        let rows = unified.get_bubbles(&uuid)?;
-                        let local_bubbles = core::unified::UnifiedDb::bubbles_from_rows(&rows);
-                        let payload = conflict::auto_archive_before_overwrite(&local_bubbles);
-                        unified.record_archive(&uuid, "before_overwrite", &payload, now_ms)?;
-                    }
-                    let incoming: Vec<core::canonical::Bubble> =
-                        v4.bubbles.iter().map(core::canonical::Bubble::from_snapshot).collect();
-                    unified.upsert_session_from_snapshot(v4, &incoming, now_ms)?;
-                    bubbles_to_apply = Some(incoming);
-                }
-                ConflictClass::Identical => {
-                    let incoming: Vec<core::canonical::Bubble> =
-                        v4.bubbles.iter().map(core::canonical::Bubble::from_snapshot).collect();
-                    unified.upsert_session_from_snapshot(v4, &incoming, now_ms)?;
-                }
-                ConflictClass::Diverged => {
-                    let local_bubbles = if local_meta.is_some() {
-                        let rows = unified.get_bubbles(&uuid)?;
-                        core::unified::UnifiedDb::bubbles_from_rows(&rows)
-                    } else {
-                        Vec::new()
-                    };
-                    let incoming: Vec<core::canonical::Bubble> =
-                        v4.bubbles.iter().map(core::canonical::Bubble::from_snapshot).collect();
-                    let (merged, archive_payload) =
-                        conflict::auto_merge(&local_bubbles, &incoming);
-                    unified.record_archive(&uuid, "before_auto_merge", &archive_payload, now_ms)?;
-                    unified.record_conflict(
-                        &uuid,
-                        ConflictClass::Diverged,
-                        local_hash,
-                        Some(&incoming_hash),
-                        now_ms,
-                    )?;
-                    unified.upsert_session_from_snapshot(v4, &merged, now_ms)?;
-                    bubbles_to_apply = Some(merged);
-                }
-            }
-
-            if let Some(bubbles) = bubbles_to_apply {
-                let apply = core::sync::apply_session_from_snapshot(
-                    &uuid,
-                    &project_path,
-                    &bubbles,
-                )?;
-                if !apply.skipped.is_empty() {
-                    log::warn!(
-                        "transport_pull L2/L3 apply for {uuid} skipped: {:?}",
-                        apply.skipped
-                    );
-                }
-            }
-            Ok(())
-        })();
-
-        match apply_result {
-            Ok(()) => processed += 1,
-            Err(e) => {
-                failed += 1;
-                log::warn!("transport_pull apply failed for {uuid}: {e:#}");
-                if pull_error.is_none() {
-                    pull_error = Some(format!("{uuid}: {e:#}"));
-                }
-            }
-        }
-    }
-
-    let finished_ms = chrono::Utc::now().timestamp_millis();
-    unified
-        .finish_sync_run(
-            run_id,
-            processed,
-            failed,
-            finished_ms,
-            pull_error.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let snapshots: Vec<core::transport::RemoteSessionMeta> = snaps
-        .iter()
-        .map(|s| match s {
-            RemoteSnapshot::V4(v) => core::transport::RemoteSessionMeta {
-                uuid: v.composer.composer_id.clone(),
-                host: v.source_endpoint.host.clone(),
-                last_updated_at_ms: v.composer.last_updated_at,
-                project_slug: v.composer.project_slug.clone(),
-                source_path: v.composer.project_path.clone(),
-            },
-            RemoteSnapshot::Meta(m) => core::transport::RemoteSessionMeta {
-                uuid: m.uuid.clone(),
-                host: m.host.clone(),
-                last_updated_at_ms: m.last_updated_at_ms,
-                project_slug: m.project_slug.clone(),
-                source_path: m.source_path.clone(),
-            },
-        })
-        .collect();
-    let count = snapshots.len();
-    Ok(PullReport {
-        peer_id,
-        count,
-        snapshots,
-    })
+#[tauri::command]
+fn set_preferences(prefs: core::config::Preferences) -> Result<(), String> {
+    core::config::save(&prefs).map_err(|e| e.to_string())
 }
 
 // ── LAN / 配对 / 冲突 Tauri 命令 (v0.3.1) ─────────────────────
@@ -630,6 +474,8 @@ pub fn run() {
             transport_test,
             transport_push,
             transport_pull,
+            get_preferences,
+            set_preferences,
             pairing_start,
             pairing_join,
             list_trusted_peers,

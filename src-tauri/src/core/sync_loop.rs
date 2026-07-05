@@ -33,7 +33,10 @@ pub fn start_background_sync(app: tauri::AppHandle) {
         .name("bettercursor-sync-loop".into())
         .spawn(move || {
             loop {
-                std::thread::sleep(Duration::from_secs(300));
+                let interval_secs = crate::core::config::load()
+                    .auto_pull_interval_secs
+                    .max(60);
+                std::thread::sleep(Duration::from_secs(interval_secs));
                 if let Err(e) = tick(&app) {
                     log::warn!("background sync tick failed: {e:#}");
                 }
@@ -45,6 +48,30 @@ pub fn start_background_sync(app: tauri::AppHandle) {
 fn tick(app: &tauri::AppHandle) -> Result<()> {
     flush_all_outboxes()?;
     push_dirty_sessions(app)?;
+    let prefs = crate::core::config::load();
+    if prefs.auto_pull_enabled {
+        pull_from_trusted_peers()?;
+    }
+    Ok(())
+}
+
+fn pull_from_trusted_peers() -> Result<()> {
+    let peers = crate::core::transport::trusted_peers::TrustedPeersFile::load()?;
+    for peer in &peers.peers {
+        match crate::core::transport_pull::pull_and_apply_from_peer(&peer.id, 0) {
+            Ok(report) => {
+                if report.failed > 0 {
+                    log::warn!(
+                        "auto-pull from {}: {} failed of {}",
+                        peer.id,
+                        report.failed,
+                        report.count
+                    );
+                }
+            }
+            Err(e) => log::warn!("auto-pull from {} failed: {e:#}", peer.id),
+        }
+    }
     Ok(())
 }
 

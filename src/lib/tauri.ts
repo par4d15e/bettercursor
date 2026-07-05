@@ -235,10 +235,29 @@ export interface RemoteSession {
   source_path: string;
 }
 
+export interface SessionPullResult {
+  uuid: string;
+  conflict_class: string;
+  applied_l2: boolean;
+  applied_l3: boolean;
+  skipped: string[];
+  error: string | null;
+}
+
 export interface PullReport {
   peer_id: string;
   count: number;
   snapshots: RemoteSession[];
+  results: SessionPullResult[];
+  applied: number;
+  skipped_count: number;
+  failed: number;
+}
+
+export interface Preferences {
+  path_mappings: Record<string, string>;
+  auto_pull_enabled: boolean;
+  auto_pull_interval_secs: number;
 }
 
 /// List every peer declared in `~/.bettercursor/transports.json`.
@@ -265,14 +284,20 @@ export async function transportPush(
   return invoke<PushReport>("transport_push", { uuid, peerId });
 }
 
-/// Pull session metadata from a peer. `sinceMs` defaults to `0`
-/// (everything). v0.2.6 doesn't write a local DB — the returned
-/// snapshots are surfaced for inspection only.
+/// Pull sessions from a peer, upsert unified.db, and apply L2/L3 when needed.
 export async function transportPull(
   peerId: string,
   sinceMs?: number,
 ): Promise<PullReport> {
   return invoke<PullReport>("transport_pull", { peerId, sinceMs });
+}
+
+export async function getPreferences(): Promise<Preferences> {
+  return invoke<Preferences>("get_preferences");
+}
+
+export async function setPreferences(prefs: Preferences): Promise<void> {
+  return invoke<void>("set_preferences", { prefs });
 }
 
 // ── v0.3.1 LAN 发现 / 配对 / 冲突 ─────────────────────────────

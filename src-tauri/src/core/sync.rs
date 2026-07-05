@@ -181,8 +181,10 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
 /// becomes visible in Cursor Sidebar / `--resume`.
 pub fn apply_session_from_snapshot(
     uuid: &str,
-    project_path: &str,
+    remote_project_path: &str,
+    project_slug: &str,
     bubbles: &[canonical::Bubble],
+    raw_blobs: &std::collections::HashMap<String, String>,
 ) -> Result<SyncReport> {
     let started = Instant::now();
     let mut report = SyncReport {
@@ -200,11 +202,16 @@ pub fn apply_session_from_snapshot(
         return Ok(report);
     }
 
-    let cwd = project_path;
+    let cwd = super::path_rewrite::rewrite_project_path(remote_project_path, project_slug);
+    let bubbles = if remote_project_path != cwd {
+        rewrite_bubble_file_paths(bubbles, remote_project_path, &cwd)
+    } else {
+        bubbles.to_vec()
+    };
 
-    let l2_blockers = super::process::layer2_write_blocked(uuid, cwd);
+    let l2_blockers = super::process::layer2_write_blocked(uuid, &cwd);
     if l2_blockers.is_empty() {
-        match write_layer2(uuid, cwd, &None, bubbles) {
+        match write_layer2(uuid, &cwd, &None, &bubbles) {
             Ok(root) => {
                 report.wrote_layer2 = true;
                 report.root_blob_id = Some(root);
@@ -219,7 +226,14 @@ pub fn apply_session_from_snapshot(
 
     let l3_blockers = super::process::layer3_write_blocked();
     if l3_blockers.is_empty() {
-        match write_layer3(uuid, cwd, bubbles) {
+        if !raw_blobs.is_empty() {
+            if let Err(e) = write_agent_kv_blobs_from_snapshot(raw_blobs) {
+                report
+                    .skipped
+                    .push(format!("agent_kv_write_failed: {e}"));
+            }
+        }
+        match write_layer3(uuid, &cwd, &bubbles) {
             Ok(()) => report.wrote_layer3 = true,
             Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
         }
@@ -243,6 +257,83 @@ pub fn apply_session_from_snapshot(
 
     report.duration_ms = started.elapsed().as_millis() as u64;
     Ok(report)
+}
+
+fn rewrite_bubble_file_paths(
+    bubbles: &[canonical::Bubble],
+    old_prefix: &str,
+    new_prefix: &str,
+) -> Vec<canonical::Bubble> {
+    if old_prefix.is_empty() || old_prefix == new_prefix {
+        return bubbles.to_vec();
+    }
+    bubbles
+        .iter()
+        .map(|b| {
+            let mut c = b.clone();
+            c.files = b
+                .files
+                .iter()
+                .map(|f| {
+                    if f.contains(old_prefix) {
+                        f.replace(old_prefix, new_prefix)
+                    } else {
+                        f.clone()
+                    }
+                })
+                .collect();
+            c
+        })
+        .collect()
+}
+
+/// Collect agentKv blob ids + base64 payloads for v4 snapshot export (G1).
+pub fn collect_snapshot_agent_blobs(
+    uuid: &str,
+) -> Result<(Vec<String>, std::collections::HashMap<String, String>)> {
+    let db_path = paths::global_db_path()?;
+    let r = storage::open_read(&db_path)?;
+    let key = format!("composerData:{uuid}");
+    let Some(composer) = r.get_json(&key, "cursorDiskKV")? else {
+        return Ok((Vec::new(), std::collections::HashMap::new()));
+    };
+    let ids = extract_agent_blob_ids_from_composer(&composer);
+    let mut raw_blobs = std::collections::HashMap::new();
+    for id in &ids {
+        let blob_key = format!("agentKv:blob:{id}");
+        if let Ok(Some(bytes)) = r.get_item_binary(&blob_key, "cursorDiskKV") {
+            raw_blobs.insert(id.clone(), base64_encode(&bytes));
+        }
+    }
+    let refs: Vec<String> = ids.into_iter().collect();
+    Ok((refs, raw_blobs))
+}
+
+fn write_agent_kv_blobs_from_snapshot(
+    raw_blobs: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    if raw_blobs.is_empty() {
+        return Ok(());
+    }
+    let db_path = paths::global_db_path()?;
+    backup_existing(&db_path);
+    storage::assert_db_integrity(&db_path)?;
+    let tmp = tempfile::tempdir().context("create tmpdir for agentKv write")?;
+    let staged_db = tmp.path().join("state.vscdb");
+    let conn = storage::open_write_staging_copy(&db_path, &staged_db)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ItemTable(key TEXT PRIMARY KEY, value TEXT);
+         CREATE TABLE IF NOT EXISTS cursorDiskKV(key TEXT PRIMARY KEY, value TEXT);",
+    )?;
+    for (id, b64) in raw_blobs {
+        let bytes = base64_decode(b64).with_context(|| format!("decode agentKv blob {id}"))?;
+        apply_disk_kv_binary(&conn, &format!("agentKv:blob:{id}"), &bytes)?;
+    }
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    drop(conn);
+    atomic_replace(&staged_db, &db_path)?;
+    storage::remove_wal_sidecars(&db_path);
+    Ok(())
 }
 
 // ── Layer 1 read (transcript) ────────────────────────────────

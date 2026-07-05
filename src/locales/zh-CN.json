@@ -11,7 +11,7 @@
   "tree": {
     "header": {
       "title": "BetterCursor",
-      "version": "v0.3.5"
+      "version": "v0.3.6"
     },
     "toolbar": {
       "sessionCount": "会话列表",
@@ -151,7 +151,12 @@
       "push": "推送",
       "pull": "拉取",
       "pushed": "已推送当前会话",
-      "pulled": "已拉取 {{count}} 条快照"
+      "pulled": "已拉取 {{count}} 条 · 写入 L2/L3: {{applied}} · 跳过: {{skipped}} · 失败: {{failed}}",
+      "pullDetail": "{{uuid}}: {{class}} · L2 {{l2}} · L3 {{l3}}{{skip}}",
+      "pullDetailSkip": " · {{reason}}",
+      "pullDetailError": " · 错误: {{error}}",
+      "autoPull": "后台自动拉取 (LAN)",
+      "autoPullInterval": "拉取间隔 (秒)"
     },
     "conflicts": {
       "buttonTitle": "冲突处理",

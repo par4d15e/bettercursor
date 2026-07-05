@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.5-success)
+![status](https://img.shields.io/badge/status-v0.3.6-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -22,7 +22,15 @@
 
 ## 功能状态
 
-### v0.3.5 (✅ 当前, 2026-07-05 完工)
+### v0.3.6 (✅ 当前, 2026-07-05 完工)
+
+- [x] **v4 snapshot 富化** — `images` + `blob_refs` / `raw_blobs` (agentKv); apply 时写回 L3
+- [x] **Mac↔Linux 路径重写** — `path_rewrite` + `~/.bettercursor/config.json` 的 `path_mappings`
+- [x] **Identical 补写 L2/L3** — unified.db 已一致但本地缺层时仍 apply
+- [x] **pull 结果 UI** — `PullReport.results` + `<SyncPeersPanel>` per-session 状态
+- [x] **后台 auto-pull** — trusted peer 周期 pull; 设置内开关与间隔
+
+### v0.3.5 (2026-07-05 完工)
 
 - [x] **删除可选 L3 软删** — 对齐 Desktop 侧栏: `isArchived` + 清 `bubbleId` / `checkpointId`, 保留 `composerData` 壳
 - [x] **子代理识别与树形侧栏** — 读 L2 `meta[0].subagentInfo`, 挂在 `rootParentAgentId` 下, 默认折叠
@@ -90,10 +98,31 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
 
 ### v0.3.2+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] **v0.3.6 — 跨端同步完善** (当前优先): v4 snapshot 富化 (图片 / agentKv / `raw_blobs`)、Mac↔Linux 路径重写、`Identical` 时补写缺失 L2/L3、pull apply 结果 UI 反馈、后台 auto-pull (LAN)
 - [ ] **v0.3.7** — T2b SSH peer 设置 UI (高级模式)
 - [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapter (待拍板)
 - [ ] **PR-2b Doctor** — 延后观察; 先收集孤儿会话复现案例 ([SYNC_DESIGN §10.4.3](SYNC_DESIGN.md))
+
+### SSH 跨设备 (高级, v0.3.6 文档)
+
+LAN 配对是默认路径. 需要 SSH/rsync 时手编 `~/.bettercursor/transports.json`:
+
+```json
+{
+  "peers": [
+    {
+      "id": "linux-desktop",
+      "kind": "ssh",
+      "host": "eric@192.168.1.10",
+      "port": 22,
+      "identity_file": "~/.ssh/id_ed25519",
+      "remote_snap_dir": "~/.bettercursor/peers/bettercursor-main",
+      "remote_hostname": "linux-desktop"
+    }
+  ]
+}
+```
+
+`transport_list_peers` / `transport_push` / `transport_pull` 与 LAN peer 共用同一套命令; `id` 即 `peerId`.
 
 ## 下载安装
 
@@ -358,7 +387,8 @@ v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                   async Transport · Conflict 5-way
 v0.3.1 (✅ done)  LAN mDNS 配对 · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  设置面板 · L2/L3 富化 · L3 软删
-v0.3.6 (⚪ next)  跨端同步完善 — 见 SYNC_DESIGN §10.4
+v0.3.6 (✅ current)  跨端同步完善 — 见 SYNC_DESIGN §10.4
+v0.3.7 (⚪ next)     SSH peer UI
 v0.3.7+           SSH UI · T3/T4/T5 adapter · Doctor (延后观察)
 ```
 

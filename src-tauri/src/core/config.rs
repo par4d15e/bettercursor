@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // `Path` is only referenced from the test-only `load_from` helper;
 // gate its import on `cfg(test)` so the production build stays
@@ -18,7 +19,25 @@ use std::path::Path;
 use super::paths;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Preferences {}
+pub struct Preferences {
+    /// Remote path prefix → local path prefix for cross-device apply (G2).
+    #[serde(default)]
+    pub path_mappings: HashMap<String, String>,
+    /// Background LAN pull from trusted peers (G5).
+    #[serde(default = "default_auto_pull_enabled")]
+    pub auto_pull_enabled: bool,
+    /// Seconds between background pull ticks (G5).
+    #[serde(default = "default_auto_pull_interval_secs")]
+    pub auto_pull_interval_secs: u64,
+}
+
+fn default_auto_pull_enabled() -> bool {
+    true
+}
+
+fn default_auto_pull_interval_secs() -> u64 {
+    300
+}
 
 /// Read preferences from disk. Missing or unreadable file → defaults.
 /// Malformed JSON → logged warn + defaults (don't break startup).
@@ -43,10 +62,7 @@ pub fn load() -> Preferences {
 }
 
 /// Persist preferences atomically: write to a temp file in the same
-/// directory, then rename. Avoids half-written config if the process
-/// dies mid-flush. Currently unused (no Preferences fields) but
-/// kept for future keys.
-#[allow(dead_code)]
+/// directory, then rename.
 pub fn save(prefs: &Preferences) -> Result<()> {
     let path = paths::config_file();
     if let Some(parent) = path.parent() {

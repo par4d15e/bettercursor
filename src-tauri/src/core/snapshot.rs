@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::core::canonical::{Bubble, CanonicalSession};
+use crate::core::canonical::{Bubble, BubbleImage, CanonicalSession};
 
 pub const SNAPSHOT_VERSION: u32 = 4;
 
@@ -51,6 +51,8 @@ pub struct SnapshotBubble {
     pub tool_calls: Vec<SnapshotToolUse>,
     #[serde(default)]
     pub files: Vec<String>,
+    #[serde(default)]
+    pub images: Vec<BubbleImage>,
     pub ts_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_bubble_id: Option<String>,
@@ -110,6 +112,17 @@ impl SessionSnapshot {
             blob_refs: Vec::new(),
             raw_blobs: HashMap::new(),
         }
+        .with_agent_blobs_from_layer3()
+    }
+
+    /// Fill `blob_refs` / `raw_blobs` from local Layer 3 agentKv (G1).
+    fn with_agent_blobs_from_layer3(mut self) -> Self {
+        let uuid = self.composer.composer_id.clone();
+        if let Ok((refs, blobs)) = crate::core::sync::collect_snapshot_agent_blobs(&uuid) {
+            self.blob_refs = refs;
+            self.raw_blobs = blobs;
+        }
+        self
     }
 
     pub fn content_hash(&self) -> String {
@@ -133,6 +146,7 @@ impl SnapshotBubble {
                 })
                 .collect(),
             files: b.files.clone(),
+            images: b.images.clone(),
             ts_ms: b.created_at_ms,
             parent_bubble_id: b.parent_bubble_id.clone(),
         }
@@ -158,7 +172,7 @@ impl Bubble {
                 })
                 .collect(),
             files: b.files.clone(),
-            images: Vec::new(),
+            images: b.images.clone(),
             created_at_ms: b.ts_ms,
             parent_bubble_id: b.parent_bubble_id.clone(),
         }
@@ -235,6 +249,29 @@ mod tests {
             is_subagent: false,
             subagent_info: None,
         }
+    }
+
+    #[test]
+    fn images_round_trip_in_snapshot() {
+        use crate::core::canonical::BubbleImage;
+        let session = minimal_session();
+        let bubbles = vec![Bubble {
+            id: "b1".into(),
+            role: "user".into(),
+            text: "pic".into(),
+            tool_calls: vec![],
+            files: vec![],
+            images: vec![BubbleImage {
+                mime_type: "image/png".into(),
+                data_base64: "aGVsbG8=".into(),
+            }],
+            created_at_ms: 1000,
+            parent_bubble_id: None,
+        }];
+        let snap = SessionSnapshot::from_canonical_v4(&session, &bubbles, "host-a", 1);
+        assert_eq!(snap.bubbles[0].images.len(), 1);
+        let back = Bubble::from_snapshot(&snap.bubbles[0]);
+        assert_eq!(back.images[0].mime_type, "image/png");
     }
 
     #[test]

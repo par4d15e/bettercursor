@@ -11,7 +11,7 @@
   "tree": {
     "header": {
       "title": "BetterCursor",
-      "version": "v0.3.5"
+      "version": "v0.3.6"
     },
     "toolbar": {
       "sessionCount": "Session list",
@@ -151,7 +151,12 @@
       "push": "Push",
       "pull": "Pull",
       "pushed": "Pushed current session",
-      "pulled": "Pulled {{count}} snapshots"
+      "pulled": "Pulled {{count}} · applied L2/L3: {{applied}} · skipped: {{skipped}} · failed: {{failed}}",
+      "pullDetail": "{{uuid}}: {{class}} · L2 {{l2}} · L3 {{l3}}{{skip}}",
+      "pullDetailSkip": " · {{reason}}",
+      "pullDetailError": " · error: {{error}}",
+      "autoPull": "Background auto-pull (LAN)",
+      "autoPullInterval": "Pull interval (seconds)"
     },
     "conflicts": {
       "buttonTitle": "Conflict resolution",

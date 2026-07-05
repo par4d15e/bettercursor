@@ -1,12 +1,42 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSyncStore } from "../store/syncStore";
-import { transportPull, transportPush } from "../lib/tauri";
+import {
+  getPreferences,
+  setPreferences,
+  transportPull,
+  transportPush,
+  type SessionPullResult,
+} from "../lib/tauri";
 import { useSessionStore } from "../store/sessionStore";
 import { Radio } from "lucide-react";
 
 interface Props {
   active: boolean;
+}
+
+function formatPullResults(
+  results: SessionPullResult[],
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string[] {
+  return results.map((r) => {
+    const l2 = r.applied_l2 ? "✓" : "—";
+    const l3 = r.applied_l3 ? "✓" : "—";
+    let skip = "";
+    if (r.skipped.length > 0) {
+      skip = t("sync.peers.pullDetailSkip", { reason: r.skipped.join(", ") });
+    }
+    if (r.error) {
+      skip += t("sync.peers.pullDetailError", { error: r.error });
+    }
+    return t("sync.peers.pullDetail", {
+      uuid: r.uuid.slice(0, 8),
+      class: r.conflict_class,
+      l2,
+      l3,
+      skip,
+    });
+  });
 }
 
 export function SyncPeersPanel({ active }: Props) {
@@ -26,17 +56,70 @@ export function SyncPeersPanel({ active }: Props) {
   const selectedUuid = useSessionStore((s) => s.selectedUuid);
   const [joinCode, setJoinCode] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [pullDetails, setPullDetails] = useState<string[]>([]);
+  const [autoPullEnabled, setAutoPullEnabled] = useState(true);
+  const [autoPullInterval, setAutoPullInterval] = useState(300);
+  const [pathMappings, setPathMappings] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!active) return;
     void refresh();
     void browse();
+    void getPreferences().then((p) => {
+      setAutoPullEnabled(p.auto_pull_enabled);
+      setAutoPullInterval(p.auto_pull_interval_secs);
+      setPathMappings(p.path_mappings ?? {});
+    });
   }, [active, refresh, browse]);
+
+  const savePrefs = (enabled: boolean, interval: number) => {
+    void setPreferences({
+      path_mappings: pathMappings,
+      auto_pull_enabled: enabled,
+      auto_pull_interval_secs: interval,
+    });
+  };
 
   return (
     <div className="space-y-4 text-sm">
       {error && <p className="text-sm text-red-400">{error}</p>}
       {status && <p className="text-sm text-accent-green">{status}</p>}
+      {pullDetails.length > 0 && (
+        <ul className="text-xs text-fg-muted space-y-0.5 font-mono">
+          {pullDetails.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 border border-border rounded p-2">
+        <label className="flex items-center gap-2 text-fg-secondary">
+          <input
+            type="checkbox"
+            checked={autoPullEnabled}
+            onChange={(e) => {
+              setAutoPullEnabled(e.target.checked);
+              savePrefs(e.target.checked, autoPullInterval);
+            }}
+          />
+          {t("sync.peers.autoPull")}
+        </label>
+        <label className="flex items-center gap-2 text-fg-secondary text-xs">
+          {t("sync.peers.autoPullInterval")}
+          <input
+            type="number"
+            min={60}
+            max={3600}
+            className="bg-bg-tertiary border border-border rounded px-1.5 py-0.5 w-20 text-xs"
+            value={autoPullInterval}
+            onChange={(e) => {
+              const n = Math.max(60, Number(e.target.value) || 300);
+              setAutoPullInterval(n);
+              savePrefs(autoPullEnabled, n);
+            }}
+          />
+        </label>
+      </div>
 
       <div>
         <h4 className="text-xs font-medium text-fg-secondary mb-1">
@@ -138,7 +221,17 @@ export function SyncPeersPanel({ active }: Props) {
                   className="text-xs px-2 py-0.5 rounded border border-border hover:bg-bg-hover"
                   onClick={() =>
                     void transportPull(p.id).then(
-                      (r) => setStatus(t("sync.peers.pulled", { count: r.count })),
+                      (r) => {
+                        setStatus(
+                          t("sync.peers.pulled", {
+                            count: r.count,
+                            applied: r.applied,
+                            skipped: r.skipped_count,
+                            failed: r.failed,
+                          }),
+                        );
+                        setPullDetails(formatPullResults(r.results ?? [], t));
+                      },
                       (e) => setStatus(String(e)),
                     )
                   }

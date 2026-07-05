@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.5-success)
+![status](https://img.shields.io/badge/status-v0.3.6-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -28,7 +28,20 @@ Design goals:
 
 ## Feature status
 
-### v0.3.5 (✅ current, shipped 2026-07-05)
+### v0.3.6 (✅ current, shipped 2026-07-05)
+
+- [x] **v4 snapshot enrichment** — `images` + `blob_refs` / `raw_blobs` (agentKv);
+      restored on apply
+- [x] **Mac↔Linux path rewrite** — `path_rewrite` + optional `path_mappings` in
+      `~/.bettercursor/config.json`
+- [x] **Identical → apply missing L2/L3** — when unified.db matches but Cursor
+      layers are absent locally
+- [x] **Pull result UI** — `PullReport.results` + per-session status in
+      `<SyncPeersPanel>`
+- [x] **Background auto-pull** — periodic pull from trusted LAN peers; toggle +
+      interval in settings
+
+### v0.3.5 (2026-07-05)
 
 - [x] **Optional L3 soft delete** — Desktop-aligned sidebar archive +
       purge `bubbleId` / `checkpointId` rows; keep `composerData` shell
@@ -156,14 +169,33 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
 
 ### v0.3.2+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] **v0.3.6 — Cross-device sync hardening** (current priority): v4 snapshot
-      enrichment (images / agentKv / `raw_blobs`), Mac↔Linux path rewrite,
-      Identical→apply when L2/L3 missing, pull apply feedback in UI,
-      background auto-pull (LAN)
 - [ ] **v0.3.7** — SSH peer UI for T2b advanced mode
 - [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapters (TBD)
 - [ ] **PR-2b Doctor** — deferred; observe orphan cases first
       ([SYNC_DESIGN §10.4.3](SYNC_DESIGN.md))
+
+### SSH cross-device (advanced, documented in v0.3.6)
+
+LAN pairing is the default. For SSH/rsync, edit `~/.bettercursor/transports.json`:
+
+```json
+{
+  "peers": [
+    {
+      "id": "linux-desktop",
+      "kind": "ssh",
+      "host": "eric@192.168.1.10",
+      "port": 22,
+      "identity_file": "~/.ssh/id_ed25519",
+      "remote_snap_dir": "~/.bettercursor/peers/bettercursor-main",
+      "remote_hostname": "linux-desktop"
+    }
+  ]
+}
+```
+
+`transport_list_peers` / `transport_push` / `transport_pull` use the same commands as
+LAN peers; `id` is the `peerId`.
 
 ## Download & install
 
@@ -468,7 +500,8 @@ v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                  async Transport · Conflict 5-way
 v0.3.1 (✅ done)  LAN mDNS pairing · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  Settings UI · L2/L3 enrichment · L3 soft delete
-v0.3.6 (⚪ next)  Cross-device sync hardening — see SYNC_DESIGN §10.4
+v0.3.6 (✅ current)  Cross-device sync hardening — see SYNC_DESIGN §10.4
+v0.3.7 (⚪ next)     SSH peer UI
 v0.3.7+           SSH UI · T3/T4/T5 adapters · Doctor (deferred)
 ```
 

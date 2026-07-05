@@ -1636,12 +1636,12 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.3.3** | version bump 三件套 + UI 版本号 | 0.5d | **✅ 已落地 2026-07-05** |
 | **v0.3.4** | L2→L3 bubble 富化 + 用户图片注入 + 补 L3 操作规范 (§0.5) | 2d | **✅ 已落地 2026-07-05** |
 | **v0.3.5** | L3 软删 + 子代理树 + 空壳过滤 + 对话读取修复 + `deleted_sessions` | 2d | **✅ 已落地 2026-07-05** |
-| **v0.3.6** | **跨端同步完善** (§10.4) — v4 snapshot 富化 (图片 / agentKv / `raw_blobs`) + Mac↔Linux `project_path` 重写 + `Identical` 时补写缺失 L2/L3 + pull→apply 结果 UI 反馈 + 后台 loop 补 pull (LAN) | 3-4d | ⚪ **当前优先** |
-| **v0.3.7** | T2b SSH peer 设置 UI + `transports.json` 可视化编辑 (高级模式) | 2d | ⚪ v0.3.6 后 |
+| **v0.3.6** | **跨端同步完善** (§10.4) — v4 snapshot 富化 (图片 / agentKv / `raw_blobs`) + Mac↔Linux `project_path` 重写 + `Identical` 时补写缺失 L2/L3 + pull→apply 结果 UI 反馈 + 后台 loop 补 pull (LAN) | 3-4d | **✅ 已落地 2026-07-05** |
+| **v0.3.7** | T2b SSH peer 设置 UI + `transports.json` 可视化编辑 (高级模式) | 2d | ⚪ **当前优先** |
 | **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + git remote 项目标识. 默认 dry-run; **不** auto-create workspace | 2d | ⏸️ **延后观察** (2026-07-05 拍板: 根因未清晰, 先跨端 sync) |
 | **v0.3.8+** | T3 Git / T4 S3 / T5 Tailscale adapter (路线图) | 4-5d | ⚪ 待拍板 |
 
-总计: v0.2.x 已全部完工; v0.3.0–v0.3.5 跨端 MVP 已落地; **v0.3.6 起聚焦跨端可靠性**.
+总计: v0.2.x 已全部完工; v0.3.0–v0.3.6 跨端 MVP + 可靠性已落地; **v0.3.7 起 SSH UI**.
 
 ### 10.2 依赖图
 
@@ -1667,11 +1667,11 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
                                     v0.3.2–v0.3.5 ✅ (UI + L2/L3 补层 + 软删)
                                               │
                                               ▼
-                                    v0.3.6 ⚪ (跨端 sync 完善 — 当前优先)
+                                    v0.3.6 ✅ (跨端 sync 完善)
                                               │
                                 ┌─────────────┴──────────────┐
                                 ▼                            ▼
-                          v0.3.7 (SSH UI)            PR-2b Doctor ⏸️ (观察期)
+                          v0.3.7 ⚪ (SSH UI)            PR-2b Doctor ⏸️ (观察期)
                                               │
                                               ▼
                                     v0.3.8+ (T3/T4/T5 待拍板)
@@ -1682,31 +1682,20 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 - **v0.3.6 优先于 PR-2b**: 跨端 MVP (v0.3.1) 已能 push/pull, 但 Mac↔Linux 实战仍有多处缺口 (§10.4); Doctor 孤儿根因未清晰, 延后观察.
 - **不要并行**: T3 / T4 / T5 都是 v0.3.8+ 才拍板; v0.3.6–v0.3.7 聚焦 T2 可靠性.
 
-### 10.4 v0.3.6 — 跨端同步完善 (2026-07-05 拍板, 当前优先)
+### 10.4 v0.3.6 — 跨端同步完善 (2026-07-05 拍板, ✅ 已落地)
 
 > **背景**: v0.3.1 LAN 配对 + v4 push/pull + `apply_session_from_snapshot` 已闭环 MVP, 但 Mac↔Linux 双机实测仍暴露多处「能 sync 到 unified.db、Cursor 侧栏却不对」的缺口. **Doctor 孤儿会话 (PR-2b) 延后** — 「L3 有 composerData 但侧栏没有」与 L2 `fix_orphans` (空 `latestRootBlobId`) / 项目分组孤儿 (`chat-<md5>`) 是三种不同概念, 根因案例尚不足, 先完善跨端链路.
 
-#### 10.4.1 已具备 (v0.3.1–v0.3.5)
+#### 10.4.2 缺口 → 落地 (G1–G5)
 
-| 能力 | 实现 |
-|------|------|
-| v4 snapshot push/pull | `transport_push` / `transport_pull` + `LanTcpTransport` / `SshRsyncTransport` |
-| 冲突五态 + unified.db upsert | `conflict::classify` → `upsert_session_from_snapshot` |
-| pull 后写 Cursor L2/L3 | `apply_session_from_snapshot` (New / IncomingNewer / Diverged 路径) |
-| LAN 配对 + trusted peers | mDNS + 6 位码 + `<SyncPeersPanel>` |
-| 后台 push + outbox | `sync_loop.rs` 5min tick, push-only |
-| 本地 L2/L3 富化 | v0.3.4 L2→L3 bubble + 图片; v0.3.5 软删 / 子代理 |
-
-#### 10.4.2 已知缺口 (代码现状 → v0.3.6 目标)
-
-| # | 缺口 | 现状 (`src-tauri/`) | v0.3.6 目标 |
-|---|------|---------------------|-------------|
-| G1 | **v4 snapshot 丢附件** | `from_canonical_v4` 的 `blob_refs` / `raw_blobs` 恒空; `Bubble::from_snapshot` 丢弃 `images` | snapshot 携带图片 + agentKv blob; apply 时还原 |
-| G2 | **跨端路径未重写** | `apply_session_from_snapshot` 直接用远端 `project_path` (`/Users/...` vs `/home/...`) | `rewrite_paths` (借鉴 cursaves): 按 `project_slug` 或用户映射表重写本机 cwd |
-| G3 | **Identical 不写 L2/L3** | `ConflictClass::Identical` 只 upsert unified.db, 本地缺 L2/L3 时不补写 | Identical + 本地层缺失 → 仍走 apply |
-| G4 | **pull 结果不可见** | `apply.skipped` 仅 `log::warn!`, UI 无反馈 | `PullReport` 扩展 per-session apply 状态; `<SyncPeersPanel>` 展示 |
-| G5 | **后台 loop 单向** | `sync_loop` 只 push + outbox flush, 无 auto-pull | trusted peer 周期 pull (LAN, 可配置间隔) |
-| G6 | **SSH 无 UI** | T2b 靠手编 `transports.json` | 留 v0.3.7; v0.3.6 文档写清高级用法 |
+| # | 缺口 | 落点 | 状态 |
+|---|------|------|------|
+| G1 | v4 snapshot 附件 | `snapshot.rs` + `sync::collect_snapshot_agent_blobs` / `apply` raw_blobs | ✅ |
+| G2 | 跨端路径重写 | `path_rewrite.rs` + `config.json` `path_mappings` | ✅ |
+| G3 | Identical 不补 L2/L3 | `transport_pull.rs` Identical + `layer2/3_is_fully_synced` | ✅ |
+| G4 | pull 结果不可见 | `PullReport.results` + `SyncPeersPanel.tsx` | ✅ |
+| G5 | 后台 loop 单向 | `sync_loop.rs` auto-pull + `Preferences` | ✅ |
+| G6 | SSH 无 UI | README `transports.json` 高级用法 | ✅ 文档 |
 
 #### 10.4.3 孤儿会话 — 延后观察 (非 v0.3.6 范围)
 
@@ -1825,7 +1814,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | SSH workspace 路径 | cursaves `paths.py::list_all_workspaces` | `paths.rs` |
 | 导入后 workspace 注册 (不自动建 workspace) | cursaves `importer.py::_register_in_*` | 对齐 `inject.rs` |
 | DB fingerprint 减扫 | cursaves `watch.py::_get_db_fingerprint` | `watcher.rs` |
-| 跨设备路径重写 | cursaves `importer.py::rewrite_paths` | v4 import / `sync.rs` | ⚪ **v0.3.6 G2** |
+| 跨设备路径重写 | cursaves `importer.py::rewrite_paths` | `path_rewrite.rs` / `sync.rs` | ✅ **v0.3.6 G2** |
 | TokenUsage / 降级标记 | cursor-history spec 009/012 | `Bubble` / `Conversation` / UI |
 | 轻量 spec 驱动 (parser 契约) | cursor-history `specs/` 结构 | `docs/PARSER_SPEC.md` (仅协议级变更时) |
 
