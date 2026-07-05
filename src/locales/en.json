@@ -68,7 +68,10 @@
       "running": "Syncing…",
       "fillL2": "Fill Layer 2",
       "fillL3": "Fill Layer 3",
-      "fillAll": "One-click sync"
+      "fillAll": "One-click sync",
+      "refreshL3": "Layer 3 content is stale (L2 enrichment available)",
+      "hintRefreshL3": "Sidebar loads after the first inject, but assistant text may still be [REDACTED] or images missing. Quit Cursor first, then click Refill Layer 3.",
+      "refillL3": "Refill Layer 3"
     },
     "brokenBanner": {
       "defaultReason": "This session's data is incomplete",

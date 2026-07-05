@@ -36,6 +36,8 @@ export interface CanonicalSession {
    *  entry for this uuid. False = CLI-originated, Desktop Sidebar
    *  can't see it; the inject-to-Layer-3 button shows in that case. */
   layer_3_present: boolean;
+  /** v0.3.4: L3 row exists but bubble content is stale — show re-sync. */
+  layer_3_needs_refresh?: boolean;
 }
 
 // v0.2.5: SOURCE_LABELS moved to `useTranslation()` in SourceBadge

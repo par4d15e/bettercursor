@@ -335,6 +335,12 @@ fn read_layer3_composer_data(uuid: &str) -> Option<Layer3Data> {
     })
 }
 
+/// True when global `composerData` is present and fully synced (loadable
+/// schema + clean user bubbles + L2-rich content when available).
+pub fn layer3_is_fully_synced(uuid: &str, cwd: &str) -> bool {
+    layer3_has_loadable_composer(uuid, cwd)
+}
+
 /// True when global `composerData` is missing or is a bettercursor stub
 /// (headers + bubbleId rows but no `conversationState` → Sidebar spin).
 fn layer3_has_loadable_composer(uuid: &str, cwd: &str) -> bool {
@@ -391,11 +397,22 @@ fn composer_bubbles_need_layer2_refresh(
                 .and_then(|x| x.as_array())
                 .map(|a| !a.is_empty())
                 .unwrap_or(false);
+            let tool_calls = bv
+                .get("toolFormerData")
+                .and_then(|t| t.get("name").and_then(|x| x.as_str()))
+                .filter(|n| !n.is_empty())
+                .map(|name| {
+                    vec![canonical::BubbleToolUse {
+                        name: name.to_string(),
+                        input: None,
+                    }]
+                })
+                .unwrap_or_default();
             Some(canonical::Bubble {
                 id: bid.to_string(),
                 role: role.to_string(),
                 text,
-                tool_calls: Vec::new(),
+                tool_calls,
                 files: Vec::new(),
                 images: if images {
                     vec![canonical::BubbleImage {

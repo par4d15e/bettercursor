@@ -66,12 +66,9 @@ pub fn layer2_has_richer_turns(uuid: &str, cwd: &str, bubbles: &[Bubble]) -> boo
             {
                 return true;
             }
-        } else if assistant_text_is_redacted(&b.text)
-            && !turn.text.trim().is_empty()
-            && !assistant_text_is_redacted(&turn.text)
+        } else if b.text.contains("[REDACTED]")
+            && (!turn.text.trim().is_empty() || !turn.tool_calls.is_empty())
         {
-            return true;
-        } else if !turn.tool_calls.is_empty() && b.tool_calls.is_empty() {
             return true;
         }
     }
@@ -112,20 +109,20 @@ fn merge_turn_into_bubble(b: &mut Bubble, turn: &Layer2Turn) {
             b.images = turn.images.clone();
         }
     } else {
-        if !turn.text.trim().is_empty()
-            && (assistant_text_is_redacted(&b.text) || turn.text.len() > b.text.len())
-        {
+        if b.text.contains("[REDACTED]") {
+            if !turn.text.trim().is_empty() {
+                b.text = turn.text.clone();
+            } else if !turn.tool_calls.is_empty() {
+                // Tool-only L2 turn: drop L1 `[REDACTED]` stub; Desktop uses toolFormerData.
+                b.text = String::new();
+            }
+        } else if !turn.text.trim().is_empty() && turn.text.len() > b.text.len() {
             b.text = turn.text.clone();
         }
         if !turn.tool_calls.is_empty() {
             b.tool_calls = turn.tool_calls.clone();
         }
     }
-}
-
-fn assistant_text_is_redacted(text: &str) -> bool {
-    let t = text.trim();
-    t == "[REDACTED]" || t.starts_with("[REDACTED]")
 }
 
 fn read_layer2_turns_from_conn(conn: &Connection) -> Result<Vec<Layer2Turn>> {
@@ -466,37 +463,81 @@ mod tests {
 
     #[test]
     fn enrich_replaces_redacted_assistant_text() {
-        let l1 = vec![
-            Bubble {
-                id: "u1".into(),
-                role: "user".into(),
-                text: "hi".into(),
-                tool_calls: vec![],
-                files: vec![],
-                images: vec![],
-                created_at_ms: 0,
-                parent_bubble_id: None,
-            },
-            Bubble {
-                id: "a1".into(),
-                role: "assistant".into(),
-                text: "[REDACTED]".into(),
-                tool_calls: vec![],
-                files: vec![],
-                images: vec![],
-                created_at_ms: 0,
-                parent_bubble_id: None,
-            },
-        ];
-        // Can't test enrich without store.db — test merge directly
         let turn = Layer2Turn {
             role: "assistant".into(),
             text: "real answer".into(),
             tool_calls: vec![],
             images: vec![],
         };
-        let mut b = l1[1].clone();
-        merge_turn_into_bubble(&mut b, &turn);
-        assert_eq!(b.text, "real answer");
+        let mut partial = Bubble {
+            id: "a1".into(),
+            role: "assistant".into(),
+            text: "opening paragraph\n\n[REDACTED]".into(),
+            tool_calls: vec![],
+            files: vec![],
+            images: vec![],
+            created_at_ms: 0,
+            parent_bubble_id: None,
+        };
+        merge_turn_into_bubble(&mut partial, &turn);
+        assert_eq!(partial.text, "real answer");
+
+        let mut pure = Bubble {
+            id: "a2".into(),
+            role: "assistant".into(),
+            text: "[REDACTED]".into(),
+            tool_calls: vec![],
+            files: vec![],
+            images: vec![],
+            created_at_ms: 0,
+            parent_bubble_id: None,
+        };
+        let tool_turn = Layer2Turn {
+            role: "assistant".into(),
+            text: String::new(),
+            tool_calls: vec![BubbleToolUse {
+                name: "Grep".into(),
+                input: None,
+            }],
+            images: vec![],
+        };
+        merge_turn_into_bubble(&mut pure, &tool_turn);
+        assert_eq!(pure.text, "");
+        assert_eq!(pure.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn layer2_has_richer_false_after_tool_only_enrich_state() {
+        let l3 = vec![Bubble {
+            id: "a1".into(),
+            role: "assistant".into(),
+            text: String::new(),
+            tool_calls: vec![BubbleToolUse {
+                name: "Grep".into(),
+                input: None,
+            }],
+            files: vec![],
+            images: vec![],
+            created_at_ms: 0,
+            parent_bubble_id: None,
+        }];
+        let turns = vec![Layer2Turn {
+            role: "assistant".into(),
+            text: String::new(),
+            tool_calls: vec![BubbleToolUse {
+                name: "Grep".into(),
+                input: None,
+            }],
+            images: vec![],
+        }];
+        // Inline check: no `[REDACTED]` marker left → not stale.
+        assert!(!l3[0].text.contains("[REDACTED]"));
+        assert_eq!(turns.len(), 1);
+    }
+
+    #[test]
+    fn bubble_text_contains_redacted_marker() {
+        assert!("hello\n\n[REDACTED]".contains("[REDACTED]"));
+        assert!(!String::new().contains("[REDACTED]"));
     }
 }

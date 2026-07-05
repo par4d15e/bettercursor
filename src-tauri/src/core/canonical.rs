@@ -190,6 +190,10 @@ pub struct CanonicalSession {
     /// session is invisible to Electron Cursor's Sidebar.
     #[serde(default)]
     pub layer_3_present: bool,
+    /// v0.3.4: injected L3 exists but bubble content is stale (CLI envelope,
+    /// `[REDACTED]`, missing L2 images). UI should offer re-sync.
+    #[serde(default)]
+    pub layer_3_needs_refresh: bool,
     /// v0.3.0: Layer 3 composerData full JSON + subset, captured at
     /// scan time so unified.db write paths don't need to re-open
     /// state.vscdb later. `None` when the session has no Layer 3 row.
@@ -334,6 +338,7 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 files_referenced: vec![],
                 indexable_text: String::new(),
                 layer_3_present: false,
+                layer_3_needs_refresh: false,
                 composer_data: None,
                 composer_id: None,
             });
@@ -860,9 +865,16 @@ fn merge_layer3_composer(
     if let Some(entry) = by_uuid.get_mut(uuid) {
         entry.bubble_count = entry.bubble_count.max(bubble_count);
         if entry.project_path.is_empty() && !project_path.is_empty() {
-            entry.project_path = project_path;
+            entry.project_path = project_path.clone();
         }
         entry.layer_3_present = super::inject::composer_is_desktop_loadable(v);
+        let cwd = if !project_path.is_empty() {
+            project_path
+        } else {
+            entry.project_path.clone()
+        };
+        entry.layer_3_needs_refresh =
+            entry.layer_3_present && !super::sync::layer3_is_fully_synced(uuid, &cwd);
         let full_json = serde_json::to_string(v).unwrap_or_default();
         entry.composer_data = Some(ComposerData {
             full_json: full_json.clone(),
@@ -1002,6 +1014,7 @@ fn merge_source(
         files_referenced: vec![],
         indexable_text: String::new(),
         layer_3_present: false,
+        layer_3_needs_refresh: false,
         composer_data: None,
         composer_id: None,
     });
@@ -2480,6 +2493,7 @@ mod tests {
             files_referenced: vec![],
             indexable_text: String::new(),
             layer_3_present: false,
+            layer_3_needs_refresh: false,
             composer_data: None,
             composer_id: None,
         };
@@ -2505,6 +2519,7 @@ mod tests {
             files_referenced: vec![],
             indexable_text: String::new(),
             layer_3_present: false,
+            layer_3_needs_refresh: false,
             composer_data: None,
             composer_id: None,
         };
@@ -2536,6 +2551,7 @@ mod tests {
             files_referenced: vec![],
             indexable_text: String::new(),
             layer_3_present: false,
+            layer_3_needs_refresh: false,
             composer_data: None,
             composer_id: None,
         };

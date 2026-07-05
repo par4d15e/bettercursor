@@ -131,13 +131,14 @@ export function SessionDetail() {
   // is the explicit `layer_3_present` flag. `missing` drives the sync
   // banner's copy + the (single) sync button label.
   const syncMissing = useMemo(() => {
-    if (!session) return { missing: [] as Array<"L2" | "L3">, hasL2: false, hasL3: false };
+    if (!session) return { missing: [] as Array<"L2" | "L3">, hasL2: false, hasL3: false, needsL3Refresh: false };
     const hasL2 = !!session.sources.linux_cli;
     const hasL3 = !!session.layer_3_present;
+    const needsL3Refresh = !!session.layer_3_needs_refresh;
     const missing: Array<"L2" | "L3"> = [];
     if (!hasL2) missing.push("L2");
-    if (!hasL3) missing.push("L3");
-    return { missing, hasL2, hasL3 };
+    if (!hasL3 || needsL3Refresh) missing.push("L3");
+    return { missing, hasL2, hasL3, needsL3Refresh };
   }, [session]);
 
   // v0.2-alpha one-click L2↔L3 补层 sync. `cwd` is sourced from the
@@ -277,19 +278,27 @@ export function SessionDetail() {
             <ArrowLeftRight size={14} className="text-accent-blue shrink-0 mt-px" />
             <div className="flex-1">
               <div className="font-semibold text-accent-blue">
-                {syncMissing.missing.length === 2
+                {syncMissing.needsL3Refresh && syncMissing.hasL3
+                  ? t("detail.syncBanner.refreshL3")
+                  : syncMissing.missing.length === 2
                   ? t("detail.syncBanner.missingBoth")
                   : syncMissing.missing.includes("L2")
                   ? t("detail.syncBanner.missingL2")
                   : t("detail.syncBanner.missingL3")}
               </div>
               <div className="text-fg-muted mt-0.5">
+                {syncMissing.needsL3Refresh && syncMissing.hasL3 ? (
+                  <span>{t("detail.syncBanner.hintRefreshL3")}</span>
+                ) : (
+                  <>
                 {syncMissing.missing.includes("L2") && (
                   <span>{t("detail.syncBanner.hintL2")}</span>
                 )}
                 {syncMissing.missing.length === 2 && " "}
-                {syncMissing.missing.includes("L3") && (
+                {syncMissing.missing.includes("L3") && !syncMissing.needsL3Refresh && (
                   <span>{t("detail.syncBanner.hintL3")}</span>
+                )}
+                  </>
                 )}
               </div>
               {syncReport && (
@@ -341,7 +350,9 @@ export function SessionDetail() {
               ) : (
                 <>
                   <ArrowLeftRight size={11} />
-                  {syncMissing.missing.includes("L2")
+                  {syncMissing.needsL3Refresh && syncMissing.hasL3
+                    ? t("detail.syncBanner.refillL3")
+                    : syncMissing.missing.includes("L2")
                     ? t("detail.syncBanner.fillL2")
                     : syncMissing.missing.includes("L3")
                     ? t("detail.syncBanner.fillL3")

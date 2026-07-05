@@ -226,6 +226,7 @@ mod tests {
             files_referenced: vec![],
             indexable_text: String::new(),
             layer_3_present: true,
+            layer_3_needs_refresh: false,
             composer_data: None,
             composer_id: Some("uuid-v4".into()),
         }

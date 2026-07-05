@@ -68,7 +68,10 @@
       "running": "同步中…",
       "fillL2": "补 Layer 2",
       "fillL3": "补 Layer 3",
-      "fillAll": "一键同步"
+      "fillAll": "一键同步",
+      "refreshL3": "Layer 3 内容待更新 (可用 L2 富化)",
+      "hintRefreshL3": "上次补层后 Sidebar 能打开, 但 assistant 可能仍是 [REDACTED] / 缺图. 请先退出 Cursor, 再点「重新补 Layer 3」.",
+      "refillL3": "重新补 Layer 3"
     },
     "brokenBanner": {
       "defaultReason": "该 session 数据不完整",
