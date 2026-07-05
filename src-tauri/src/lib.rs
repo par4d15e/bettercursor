@@ -62,7 +62,7 @@ fn sync_now(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let sessions = core::canonical::scan_all().map_err(|e| e.to_string())?;
+    let sessions = core::canonical::visible_sessions().map_err(|e| e.to_string())?;
     let count = sessions.len();
     // v0.3.0: mirror into unified.db so the FTS5 mirror,
     // content_hash, and session rows reflect the post-scan world.
@@ -202,10 +202,16 @@ async fn delete_session(
     uuid: String,
     cwd: Option<String>,
     project_slug: Option<String>,
+    remove_l3: Option<bool>,
 ) -> Result<core::sync::DeleteReport, String> {
     let cwd_str = cwd.unwrap_or_default();
-    core::sync::delete_session(&uuid, &cwd_str, project_slug.as_deref())
-        .map_err(|e| e.to_string())
+    core::sync::delete_session(
+        &uuid,
+        &cwd_str,
+        project_slug.as_deref(),
+        remove_l3.unwrap_or(false),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// v0.2.6: 列出 `~/.bettercursor/transports.json` 里的所有 peer.
@@ -589,7 +595,7 @@ pub fn run() {
             // the user can hit Refresh later.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                match core::canonical::scan_all() {
+                match core::canonical::visible_sessions() {
                     Ok(sessions) => {
                         log::info!("initial scan: {} session(s)", sessions.len());
                         if let Some(state) = handle.try_state::<AppState>() {

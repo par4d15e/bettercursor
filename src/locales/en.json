@@ -11,7 +11,7 @@
   "tree": {
     "header": {
       "title": "BetterCursor",
-      "version": "v0.3.4"
+      "version": "v0.3.5"
     },
     "toolbar": {
       "sessionCount": "Session list",
@@ -38,6 +38,9 @@
     "search": {
       "placeholder": "Search by session name / project / content"
     },
+    "subagentBadge": "Subagent",
+    "subagentExpand": "Expand {{count}} subagent(s)",
+    "subagentCollapse": "Collapse subagents",
     "selectSessionHint": "← Select a session on the left"
   },
   "detail": {
@@ -46,12 +49,16 @@
       "lastUpdated": "Last updated:",
       "project": "Project:",
       "bubbleCount": "Bubble count:",
-      "source": "Source:",
-      "uuid": "UUID:"
+      "source": "Layers now:",
+      "createdEndpoint": "Created on:",
+      "uuid": "UUID:",
+      "subagent": "Subagent:",
+      "subagentRoot": "Root session {{uuid}}…",
+      "subagentType": "Type: {{type}}"
     },
     "actions": {
       "deleteSession": "Delete session",
-      "deleteTitle": "Delete Layer 1 + Layer 2 storage (L3 is managed by Cursor Desktop, not touched)",
+      "deleteTitle": "Delete session (optional L1 / L2 / L3; quit Cursor first for L3)",
       "copyResumeTitle": "Copy to clipboard"
     },
     "syncBanner": {
@@ -71,7 +78,10 @@
       "fillAll": "One-click sync",
       "refreshL3": "Layer 3 content is stale (L2 enrichment available)",
       "hintRefreshL3": "Sidebar loads after the first inject, but assistant text may still be [REDACTED] or images missing. Quit Cursor first, then click Refill Layer 3.",
-      "refillL3": "Refill Layer 3"
+      "refillL3": "Refill Layer 3",
+      "refreshL2": "Layer 2 content is stale (L3 enrichment available)",
+      "hintRefreshL2": "cursor-agent --resume may show an empty conversation. Close any running agent for this session, then click Refill Layer 2.",
+      "refillL2": "Refill Layer 2"
     },
     "brokenBanner": {
       "defaultReason": "This session's data is incomplete",
@@ -85,19 +95,21 @@
     },
     "deleteDialog": {
       "title": "Delete session",
-      "body": "About to delete session {{uuid}}… from disk. At least one layer must be checked to confirm. L1 + L2 are checked by default (the layers cursor-agent can't see).",
+      "body": "About to delete session {{uuid}}… from disk. Select at least one layer. L3 soft-delete matches Desktop sidebar delete (archive + purge bubbles) — fully quit Cursor first.",
       "layerL1": "Layer 1 (JSONL)",
       "layerL1Path": "~/.cursor/projects/{{slug}}/agent-transcripts/{{uuid}}/",
       "layerL2": "Layer 2 (store.db)",
       "layerL2Path": "~/.cursor/chats/{{cwd}}/{{uuid}}/",
       "layerL2PathFallback": "~/.cursor/chats/<md5(cwd)>/{{uuid}}/",
       "layerL3": "Layer 3 (state.vscdb composerData)",
-      "layerL3Note": "L3 is managed by Cursor Desktop. Forced deletion requires the cursaves staged-copy path, which v0.2.1 does not support.",
+      "layerL3Note": "Soft delete: sidebar isArchived + remove bubbleId/checkpointId rows, keep composerData. Fully quit Cursor Desktop first.",
       "running": "Cursor / cursor-agent is running (process count: {{count}}). Please close it and retry — the \"Confirm delete\" button is disabled.",
       "reportL1Removed": "L1: ✓ deleted",
       "reportL1Skipped": "L1: skipped ({{reason}})",
       "reportL2Removed": "L2: ✓ deleted",
       "reportL2Skipped": "L2: skipped ({{reason}})",
+      "reportL3Removed": "L3: ✓ soft-deleted (Desktop-aligned)",
+      "reportL3Skipped": "L3: skipped ({{reason}})",
       "skippedUnknown": "unknown",
       "confirm": "Confirm delete",
       "deleting": "Deleting…"

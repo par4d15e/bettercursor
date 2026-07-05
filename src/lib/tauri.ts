@@ -145,17 +145,19 @@ export interface FixOrphansReport {
 
 /// Result of a `delete_session` call. Mirrors `core::sync::DeleteReport`.
 /// Each layer gets an independent removal flag + an optional skip
-/// reason (`"l1_not_present"` / `"l2_not_present"` / `"slug_not_provided"`
-/// / `"invalid_slug"` / `"io_error: ..."`). When `cursorRunning` is
-/// `true` the call short-circuited — both removed_* flags are `false`,
-/// both skipped_* are `null`, and `runningProcesses` lists the pids
-/// that triggered the guard.
+/// reason (`"l1_not_present"` / `"l2_not_present"` / `"l3_not_present"`
+/// / `"l3_not_requested"` / `"slug_not_provided"`
+/// / `"invalid_slug"` / `"io_error: ..."` / `"l3_error: ..."`). When
+/// `cursorRunning` is `true` the L2 path short-circuited — check
+/// `skipped_l2` for the lock reason; L3 lock surfaces in `skipped_l3`.
 export interface DeleteReport {
   uuid: string;
   removed_l1: boolean;
   removed_l2: boolean;
+  removed_l3: boolean;
   skipped_l1: string | null;
   skipped_l2: string | null;
+  skipped_l3: string | null;
   cursor_running: boolean;
   running_processes: string[];
 }
@@ -168,24 +170,25 @@ export async function fixOrphans(): Promise<FixOrphansReport> {
   return invoke<FixOrphansReport>("fix_orphans");
 }
 
-/// Delete one session's Layer 1 (JSONL) + Layer 2 (store.db) from
-/// disk. Layer 3 (state.vscdb composerData) is intentionally skipped
-/// by the backend — Cursor Desktop owns that storage. `cwd` powers the
-/// L2 path (`md5(cwd)` is the bucket name under `~/.cursor/chats/`).
-/// `projectSlug` (from `CanonicalSession.project_slug`) is needed for
-/// the L1 path under `~/.cursor/projects/<slug>/agent-transcripts/`;
-/// pass `null` to skip L1. The call refuses to mutate anything while
-/// Cursor / cursor-agent is running — check `cursor_running` on the
-/// returned report.
+/// Delete one session's Layer 1 (JSONL) + Layer 2 (store.db) from disk.
+/// When `removeL3` is true, also soft-delete Layer 3 in `state.vscdb`
+/// (archive sidebar entry + purge bubble rows — same as Desktop sidebar
+/// delete). Requires Cursor Desktop to be fully quit for L3. `cwd`
+/// powers the L2 path (`md5(cwd)` is the bucket name under
+/// `~/.cursor/chats/`). `projectSlug` (from `CanonicalSession.project_slug`)
+/// is needed for the L1 path under
+/// `~/.cursor/projects/<slug>/agent-transcripts/`; pass `null` to skip L1.
 export async function deleteSession(
   uuid: string,
   cwd: string | null,
   projectSlug: string | null,
+  removeL3 = false,
 ): Promise<DeleteReport> {
   return invoke<DeleteReport>("delete_session", {
     uuid,
     cwd,
     projectSlug,
+    removeL3,
   });
 }
 

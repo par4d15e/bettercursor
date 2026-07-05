@@ -179,7 +179,7 @@ fn is_interesting(ev: &Event) -> bool {
 /// product expectation that "open bettercursor and see current
 /// sessions" works out of the box.
 fn run_scan(app: &AppHandle, trigger: &str) {
-    match canonical::scan_all() {
+    match canonical::visible_sessions() {
         Ok(sessions) => {
             let count = sessions.len();
             if let Some(state) = app.try_state::<AppState>() {

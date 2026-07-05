@@ -23,6 +23,7 @@ pub mod inject;
 pub mod layer2_messages;
 pub mod paths;
 pub mod process;
+pub mod session_origin;
 pub mod snapshot;
 pub mod storage;
 pub mod sync;

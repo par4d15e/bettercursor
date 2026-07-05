@@ -96,12 +96,14 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
 
     // ── 1. Discover what we already have ────────────────────
     let (layer1_jsonl, bubbles_from_layer1) = read_layer1(uuid);
+    let sync_bubbles = resolve_sync_bubbles(uuid, cwd, &bubbles_from_layer1);
     let layer3_data = read_layer3_composer_data(uuid);
-    let layer2_path = paths::store_db_for(cwd, uuid);
+    let layer2_path = paths::resolve_store_db_for(uuid, cwd)
+        .unwrap_or_else(|| paths::store_db_for(cwd, uuid));
     let layer3_path = paths::global_db_path().ok();
 
-    let need_l2 = !layer2_path.exists();
-    let need_l3 = !layer3_has_loadable_composer(uuid, cwd);
+    let need_l2 = !layer2_is_fully_synced(uuid, cwd);
+    let need_l3 = !layer3_is_fully_synced(uuid, cwd);
 
     if !need_l2 && !need_l3 {
         report.skipped.push("already_synced".to_string());
@@ -110,7 +112,7 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
     }
 
     // Need at least one source of truth to synthesize from.
-    if layer3_data.is_none() && bubbles_from_layer1.is_empty() {
+    if layer3_data.is_none() && sync_bubbles.is_empty() {
         report.skipped.push("no_source_data".to_string());
         report.duration_ms = started.elapsed().as_millis() as u64;
         return Ok(report);
@@ -124,7 +126,7 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
                 .skipped
                 .push(super::process::l2_lock_skip_reason(&l2_blockers));
         } else {
-            match write_layer2(uuid, cwd, &layer3_data, &bubbles_from_layer1) {
+            match write_layer2(uuid, cwd, &layer3_data, &sync_bubbles) {
                 Ok(root) => {
                     report.wrote_layer2 = true;
                     report.root_blob_id = Some(root);
@@ -144,7 +146,7 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
                 .skipped
                 .push(super::process::l3_lock_skip_reason(&l3_blockers));
         } else if let Some(l3_path) = layer3_path {
-            match write_layer3(uuid, cwd, &bubbles_from_layer1) {
+            match write_layer3(uuid, cwd, &sync_bubbles) {
                 Ok(()) => report.wrote_layer3 = true,
                 Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
             }
@@ -159,7 +161,7 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
     // conflicts / archive tables reflect the post-write world.
     // Failures here MUST NOT fail the inline-write; log and continue.
     if let Ok(unified) = super::unified::UnifiedDb::open() {
-        if let Ok(all) = canonical::scan_all() {
+        if let Ok(all) = canonical::visible_sessions() {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let host = crate::core::paths::bettercursor_dir()
                 .file_name()
@@ -228,7 +230,7 @@ pub fn apply_session_from_snapshot(
     }
 
     if let Ok(unified) = super::unified::UnifiedDb::open() {
-        if let Ok(all) = canonical::scan_all() {
+        if let Ok(all) = canonical::visible_sessions() {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let host = crate::core::paths::bettercursor_dir()
                 .file_name()
@@ -253,6 +255,19 @@ fn read_layer1(uuid: &str) -> (Option<PathBuf>, Bubbles) {
     };
     let (bubbles, _, _) = canonical::read_layer1_bubbles_from_path(uuid, &path);
     (Some(path), bubbles)
+}
+
+/// Bubbles for L2↔L3 sync: Layer 1 JSONL when present, else Layer 2 DAG,
+/// else existing Layer 3 `bubbleId` rows (L1/L2-less CLI sessions).
+fn resolve_sync_bubbles(uuid: &str, cwd: &str, l1_bubbles: &[canonical::Bubble]) -> Bubbles {
+    if !l1_bubbles.is_empty() {
+        return l1_bubbles.to_vec();
+    }
+    let from_l2 = super::layer2_messages::bubbles_from_layer2_turns(uuid, cwd);
+    if !from_l2.is_empty() {
+        return from_l2;
+    }
+    canonical::read_layer3_bubbles(uuid)
 }
 
 // ── Layer 3 read (composerData JSON) ─────────────────────────
@@ -335,10 +350,159 @@ fn read_layer3_composer_data(uuid: &str) -> Option<Layer3Data> {
     })
 }
 
+/// True when CLI `store.db` is present and resume-ready (valid root,
+/// complete DAG). Native cursor-agent DAG (parseable turns) is authoritative;
+/// L3 inject is not used to flag refresh on those sessions.
+pub fn layer2_is_fully_synced(uuid: &str, cwd: &str) -> bool {
+    let Some(store_db) = paths::resolve_store_db_for(uuid, cwd) else {
+        return false;
+    };
+    if !store_db.is_file() {
+        return false;
+    }
+    match read_latest_root_blob_id(&store_db) {
+        Ok(Some(s)) if !s.is_empty() => {}
+        _ => return false,
+    }
+    if layer2_dag_incomplete(&store_db) {
+        return false;
+    }
+    if !super::layer2_messages::read_layer2_turns(uuid, cwd).is_empty() {
+        return true;
+    }
+    if store_db_missing_l3_dag_blobs(uuid, &store_db) {
+        return false;
+    }
+    !super::layer2_messages::layer3_has_richer_turns_for_l2(uuid, cwd)
+}
+
 /// True when global `composerData` is present and fully synced (loadable
 /// schema + clean user bubbles + L2-rich content when available).
 pub fn layer3_is_fully_synced(uuid: &str, cwd: &str) -> bool {
     layer3_has_loadable_composer(uuid, cwd)
+}
+
+/// True when L3 `conversationState` expects more `blobs` rows than store.db has.
+fn store_db_missing_l3_dag_blobs(uuid: &str, store_db: &Path) -> bool {
+    let Some(l3) = read_layer3_composer_data(uuid) else {
+        return false;
+    };
+    let Ok(expected) = collect_layer2_blobs_from_l3(&l3) else {
+        return false;
+    };
+    if expected.is_empty() {
+        return false;
+    }
+    let Ok(conn) = Connection::open_with_flags(store_db, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return true;
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT id FROM blobs") else {
+        return true;
+    };
+    let existing: HashSet<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    expected.iter().any(|(id, _)| !existing.contains(id))
+}
+
+/// True when a session title is non-empty and not a Cursor placeholder.
+pub fn is_meaningful_session_name(name: &str) -> bool {
+    let t = name.trim();
+    !t.is_empty() && t != "New Agent" && t != "CLI 会话"
+}
+
+/// Read the CLI-visible session title from Layer 2 (`store.db` meta[0].name,
+/// falling back to sibling `meta.json` `title`).
+pub fn read_layer2_session_name(
+    uuid: &str,
+    cwd: &str,
+    store_db: Option<&Path>,
+) -> Option<String> {
+    let store_db = store_db
+        .map(Path::to_path_buf)
+        .or_else(|| paths::resolve_store_db_for(uuid, cwd))?;
+    let Ok(r) = storage::open_read(&store_db) else {
+        return None;
+    };
+    if let Ok(Some(v)) = r.get_store_meta_json("0") {
+        if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
+            if is_meaningful_session_name(name) {
+                return Some(name.trim().to_string());
+            }
+        }
+    }
+    let meta_json = store_db
+        .parent()
+        .map(|d| d.join("meta.json"))
+        .filter(|p| p.is_file())?;
+    let Ok(body) = std::fs::read_to_string(&meta_json) else {
+        return None;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return None;
+    };
+    v.get("title")
+        .and_then(|x| x.as_str())
+        .filter(|s| is_meaningful_session_name(s))
+        .map(|s| s.trim().to_string())
+}
+
+/// Pick one display title for L2 CLI + L3 Desktop inject — L2 wins when present.
+pub fn resolve_session_display_title(
+    uuid: &str,
+    cwd: &str,
+    bubbles: &[canonical::Bubble],
+) -> String {
+    if let Some(l2_name) = read_layer2_session_name(uuid, cwd, None) {
+        return l2_name;
+    }
+    bubbles
+        .iter()
+        .find(|b| b.role == "user")
+        .map(|b| truncate_to_title_pub(&b.text))
+        .filter(|s| is_meaningful_session_name(s))
+        .unwrap_or_else(|| "CLI 会话".to_string())
+}
+
+/// Subtitle for `composer.composerHeaders` — preserve Desktop file-edit
+/// summaries when re-injecting; otherwise mirror the first user line.
+pub fn resolve_session_subtitle(uuid: &str, name: &str, bubbles: &[canonical::Bubble]) -> String {
+    if let Some(existing) = read_layer3_header_subtitle(uuid) {
+        if existing.contains("Edited ") || existing.contains(".md") || existing.contains(".tsx") {
+            return existing;
+        }
+    }
+    bubbles
+        .iter()
+        .find(|b| b.role == "user")
+        .map(|b| truncate_to_title_pub(&b.text))
+        .filter(|s| is_meaningful_session_name(s))
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn read_layer3_header_subtitle(uuid: &str) -> Option<String> {
+    let db_path = paths::global_db_path().ok()?;
+    if !db_path.exists() {
+        return None;
+    }
+    let Ok(r) = storage::open_read(&db_path) else {
+        return None;
+    };
+    let Ok(Some(root)) = r.get_json("composer.composerHeaders", "ItemTable") else {
+        return None;
+    };
+    let all = root.get("allComposers")?.as_array()?;
+    for entry in all {
+        if entry.get("composerId").and_then(|x| x.as_str()) == Some(uuid) {
+            return entry
+                .get("subtitle")
+                .and_then(|x| x.as_str())
+                .map(str::to_string);
+        }
+    }
+    None
 }
 
 /// True when global `composerData` is missing or is a bettercursor stub
@@ -483,29 +647,12 @@ fn write_layer2(
     backup_existing(&store_db);
 
     // Decide what blobs to write. Three source paths in priority order:
-    //   (a) Layer 3 conversationState decoded → primary blob DAG.
-    //   (b) Layer 3 bubble blobs → individual bubble blobs.
-    //   (c) Layer 1 bubbles → synthesized as text blobs (last resort,
-    //       may lose tool-call structure that Layer 3 has).
-    //
-    // For now we go with (a)+(b)+(c)-when-needed: write Layer 3's blobs
-    // (when present) so the DAG matches what Desktop produced; if L3
-    // is missing, synthesize from L1 text bubbles.
+    //   (a) Layer 3 conversationState + transitive agentKv DAG (Desktop → CLI).
+    //   (b) Layer 1 bubbles → synthesized as text blobs (last resort).
     let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
     if let Some(l3) = layer3 {
-        if let Some(b64) = &l3.conversation_state_b64 {
-            if let Ok(bytes) = base64_decode(b64) {
-                let id = sha256_hex(&bytes);
-                blobs.push((id, bytes));
-            }
-        }
-        for (bid, body) in &l3.bubble_blobs {
-            // Bubble blobs aren't stored in store.db — only the
-            // canonical conversationState blob chain is. But we record
-            // the bubble ids so the root-finder sees them as part of
-            // the DAG.
-            let _ = bid;
-            let _ = body;
+        if let Ok(l3_blobs) = collect_layer2_blobs_from_l3(l3) {
+            blobs = l3_blobs;
         }
     }
     if blobs.is_empty() && !bubbles.is_empty() {
@@ -610,6 +757,83 @@ fn write_layer2(
     write_prompt_history(chat_dir);
 
     Ok(root)
+}
+
+/// Build the full Layer 2 blob DAG from Desktop Layer 3: root
+/// `conversationState` protobuf plus every `agentKv:blob:*` child
+/// referenced transitively (cursor-agent `--resume` needs the whole DAG).
+fn collect_layer2_blobs_from_l3(l3: &Layer3Data) -> Result<Vec<(String, Vec<u8>)>> {
+    let Some(b64) = &l3.conversation_state_b64 else {
+        return Ok(Vec::new());
+    };
+    let raw = base64_decode(b64).context("decode conversationState base64")?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let root_id = sha256_hex(&raw);
+    let mut blob_map: HashMap<String, Vec<u8>> = HashMap::new();
+    blob_map.insert(root_id.clone(), raw);
+
+    let db_path = paths::global_db_path().context("global state.vscdb path")?;
+    let reader = storage::open_read(&db_path).context("open state.vscdb for agentKv")?;
+
+    let mut pending: Vec<String> = extract_blob_ids_from_protobuf(blob_map.get(&root_id).expect("root"))
+    .into_iter()
+    .filter(|id| !blob_map.contains_key(id))
+    .collect();
+
+    while let Some(id) = pending.pop() {
+        if blob_map.contains_key(&id) {
+            continue;
+        }
+        let key = format!("agentKv:blob:{id}");
+        let Some(bytes) = reader
+            .get_item_binary(&key, "cursorDiskKV")
+            .with_context(|| format!("read {key}"))?
+        else {
+            anyhow::bail!(
+                "Layer 3 缺少 agentKv 子 blob {id} — 无法还原 CLI DAG，请先补全 Layer 3"
+            );
+        };
+        for sub in extract_blob_ids_from_protobuf(&bytes) {
+            if !blob_map.contains_key(&sub) {
+                pending.push(sub);
+            }
+        }
+        blob_map.insert(id, bytes);
+    }
+
+    Ok(blob_map.into_iter().collect())
+}
+
+/// True when store.db exists but blobs referenced by the DAG root are missing
+/// (common after v0.3.x wrote only conversationState without agentKv children).
+pub(crate) fn layer2_dag_incomplete(store_db: &Path) -> bool {
+    let Ok(conn) = Connection::open_with_flags(store_db, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return false;
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT id, data FROM blobs") else {
+        return false;
+    };
+    let rows: Vec<(String, Vec<u8>)> = match stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => return false,
+    };
+    if rows.is_empty() {
+        return false;
+    }
+    let ids: HashSet<String> = rows.iter().map(|(id, _)| id.clone()).collect();
+    for (_, data) in &rows {
+        for r in extract_blob_ids_from_protobuf(data) {
+            if !ids.contains(&r) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn write_meta_json(chat_dir: &Path, uuid: &str, title: &str, created_at_ms: i64) {
@@ -953,7 +1177,7 @@ pub fn fix_orphans() -> Result<FixOrphansReport> {
     // archive row counts and any sessions whose fix changed their
     // content_hash stay in sync. Best-effort.
     if let Ok(unified) = super::unified::UnifiedDb::open() {
-        if let Ok(all) = canonical::scan_all() {
+        if let Ok(all) = canonical::visible_sessions() {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let host = crate::core::paths::bettercursor_dir()
                 .file_name()
@@ -1012,7 +1236,17 @@ pub struct FixOrphansReport {
 ///
 /// Pre-flight: refuses L2 removal when this session's `store.db` is held
 /// by a live `cursor-agent`. L1 transcript delete proceeds independently.
-pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Result<DeleteReport> {
+///
+/// When `remove_l3` is true, performs a Desktop-equivalent soft delete on
+/// `state.vscdb`: archive the sidebar entry, remove `bubbleId` /
+/// `checkpointId` rows, keep `composerData` shell. Requires Cursor Desktop
+/// to be fully quit (same guard as `write_layer3`).
+pub fn delete_session(
+    uuid: &str,
+    cwd: &str,
+    project_slug: Option<&str>,
+    remove_l3: bool,
+) -> Result<DeleteReport> {
     use std::fs;
 
     let l2_blockers = if cwd.trim().is_empty() {
@@ -1088,6 +1322,29 @@ pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Resu
         }
     }
 
+    // ── Layer 3 (optional soft delete) ─────────────────────────
+    let l3_removed;
+    let l3_skip;
+    if !remove_l3 {
+        l3_removed = false;
+        l3_skip = Some("l3_not_requested".to_string());
+    } else {
+        match soft_delete_layer3(uuid) {
+            Ok(true) => {
+                l3_removed = true;
+                l3_skip = None;
+            }
+            Ok(false) => {
+                l3_removed = false;
+                l3_skip = Some("l3_not_present".to_string());
+            }
+            Err(e) => {
+                l3_removed = false;
+                l3_skip = Some(format!("l3_error: {e}"));
+            }
+        }
+    }
+
     // ── v0.3.0: archive + delete in unified.db (Migration A coexist) ──
     //
     // We capture whatever canonical state we still have BEFORE deleting
@@ -1108,6 +1365,7 @@ pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Resu
                 now_ms,
             );
         }
+        let _ = unified.record_deleted_session(uuid, now_ms);
         let _ = unified.delete_session_row(uuid);
     }
 
@@ -1115,8 +1373,10 @@ pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Resu
         uuid: uuid.to_string(),
         removed_l1: l1_removed,
         removed_l2: l2_removed,
+        removed_l3: l3_removed,
         skipped_l1: l1_skip,
         skipped_l2: l2_skip,
+        skipped_l3: l3_skip,
         cursor_running: l2_locked && l2_dir.is_dir(),
         running_processes: if l2_locked { l2_blockers } else { Vec::new() },
     })
@@ -1127,10 +1387,14 @@ pub struct DeleteReport {
     pub uuid: String,
     pub removed_l1: bool,
     pub removed_l2: bool,
+    pub removed_l3: bool,
     /// None on success, "l1_not_present" / "l2_not_present" /
     /// "slug_not_provided" / "invalid_slug" / "io_error: ..." on skip.
     pub skipped_l1: Option<String>,
     pub skipped_l2: Option<String>,
+    /// None on success, "l3_not_requested" / "l3_not_present" /
+    /// "l3_error: ..." (incl. `l3_locked`) on skip.
+    pub skipped_l3: Option<String>,
     /// True iff `cursor_processes_running` returned non-empty — the
     /// frontend should re-show the confirmation dialog after closing
     /// Cursor.
@@ -1142,6 +1406,108 @@ pub struct DeleteReport {
 
 // ── Layer 3 write (state.vscdb composer entry) ───────────────
 
+/// Desktop-equivalent soft delete: archive sidebar entry, purge bubble /
+/// checkpoint rows, keep `composerData` shell. Returns `Ok(false)` when no
+/// L3 artifacts exist for `uuid`.
+pub fn soft_delete_layer3(uuid: &str) -> Result<bool> {
+    let l3_blockers = super::process::layer3_write_blocked();
+    if !l3_blockers.is_empty() {
+        return Err(anyhow!(super::process::l3_lock_skip_reason(&l3_blockers)));
+    }
+
+    let db_path = paths::global_db_path()?;
+    if !db_path.exists() {
+        return Ok(false);
+    }
+    if !layer3_session_present(&db_path, uuid)? {
+        return Ok(false);
+    }
+
+    backup_existing(&db_path);
+    storage::assert_db_integrity(&db_path).with_context(|| {
+        "state.vscdb 完整性校验失败 — 请完全退出 Cursor 后从 \
+         state.vscdb.backup_* 恢复，再重试删除 Layer 3"
+    })?;
+
+    let tmp = tempfile::tempdir().context("create tmpdir for state.vscdb copy")?;
+    let staged_db = tmp.path().join("state.vscdb");
+    let conn = storage::open_write_staging_copy(&db_path, &staged_db).with_context(|| {
+        "无法创建可写的 state.vscdb 副本 — 请确认已完全退出 Cursor Desktop"
+    })?;
+
+    let headers_key = "composer.composerHeaders";
+    let mut headers_root = read_item_table_json(&conn, headers_key)?
+        .unwrap_or_else(|| serde_json::json!({"allComposers": []}));
+    let archived = super::inject::archive_composer_sidebar_entry(&mut headers_root, uuid);
+    if archived {
+        conn.execute(
+            "INSERT OR REPLACE INTO ItemTable(key, value) VALUES (?1, ?2)",
+            params![headers_key, serde_json::to_string(&headers_root)?],
+        )?;
+    }
+
+    let bubble_prefix = format!("bubbleId:{uuid}:%");
+    let checkpoint_prefix = format!("checkpointId:{uuid}:%");
+    let bubbles_deleted = conn.execute(
+        "DELETE FROM cursorDiskKV WHERE key LIKE ?1",
+        params![bubble_prefix],
+    )?;
+    let checkpoints_deleted = conn.execute(
+        "DELETE FROM cursorDiskKV WHERE key LIKE ?1",
+        params![checkpoint_prefix],
+    )?;
+
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .context("wal_checkpoint after L3 soft delete")?;
+    let ok: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    if ok != "ok" {
+        return Err(anyhow!("integrity_check failed after L3 soft delete: {ok}"));
+    }
+    drop(conn);
+
+    atomic_replace(&staged_db, &db_path)?;
+    storage::remove_wal_sidecars(&db_path);
+
+    Ok(archived || bubbles_deleted > 0 || checkpoints_deleted > 0)
+}
+
+fn read_item_table_json(conn: &Connection, key: &str) -> Result<Option<serde_json::Value>> {
+    let mut stmt = conn.prepare("SELECT value FROM ItemTable WHERE key = ?1")?;
+    let mut rows = stmt.query([key])?;
+    match rows.next()? {
+        Some(row) => {
+            let s: String = row.get(0)?;
+            Ok(serde_json::from_str(&s).ok())
+        }
+        None => Ok(None),
+    }
+}
+
+fn layer3_session_present(db_path: &Path, uuid: &str) -> Result<bool> {
+    let r = storage::open_read(db_path)?;
+    let composer_key = format!("composerData:{uuid}");
+    if r.get_json(&composer_key, "cursorDiskKV")?.is_some() {
+        return Ok(true);
+    }
+    if let Some(headers) = r.get_json("composer.composerHeaders", "ItemTable")? {
+        let in_headers = headers
+            .get("allComposers")
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter().any(|e| {
+                    e.get("composerId").and_then(|c| c.as_str()) == Some(uuid)
+                })
+            })
+            .unwrap_or(false);
+        if in_headers {
+            return Ok(true);
+        }
+    }
+    let bubble_keys = r.list_keys(&format!("bubbleId:{uuid}:"), "cursorDiskKV")?;
+    Ok(!bubble_keys.is_empty())
+}
+
 /// Layer 2 `store.db` conversation DAG — source for Desktop `conversationState`.
 struct Layer2ConversationHydration {
     root_blob: Vec<u8>,
@@ -1152,13 +1518,7 @@ struct Layer2ConversationHydration {
 /// Read CLI `store.db` when present so Layer 3 inject can set
 /// `conversationState` + copy blobs into `agentKv:*` (Desktop chat loader).
 fn read_layer2_conversation_hydration(uuid: &str, cwd: &str) -> Option<Layer2ConversationHydration> {
-    if cwd.trim().is_empty() {
-        return None;
-    }
-    let store_db = paths::store_db_for(cwd, uuid);
-    if !store_db.is_file() {
-        return None;
-    }
+    let store_db = paths::resolve_store_db_for(uuid, cwd)?;
     let conn = Connection::open_with_flags(&store_db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let meta_hex: String = conn
         .query_row("SELECT value FROM meta WHERE key = '0'", [], |r| r.get(0))
@@ -1259,9 +1619,12 @@ fn copy_layer2_blobs_to_agent_kv(conn: &Connection, blobs: &[(String, Vec<u8>)])
 }
 
 fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<()> {
-    let enriched = super::layer2_messages::enrich_bubbles_from_layer2(uuid, cwd, bubbles);
+    let base = resolve_sync_bubbles(uuid, cwd, bubbles);
+    let enriched = super::layer2_messages::enrich_bubbles_from_layer2(uuid, cwd, &base);
     if enriched.is_empty() {
-        return Err(anyhow!("no Layer 1 bubbles to synthesize Layer 3 from"));
+        return Err(anyhow!(
+            "no conversation bubbles to synthesize Layer 3 from (need Layer 1 JSONL, Layer 2 store.db, or existing Layer 3 bubbles)"
+        ));
     }
 
     let meta_cwd = if cwd.is_empty() {
@@ -1270,16 +1633,8 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         Some(cwd.to_string())
     };
 
-    let name = enriched
-        .iter()
-        .find(|b| b.role == "user")
-        .map(|b| truncate_to_title_pub(&b.text))
-        .unwrap_or_else(|| "CLI 会话".to_string());
-    let subtitle = enriched
-        .iter()
-        .find(|b| b.role == "user")
-        .map(|b| truncate_to_title_pub(&b.text))
-        .unwrap_or_else(|| name.clone());
+    let name = resolve_session_display_title(uuid, cwd, &enriched);
+    let subtitle = resolve_session_subtitle(uuid, &name, &enriched);
 
     let layer2_hydration = read_layer2_conversation_hydration(uuid, cwd);
     let (created_at_ms, last_updated_ms) =
@@ -1333,17 +1688,16 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
     // atomic_rename (same pattern as scripts/apply.py:175-202).
     backup_existing(&db_path);
 
+    storage::assert_db_integrity(&db_path).with_context(|| {
+        "state.vscdb 完整性校验失败 — 请完全退出 Cursor 后从 \
+         state.vscdb.backup_* 恢复，再重试补 Layer 3"
+    })?;
+
     let tmp = tempfile::tempdir().context("create tmpdir for state.vscdb copy")?;
     let staged_db = tmp.path().join("state.vscdb");
-    std::fs::copy(&db_path, &staged_db)?;
-    for suf in ["-wal", "-shm"] {
-        let sidecar = with_sidecar_suffix(&db_path, suf);
-        if sidecar.exists() {
-            let _ = std::fs::copy(&sidecar, tmp.path().join(format!("state.vscdb{suf}")));
-        }
-    }
-
-    let conn = Connection::open(&staged_db)?;
+    let conn = storage::open_write_staging_copy(&db_path, &staged_db).with_context(|| {
+        "无法创建可写的 state.vscdb 副本 — 请确认已完全退出 Cursor Desktop"
+    })?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ItemTable(key TEXT PRIMARY KEY, value TEXT);
          CREATE TABLE IF NOT EXISTS cursorDiskKV(key TEXT PRIMARY KEY, value TEXT);",
@@ -1394,34 +1748,24 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         }
     }
 
-    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .context("wal_checkpoint after L3 mutations")?;
     let ok: String = conn
-        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-        .unwrap_or_else(|_| "ok".to_string());
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if ok != "ok" {
-        return Err(anyhow!("integrity_check failed: {ok}"));
+        return Err(anyhow!("integrity_check failed after L3 write: {ok}"));
     }
     drop(conn);
 
     // Atomic rename: stage on the same fs as the target first, then
     // os.replace. (#85 fix — /tmp tmpfs is separate fs.)
     atomic_replace(&staged_db, &db_path)?;
-    for suf in ["-wal", "-shm"] {
-        let tmp_sidecar = tmp.path().join(format!("state.vscdb{suf}"));
-        if tmp_sidecar.exists() {
-            let dst = with_sidecar_suffix(&db_path, suf);
-            let _ = atomic_replace(&tmp_sidecar, &dst);
-        }
-    }
+    // Invalidate stale WAL/SHM from the pre-replace epoch — copying sidecars
+    // from staging caused ptr-map corruption (integrity_check failures).
+    storage::remove_wal_sidecars(&db_path);
 
     let _ = meta_cwd; // future hook for richer metadata
     Ok(())
-}
-
-fn with_sidecar_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(suffix);
-    PathBuf::from(s)
 }
 
 fn atomic_replace(src: &Path, dst: &Path) -> Result<()> {
@@ -1585,6 +1929,91 @@ mod tests {
         let bytes = hex_decode(s).unwrap();
         assert_eq!(bytes, vec![0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(hex_encode(&bytes), s);
+    }
+
+    #[test]
+    fn layer2_is_fully_synced_false_when_dag_incomplete() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("store.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+        let child = vec![0xEE; 32];
+        let child_id = hex_encode(&child);
+        let root = build_protobuf_ref(&child_id);
+        let root_id = sha256_hex(&root);
+        conn.execute(
+            "INSERT INTO blobs(id, data) VALUES (?1, ?2)",
+            params![root_id, root],
+        )
+        .unwrap();
+        let meta0 = serde_json::json!({
+            "agentId": "uuid",
+            "latestRootBlobId": root_id,
+            "name": "t",
+            "createdAt": 1,
+            "mode": "default",
+            "isRunEverything": false,
+        });
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES ('0', ?1)",
+            params![hex_encode(meta0.to_string().as_bytes())],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(!layer2_is_fully_synced("uuid", "/tmp/cwd"));
+    }
+
+    #[test]
+    fn layer2_dag_incomplete_detects_missing_child() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("store.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+        let child = vec![0xEE; 32];
+        let child_id = hex_encode(&child);
+        let root = build_protobuf_ref(&child_id);
+        let root_id = sha256_hex(&root);
+        conn.execute(
+            "INSERT INTO blobs(id, data) VALUES (?1, ?2)",
+            params![root_id, root],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(
+            layer2_dag_incomplete(&db),
+            "root references missing child blob"
+        );
+    }
+
+    #[test]
+    fn collect_layer2_blobs_from_l3_requires_agentkv_children() {
+        let payload = vec![0xAB; 32];
+        let mut proto = vec![0x0A, 32];
+        proto.extend_from_slice(&payload);
+        let child_id = hex_encode(&payload);
+        let b64 = base64_encode(&proto);
+        let l3 = Layer3Data {
+            name: "t".into(),
+            created_at_ms: 1,
+            force_mode: "default".into(),
+            is_run_everything: false,
+            conversation_state_b64: Some(b64),
+            bubble_blobs: HashMap::new(),
+        };
+        let err = collect_layer2_blobs_from_l3(&l3).unwrap_err();
+        assert!(
+            err.to_string().contains("agentKv"),
+            "expected missing agentKv error, got {err}"
+        );
+        let _ = child_id;
     }
 
     #[test]
@@ -1992,7 +2421,7 @@ mod tests {
         std::fs::create_dir_all(l1.join("nested")).unwrap();
         assert!(l1.is_dir());
 
-        let report = delete_session(uuid, cwd, Some(slug)).expect("delete_session");
+        let report = delete_session(uuid, cwd, Some(slug), false).expect("delete_session");
         assert_eq!(report.uuid, uuid);
         // The delete_session acquires the same `cursor_processes_running`
         // guard as sync_session_layer23 — if the dev box happens to have
@@ -2025,5 +2454,28 @@ mod tests {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    #[test]
+    fn is_meaningful_session_name_rejects_placeholders() {
+        assert!(!is_meaningful_session_name(""));
+        assert!(!is_meaningful_session_name("New Agent"));
+        assert!(is_meaningful_session_name("UI Sync Help"));
+    }
+
+    #[test]
+    fn resolve_session_display_title_prefers_clean_user_over_stub() {
+        let bubbles = vec![canonical::Bubble {
+            id: "u".into(),
+            role: "user".into(),
+            text: "分析以下问题".into(),
+            tool_calls: vec![],
+            files: vec![],
+            images: vec![],
+            created_at_ms: 0,
+            parent_bubble_id: None,
+        }];
+        let title = resolve_session_display_title("no-such-uuid", "", &bubbles);
+        assert_eq!(title, "分析以下问题");
     }
 }

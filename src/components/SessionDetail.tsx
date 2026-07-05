@@ -77,11 +77,12 @@ export function SessionDetail() {
     null,
   );
   const [repairError, setRepairError] = useState<string | null>(null);
-  // 删除确认 dialog (native <dialog>). L1/L2 checkbox 默认勾,
-  // L3 disabled + 说明文字. cursor_running 时按钮 disabled + 红字提示.
+  // 删除确认 dialog (native <dialog>). L1/L2/L3 checkbox; L3 默认在
+  // 有 layer_3_present 时勾选. cursor_running 时 L2 按钮 disabled.
   const deleteDialogRef = useRef<HTMLDialogElement | null>(null);
   const [deleteL1Checked, setDeleteL1Checked] = useState(true);
   const [deleteL2Checked, setDeleteL2Checked] = useState(true);
+  const [deleteL3Checked, setDeleteL3Checked] = useState(false);
   const [deleteRunning, setDeleteRunning] = useState(false);
   const [deleteReport, setDeleteReport] = useState<DeleteReport | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -122,7 +123,10 @@ export function SessionDetail() {
     return out;
   }, [session]);
 
-  const primarySource = sources[0]?.layer ?? null;
+  const primarySource = useMemo(() => {
+    if (!session) return null;
+    return session.created_endpoint ?? sources[0]?.layer ?? null;
+  }, [session, sources]);
 
   // ── v0.2-alpha sync: which layers are missing? ─────────────
   // Layer 2 (store.db) presence ≈ `sources.linux_cli` (post-#88, that
@@ -131,14 +135,15 @@ export function SessionDetail() {
   // is the explicit `layer_3_present` flag. `missing` drives the sync
   // banner's copy + the (single) sync button label.
   const syncMissing = useMemo(() => {
-    if (!session) return { missing: [] as Array<"L2" | "L3">, hasL2: false, hasL3: false, needsL3Refresh: false };
+    if (!session) return { missing: [] as Array<"L2" | "L3">, hasL2: false, hasL3: false, needsL2Refresh: false, needsL3Refresh: false };
     const hasL2 = !!session.sources.linux_cli;
     const hasL3 = !!session.layer_3_present;
+    const needsL2Refresh = !!session.layer_2_needs_refresh;
     const needsL3Refresh = !!session.layer_3_needs_refresh;
     const missing: Array<"L2" | "L3"> = [];
-    if (!hasL2) missing.push("L2");
+    if (!hasL2 || needsL2Refresh) missing.push("L2");
     if (!hasL3 || needsL3Refresh) missing.push("L3");
-    return { missing, hasL2, hasL3, needsL3Refresh };
+    return { missing, hasL2, hasL3, needsL2Refresh, needsL3Refresh };
   }, [session]);
 
   // v0.2-alpha one-click L2↔L3 补层 sync. `cwd` is sourced from the
@@ -203,6 +208,7 @@ export function SessionDetail() {
   const openDeleteDialog = () => {
     setDeleteL1Checked(true);
     setDeleteL2Checked(true);
+    setDeleteL3Checked(!!session?.layer_3_present);
     setDeleteReport(null);
     setDeleteError(null);
     deleteDialogRef.current?.showModal();
@@ -215,7 +221,7 @@ export function SessionDetail() {
 
   const confirmDelete = async () => {
     if (!session) return;
-    if (!deleteL1Checked && !deleteL2Checked) return;
+    if (!deleteL1Checked && !deleteL2Checked && !deleteL3Checked) return;
     setDeleteRunning(true);
     setDeleteError(null);
     setDeleteReport(null);
@@ -226,16 +232,11 @@ export function SessionDetail() {
         session.uuid,
         cwd || null,
         slug || null,
+        deleteL3Checked,
       );
       setDeleteReport(report);
       await syncNowTauri().catch(() => undefined);
-      // 关闭 dialog 仅在真的删了什么的时候 (避免 cursor_running
-      // 之类的场景下悄悄把 dialog 关掉, 让用户没法看 reason).
-      const deletedSomething =
-        report.removed_l1 || report.removed_l2;
-      if (deletedSomething) {
-        deleteDialogRef.current?.close();
-      }
+      deleteDialogRef.current?.close();
     } catch (e: unknown) {
       setDeleteError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -278,7 +279,9 @@ export function SessionDetail() {
             <ArrowLeftRight size={14} className="text-accent-blue shrink-0 mt-px" />
             <div className="flex-1">
               <div className="font-semibold text-accent-blue">
-                {syncMissing.needsL3Refresh && syncMissing.hasL3
+                {syncMissing.needsL2Refresh && syncMissing.hasL2
+                  ? t("detail.syncBanner.refreshL2")
+                  : syncMissing.needsL3Refresh && syncMissing.hasL3
                   ? t("detail.syncBanner.refreshL3")
                   : syncMissing.missing.length === 2
                   ? t("detail.syncBanner.missingBoth")
@@ -287,7 +290,9 @@ export function SessionDetail() {
                   : t("detail.syncBanner.missingL3")}
               </div>
               <div className="text-fg-muted mt-0.5">
-                {syncMissing.needsL3Refresh && syncMissing.hasL3 ? (
+                {syncMissing.needsL2Refresh && syncMissing.hasL2 ? (
+                  <span>{t("detail.syncBanner.hintRefreshL2")}</span>
+                ) : syncMissing.needsL3Refresh && syncMissing.hasL3 ? (
                   <span>{t("detail.syncBanner.hintRefreshL3")}</span>
                 ) : (
                   <>
@@ -350,7 +355,9 @@ export function SessionDetail() {
               ) : (
                 <>
                   <ArrowLeftRight size={11} />
-                  {syncMissing.needsL3Refresh && syncMissing.hasL3
+                  {syncMissing.needsL2Refresh && syncMissing.hasL2
+                    ? t("detail.syncBanner.refillL2")
+                    : syncMissing.needsL3Refresh && syncMissing.hasL3
                     ? t("detail.syncBanner.refillL3")
                     : syncMissing.missing.includes("L2")
                     ? t("detail.syncBanner.fillL2")
@@ -482,17 +489,55 @@ export function SessionDetail() {
             <span>{t("detail.metadata.bubbleCount")}</span>
             <span className="text-fg-primary font-mono">{session.bubble_count}</span>
           </div>
+          {session.is_subagent && session.subagent_info && (
+            <div className="flex items-start gap-1.5 text-fg-secondary col-span-full">
+              <span className="text-xs text-accent-yellow shrink-0">
+                {t("detail.metadata.subagent")}
+              </span>
+              <div className="text-xs font-mono text-fg-primary min-w-0">
+                <div className="truncate" title={session.subagent_info.root_parent_agent_id}>
+                  {t("detail.metadata.subagentRoot", {
+                    uuid: session.subagent_info.root_parent_agent_id.slice(0, 8),
+                  })}
+                </div>
+                {session.subagent_info.type_name && (
+                  <div className="text-fg-muted">
+                    {t("detail.metadata.subagentType", {
+                      type: session.subagent_info.type_name,
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Sources */}
-        {sources.length > 0 && (
-          <div className="mt-3 flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-fg-muted">
-              {t("detail.metadata.source")}
-            </span>
-            {sources.map((s) => (
-              <SourceBadge key={s.layer} source={s.layer} size="md" />
-            ))}
+        {/* Sources: creation endpoint vs layers present now */}
+        {(session.created_endpoint || sources.length > 0) && (
+          <div className="mt-3 flex flex-col gap-1.5">
+            {session.created_endpoint && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-fg-muted">
+                  {t("detail.metadata.createdEndpoint")}
+                </span>
+                <SourceBadge source={session.created_endpoint} size="md" />
+                {session.created_at_ms != null && session.created_at_ms > 0 && (
+                  <span className="text-xs text-fg-muted font-mono">
+                    {new Date(session.created_at_ms).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            )}
+            {sources.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-fg-muted">
+                  {t("detail.metadata.source")}
+                </span>
+                {sources.map((s) => (
+                  <SourceBadge key={s.layer} source={s.layer} size="md" />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -532,9 +577,7 @@ export function SessionDetail() {
       />
 
       {/* v0.2.1 — 删除会话确认 dialog. 原生 <dialog>, 不引新依赖.
-          L1 (JSONL) + L2 (store.db) 默认勾, L3 (state.vscdb) 强制
-          disabled + 解释"由 Cursor 管理". cursor_running 时整个
-          确认按钮 disabled, 让用户先关 Cursor. */}
+          L1 + L2 + L3 均可选; L3 软删对齐 Desktop (需先退出 Cursor). */}
       <dialog
         ref={deleteDialogRef}
         data-testid="delete-dialog"
@@ -614,16 +657,23 @@ export function SessionDetail() {
             </div>
           </label>
 
-          <label className="flex items-start gap-2 px-3 py-2 rounded-md bg-bg-tertiary/40 border border-border opacity-60 cursor-not-allowed">
+          <label
+            className={`flex items-start gap-2 px-3 py-2 rounded-md bg-bg-tertiary border border-border ${
+              session.layer_3_present && !deleteRunning
+                ? "cursor-pointer"
+                : "opacity-60 cursor-not-allowed"
+            }`}
+          >
             <input
               type="checkbox"
               data-testid="delete-l3-checkbox"
-              checked={false}
-              disabled
+              checked={deleteL3Checked}
+              onChange={(e) => setDeleteL3Checked(e.target.checked)}
+              disabled={deleteRunning || !session.layer_3_present}
               className="mt-1 shrink-0"
             />
             <div className="flex-1 min-w-0">
-              <div className="font-mono text-xs text-fg-muted">
+              <div className="font-mono text-xs text-fg-primary">
                 {t("detail.deleteDialog.layerL3")}
               </div>
               <div className="text-xs text-fg-muted mt-0.5">
@@ -657,6 +707,14 @@ export function SessionDetail() {
                         deleteReport.skipped_l2 ?? t("detail.deleteDialog.skippedUnknown"),
                     })}
               </div>
+              <div>
+                {deleteReport.removed_l3
+                  ? t("detail.deleteDialog.reportL3Removed")
+                  : t("detail.deleteDialog.reportL3Skipped", {
+                      reason:
+                        deleteReport.skipped_l3 ?? t("detail.deleteDialog.skippedUnknown"),
+                    })}
+              </div>
             </div>
           )}
           {deleteError && (
@@ -680,7 +738,7 @@ export function SessionDetail() {
             onClick={confirmDelete}
             disabled={
               deleteRunning ||
-              (!deleteL1Checked && !deleteL2Checked) ||
+              (!deleteL1Checked && !deleteL2Checked && !deleteL3Checked) ||
               !!deleteReport?.cursor_running
             }
             className="px-3 py-1.5 rounded-md bg-accent-red text-bg-primary text-xs font-semibold hover:bg-accent-red/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"

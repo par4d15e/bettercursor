@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.4-success)
+![status](https://img.shields.io/badge/status-v0.3.5-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -28,7 +28,20 @@ Design goals:
 
 ## Feature status
 
-### v0.3.4 (✅ current, shipped 2026-07-05)
+### v0.3.5 (✅ current, shipped 2026-07-05)
+
+- [x] **Optional L3 soft delete** — Desktop-aligned sidebar archive +
+      purge `bubbleId` / `checkpointId` rows; keep `composerData` shell
+- [x] **Subagent sessions** — read L2 `meta[0].subagentInfo`; nest under
+      `rootParentAgentId` in the sidebar tree; collapsed by default
+- [x] **Hide empty Desktop ghosts** — `Untitled · uuid`, zero bubbles,
+      no CLI source: filtered out of the session list (disk untouched)
+- [x] **Conversation read fixes** — L3 header chain + L2 enrichment;
+      trim bad L3 prefixes; strip context envelopes / `[REDACTED]`
+- [x] **Delete tombstones** — `deleted_sessions` stops L3-only rows from
+      resurrecting after bettercursor delete
+
+### v0.3.4 (2026-07-05)
 
 - [x] **L2→L3 bubble enrichment** — `layer2_messages` walks the CLI
       `store.db` DAG and replaces L1 `[REDACTED]` stubs with full

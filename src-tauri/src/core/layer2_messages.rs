@@ -13,7 +13,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-use super::canonical::{clean_user_text, Bubble, BubbleImage, BubbleToolUse};
+use super::canonical::{clean_user_text, decode_l3_header_bubble, Bubble, BubbleImage, BubbleToolUse};
 use super::paths;
 
 /// One user or assistant turn extracted from the L2 DAG (chronological).
@@ -27,17 +27,45 @@ pub struct Layer2Turn {
 
 /// Read conversation turns from CLI `store.db` when present.
 pub fn read_layer2_turns(uuid: &str, cwd: &str) -> Vec<Layer2Turn> {
-    if cwd.trim().is_empty() {
+    let Some(store_db) = paths::resolve_store_db_for(uuid, cwd) else {
         return Vec::new();
-    }
-    let store_db = paths::store_db_for(cwd, uuid);
-    if !store_db.is_file() {
-        return Vec::new();
-    }
+    };
     let Ok(conn) = Connection::open_with_flags(&store_db, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
         return Vec::new();
     };
     read_layer2_turns_from_conn(&conn).unwrap_or_default()
+}
+
+/// Build inject-ready bubbles from L2 when Layer 1 JSONL is absent.
+pub fn bubbles_from_layer2_turns(uuid: &str, cwd: &str) -> Vec<Bubble> {
+    let turns = read_layer2_turns(uuid, cwd);
+    if !turns.is_empty() {
+        return turns
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, turn)| turn_to_bubble(uuid, ordinal, turn))
+            .collect();
+    }
+    // Fallback: v0.2-alpha synthesized `{role, text}` blobs (unordered).
+    super::canonical::read_layer2_bubbles(uuid, cwd)
+}
+
+fn turn_to_bubble(uuid: &str, ordinal: usize, turn: Layer2Turn) -> Bubble {
+    let text = if turn.role == "user" {
+        clean_user_text(&turn.text)
+    } else {
+        turn.text.clone()
+    };
+    Bubble {
+        id: super::inject::deterministic_bubble_id(uuid, &turn.role, 0, ordinal),
+        role: turn.role,
+        text,
+        tool_calls: turn.tool_calls,
+        files: Vec::new(),
+        images: turn.images,
+        created_at_ms: 0,
+        parent_bubble_id: None,
+    }
 }
 
 /// True when L2 has turns that would improve injected L3 bubble rows.
@@ -75,6 +103,113 @@ pub fn layer2_has_richer_turns(uuid: &str, cwd: &str, bubbles: &[Bubble]) -> boo
     false
 }
 
+/// True when L3 bubble rows would improve CLI `store.db` turns (mirror of
+/// [`layer2_has_richer_turns`] for Desktop → CLI re-sync).
+pub fn layer3_has_richer_turns_for_l2(uuid: &str, cwd: &str) -> bool {
+    let l3_bubbles = read_layer3_bubbles_ordered(uuid);
+    if l3_bubbles.is_empty() {
+        return false;
+    }
+    let l2_turns = read_layer2_turns(uuid, cwd);
+    if l2_turns.is_empty() {
+        return l3_has_conversation_state(uuid);
+    }
+    let mut ti = 0usize;
+    for b in &l3_bubbles {
+        if b.role != "user" && b.role != "assistant" {
+            continue;
+        }
+        let Some(l2) = l2_turns.get(ti) else {
+            return true;
+        };
+        if l2.role != b.role {
+            continue;
+        }
+        ti += 1;
+        if b.role == "user" {
+            if !b.images.is_empty() && l2.images.is_empty() {
+                return true;
+            }
+            let clean = clean_user_text(&b.text);
+            if !clean.is_empty()
+                && (l2.text.trim().is_empty()
+                    || l2.text.contains("<user_query>")
+                    || l2.text.contains("<timestamp>"))
+            {
+                return true;
+            }
+        } else if l2.text.trim().is_empty() && !b.text.trim().is_empty() {
+            return true;
+        } else if !b.tool_calls.is_empty() && l2.tool_calls.is_empty() {
+            return true;
+        }
+    }
+    l3_bubbles
+        .iter()
+        .filter(|b| b.role == "user" || b.role == "assistant")
+        .count()
+        > ti
+}
+
+/// L3 `fullConversationHeadersOnly` order (matches Desktop Sidebar).
+pub fn read_layer3_bubbles_ordered(uuid: &str) -> Vec<Bubble> {
+    let db_path = match paths::global_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return Vec::new(),
+    };
+    let Ok(r) = super::storage::open_read(&db_path) else {
+        return Vec::new();
+    };
+    let key = format!("composerData:{uuid}");
+    let Ok(Some(composer)) = r.get_json(&key, "cursorDiskKV") else {
+        return Vec::new();
+    };
+    let Some(headers) = composer
+        .get("fullConversationHeadersOnly")
+        .and_then(|x| x.as_array())
+    else {
+        return super::canonical::read_layer3_bubbles(uuid);
+    };
+    let mut out = Vec::new();
+    for h in headers {
+        let typ = h.get("type").and_then(|x| x.as_i64()).unwrap_or(0);
+        let _role = match typ {
+            1 => "user",
+            2 => "assistant",
+            _ => continue,
+        };
+        let Some(bid) = h.get("bubbleId").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let bubble_key = format!("bubbleId:{uuid}:{bid}");
+        let Ok(Some(bv)) = r.get_json(&bubble_key, "cursorDiskKV") else {
+            continue;
+        };
+        if let Some(b) = decode_l3_header_bubble(bid, &bv) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+fn l3_has_conversation_state(uuid: &str) -> bool {
+    let db_path = match paths::global_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return false,
+    };
+    let Ok(r) = super::storage::open_read(&db_path) else {
+        return false;
+    };
+    let key = format!("composerData:{uuid}");
+    let Ok(Some(v)) = r.get_json(&key, "cursorDiskKV") else {
+        return false;
+    };
+    v.get("conversationState")
+        .and_then(|x| x.as_str())
+        .map(|s| s.starts_with('~') && s.len() > 10)
+        .unwrap_or(false)
+}
+
 /// Overlay L2 turn content onto L1 bubbles (preserve L1 ids / ordinals).
 pub fn enrich_bubbles_from_layer2(uuid: &str, cwd: &str, bubbles: &[Bubble]) -> Vec<Bubble> {
     let turns = read_layer2_turns(uuid, cwd);
@@ -102,26 +237,31 @@ pub fn enrich_bubbles_from_layer2(uuid: &str, cwd: &str, bubbles: &[Bubble]) -> 
 
 fn merge_turn_into_bubble(b: &mut Bubble, turn: &Layer2Turn) {
     if turn.role == "user" {
-        if !turn.text.is_empty() {
-            b.text = clean_user_text(&turn.text);
+        let l3_needs_enrich = b.text.trim().is_empty()
+            || b.text.contains("[REDACTED]")
+            || b.text.contains("<user_query>")
+            || b.text.contains("<timestamp>");
+        if l3_needs_enrich && !turn.text.is_empty() {
+            let cleaned = clean_user_text(&turn.text);
+            if !cleaned.is_empty() {
+                b.text = cleaned;
+            }
         }
-        if !turn.images.is_empty() {
+        if !turn.images.is_empty() && b.images.is_empty() {
             b.images = turn.images.clone();
         }
-    } else {
-        if b.text.contains("[REDACTED]") {
-            if !turn.text.trim().is_empty() {
-                b.text = turn.text.clone();
-            } else if !turn.tool_calls.is_empty() {
-                // Tool-only L2 turn: drop L1 `[REDACTED]` stub; Desktop uses toolFormerData.
-                b.text = String::new();
-            }
-        } else if !turn.text.trim().is_empty() && turn.text.len() > b.text.len() {
+    } else if b.text.contains("[REDACTED]") {
+        if !turn.text.trim().is_empty() {
             b.text = turn.text.clone();
+        } else if !turn.tool_calls.is_empty() {
+            // Tool-only L2 turn: drop L1 `[REDACTED]` stub; Desktop uses toolFormerData.
+            b.text = String::new();
         }
         if !turn.tool_calls.is_empty() {
             b.tool_calls = turn.tool_calls.clone();
         }
+    } else if b.tool_calls.is_empty() && !turn.tool_calls.is_empty() {
+        b.tool_calls = turn.tool_calls.clone();
     }
 }
 
@@ -162,7 +302,7 @@ fn read_layer2_turns_from_conn(conn: &Connection) -> Result<Vec<Layer2Turn>> {
             "tool" => {
                 pending_tool_results.extend(msg.tool_results);
             }
-            "user" if msg.is_user_info => {}
+            "user" if msg.is_context_envelope => {}
             "user" => {
                 pending_tool_results.clear();
                 turns.push(Layer2Turn {
@@ -216,7 +356,34 @@ struct ParsedAiSdkMessage {
     tool_calls: Vec<BubbleToolUse>,
     tool_results: Vec<Value>,
     images: Vec<BubbleImage>,
-    is_user_info: bool,
+    is_context_envelope: bool,
+}
+
+/// IDE / session context blobs in the L2 DAG — not end-user turns.
+pub(crate) fn is_context_user_envelope(text: &str, raw_json: &str) -> bool {
+    if text.contains("<user_query>") || raw_json.contains("<user_query>") {
+        return false;
+    }
+    const CONTEXT_TAGS: &[&str] = &[
+        "<user_info>",
+        "<open_and_recently_viewed_files>",
+        "<git_status>",
+        "<attached_files>",
+        "<agent_transcripts>",
+        "<agent_skills>",
+        "<rules>",
+        "<mcp_instructions>",
+        "<user_rules>",
+        "<system_reminder>",
+    ];
+    CONTEXT_TAGS
+        .iter()
+        .any(|tag| text.contains(tag) || raw_json.contains(tag))
+}
+
+fn is_context_only_text_part(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.contains("<user_query>") && is_context_user_envelope(trimmed, trimmed)
 }
 
 fn parse_ai_sdk_blob(data: &[u8]) -> Option<ParsedAiSdkMessage> {
@@ -226,7 +393,6 @@ fn parse_ai_sdk_blob(data: &[u8]) -> Option<ParsedAiSdkMessage> {
     let v: Value = serde_json::from_slice(data).ok()?;
     let role = v.get("role").and_then(|x| x.as_str())?.to_string();
     let raw_json = v.to_string();
-    let is_user_info = role == "user" && raw_json.contains("<user_info>");
 
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
@@ -243,7 +409,10 @@ fn parse_ai_sdk_blob(data: &[u8]) -> Option<ParsedAiSdkMessage> {
             match typ {
                 "text" => {
                     if let Some(t) = obj.get("text").and_then(|x| x.as_str()) {
-                        if !t.is_empty() && t != "[REDACTED]" {
+                        if !t.is_empty()
+                            && t != "[REDACTED]"
+                            && !is_context_only_text_part(t)
+                        {
                             text_parts.push(t.to_string());
                         }
                     }
@@ -277,13 +446,16 @@ fn parse_ai_sdk_blob(data: &[u8]) -> Option<ParsedAiSdkMessage> {
         }
     }
 
+    let text = text_parts.join("\n\n");
+    let is_context_envelope = role == "user" && is_context_user_envelope(&text, &raw_json);
+
     Some(ParsedAiSdkMessage {
         role,
-        text: text_parts.join("\n\n"),
+        text,
         tool_calls,
         tool_results,
         images,
-        is_user_info,
+        is_context_envelope,
     })
 }
 
@@ -459,6 +631,86 @@ mod tests {
         assert_eq!(asst_msg.text, "full assistant reply");
         assert_eq!(asst_msg.tool_calls.len(), 1);
         assert_eq!(asst_msg.tool_calls[0].name, "Grep");
+    }
+
+    #[test]
+    fn enrich_does_not_replace_clean_l3_user_with_l2_context() {
+        // After `read_layer2_turns`, IDE context user blobs are dropped.
+        let turns = vec![Layer2Turn {
+            role: "assistant".into(),
+            text: "我是 Auto，由 Cursor 设计的 agent 路由器。".into(),
+            tool_calls: vec![],
+            images: vec![],
+        }];
+        let l3 = vec![
+            Bubble {
+                id: "u1".into(),
+                role: "user".into(),
+                text: "你现在用的是什么模型?".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "a0".into(),
+                role: "assistant".into(),
+                text: String::new(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "a1".into(),
+                role: "assistant".into(),
+                text: "我是 Auto，由 Cursor 设计的 agent 路由器。".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+        ];
+        let mut ti = 0usize;
+        let enriched: Vec<Bubble> = l3
+            .iter()
+            .map(|b| {
+                let mut out = b.clone();
+                if b.role == "user" || b.role == "assistant" {
+                    if let Some(turn) = turns.get(ti) {
+                        if turn.role == b.role {
+                            merge_turn_into_bubble(&mut out, turn);
+                            ti += 1;
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
+        let filtered = crate::core::canonical::filter_display_bubbles(enriched);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].text, "你现在用的是什么模型?");
+        assert_eq!(filtered[1].text, "我是 Auto，由 Cursor 设计的 agent 路由器。");
+    }
+
+    #[test]
+    fn parse_skips_context_user_envelopes() {
+        let ctx = serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "<open_and_recently_viewed_files>\nno files\n</open_and_recently_viewed_files>"}]
+        });
+        let msg = parse_ai_sdk_blob(ctx.to_string().as_bytes()).unwrap();
+        assert!(msg.is_context_envelope);
+
+        let real = serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "<user_query>hello</user_query>"}]
+        });
+        let msg = parse_ai_sdk_blob(real.to_string().as_bytes()).unwrap();
+        assert!(!msg.is_context_envelope);
     }
 
     #[test]

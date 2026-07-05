@@ -144,6 +144,17 @@ impl Sources {
     }
 }
 
+/// Layer 2 `store.db` meta[0].subagentInfo — Task / subagent spawn metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SubagentInfo {
+    pub parent_agent_id: String,
+    pub root_parent_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+}
+
 /// v0.3.0: Layer 3 `composerData` JSON captured verbatim + a
 /// normalized subset. The full JSON is what Cursor itself writes into
 /// `state.vscdb::cursorDiskKV[composerData:<uuid>]`; the subset is a
@@ -194,6 +205,17 @@ pub struct CanonicalSession {
     /// `[REDACTED]`, missing L2 images). UI should offer re-sync.
     #[serde(default)]
     pub layer_3_needs_refresh: bool,
+    /// v0.3.4: L2 store.db exists but DAG/content is stale vs L3 (missing
+    /// agentKv children, empty `--resume`). UI should offer re-sync.
+    #[serde(default)]
+    pub layer_2_needs_refresh: bool,
+    /// v0.3.5: first-seen creation endpoint (persisted in unified.db).
+    /// Distinct from `sources` — does not change after cross-layer sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_endpoint: Option<SourceLayer>,
+    /// Epoch ms when the session was first created on `created_endpoint`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<i64>,
     /// v0.3.0: Layer 3 composerData full JSON + subset, captured at
     /// scan time so unified.db write paths don't need to re-open
     /// state.vscdb later. `None` when the session has no Layer 3 row.
@@ -204,6 +226,12 @@ pub struct CanonicalSession {
     /// separate so we can pivot if Cursor ever splits the two.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composer_id: Option<String>,
+    /// True when Layer 2 `meta[0].subagentInfo` is present (Task subagent).
+    #[serde(default)]
+    pub is_subagent: bool,
+    /// Parsed `subagentInfo` from Layer 2 when `is_subagent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_info: Option<SubagentInfo>,
 }
 
 // ── Entry point ───────────────────────────────────────────────
@@ -239,6 +267,8 @@ pub fn scan_all() -> Result<Vec<CanonicalSession>> {
     // at the end and recompute the derived fields uniformly.
     for entry in by_uuid.values_mut() {
         normalize_project_identity(entry);
+        reconcile_cli_session_title(entry);
+        reconcile_layer_refresh_flags(entry);
 
         // `is_empty_draft` = zero bubbles AND no source at any layer.
         // A session that has Layer 1/2/3 data but `bubble_count == 0`
@@ -253,8 +283,48 @@ pub fn scan_all() -> Result<Vec<CanonicalSession>> {
 
     // Sort by last_updated_at descending.
     let mut out: Vec<CanonicalSession> = by_uuid.into_values().collect();
+    super::session_origin::enrich_created_endpoints(&mut out)?;
     out.sort_by(|a, b| b.last_updated_at.cmp(&a.last_updated_at));
     Ok(out)
+}
+
+/// Sessions visible in bettercursor UI — excludes user-deleted uuids even
+/// when Layer 3 `composerData` still exists (Desktop owns L3; delete only
+/// removes L1/L2 on disk), and Desktop "Untitled" composer shells with zero
+/// bubbles and no transcript (noise, not worth listing).
+pub fn visible_sessions() -> Result<Vec<CanonicalSession>> {
+    let mut sessions = scan_all()?;
+    sessions.retain(|s| !is_hidden_empty_desktop_session(s));
+    if let Ok(unified) = super::unified::UnifiedDb::open() {
+        let hidden = unified.deleted_session_uuids()?;
+        if !hidden.is_empty() {
+            use std::collections::HashSet;
+            let hidden: HashSet<String> = hidden.into_iter().collect();
+            sessions.retain(|s| !hidden.contains(&s.uuid));
+        }
+    }
+    Ok(sessions)
+}
+
+/// Desktop opened a composer tab but never produced conversation content —
+/// shows as `Untitled · <uuid>` in bettercursor. Hidden from the UI; disk
+/// footprint is negligible so we do not delete Cursor's L3 rows.
+pub(crate) fn is_hidden_empty_desktop_session(entry: &CanonicalSession) -> bool {
+    if entry.is_subagent || entry.bubble_count > 0 {
+        return false;
+    }
+    if !entry.first_user_message_preview.trim().is_empty() {
+        return false;
+    }
+    if !entry.indexable_text.trim().is_empty() {
+        return false;
+    }
+    if super::sync::is_meaningful_session_name(&entry.name) {
+        return false;
+    }
+    let desktop = entry.sources.linux_desktop.is_some() || entry.sources.mac.is_some();
+    let no_cli = entry.sources.linux_cli.is_none();
+    desktop && no_cli
 }
 
 // ── Layer 1: JSONL transcripts ────────────────────────────────
@@ -339,8 +409,13 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 indexable_text: String::new(),
                 layer_3_present: false,
                 layer_3_needs_refresh: false,
+                layer_2_needs_refresh: false,
+                created_endpoint: None,
+                created_at_ms: None,
                 composer_data: None,
                 composer_id: None,
+                is_subagent: false,
+                subagent_info: None,
             });
             if !preview.is_empty() && entry.first_user_message_preview.is_empty() {
                 entry.first_user_message_preview = preview;
@@ -504,8 +579,11 @@ fn scan_layer2_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 continue;
             }
 
-            let (name, created_at, blob_count, latest_root_blob_id) =
-                read_store_db_meta(&store_db);
+            let meta = read_store_db_meta(&store_db);
+            let name = meta.name;
+            let created_at = meta.created_at;
+            let blob_count = meta.blob_count;
+            let latest_root_blob_id = meta.latest_root_blob_id;
             let modified = file_mtime_ms(&store_db).unwrap_or(created_at);
             let project_slug = derive_slug_from_chat_root(&chat_root);
 
@@ -548,19 +626,57 @@ fn scan_layer2_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                         "Layer 2 latestRootBlobId 是空字符串 — `cursor-agent --resume` 会失败".to_string(),
                     );
                 }
+                if let Some(ref info) = meta.subagent_info {
+                    entry.is_subagent = true;
+                    entry.subagent_info = Some(info.clone());
+                }
             }
         }
     }
 }
 
-fn read_store_db_meta(path: &Path) -> (String, i64, u32, Option<String>) {
+#[derive(Debug, Clone, Default)]
+struct StoreDbMeta {
+    name: String,
+    created_at: i64,
+    blob_count: u32,
+    latest_root_blob_id: Option<String>,
+    subagent_info: Option<SubagentInfo>,
+}
+
+fn parse_subagent_info(v: &serde_json::Value) -> Option<SubagentInfo> {
+    let info = v.get("subagentInfo")?;
+    let parent = info.get("parentAgentId").and_then(|x| x.as_str())?.trim();
+    let root = info
+        .get("rootParentAgentId")
+        .and_then(|x| x.as_str())?
+        .trim();
+    if parent.is_empty() || root.is_empty() {
+        return None;
+    }
+    Some(SubagentInfo {
+        parent_agent_id: parent.to_string(),
+        root_parent_agent_id: root.to_string(),
+        tool_call_id: info
+            .get("toolCallId")
+            .and_then(|x| x.as_str())
+            .map(str::to_string),
+        type_name: info
+            .get("typeName")
+            .and_then(|x| x.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn read_store_db_meta(path: &Path) -> StoreDbMeta {
     let Ok(r) = storage::open_read(path) else {
-        return (String::new(), 0, 0, None);
+        return StoreDbMeta::default();
     };
 
-    // Read meta[0] (agent session metadata).
-    let (name, created_at, latest_root_blob_id) = match r.get_json("0", "meta") {
-        Ok(Some(v)) => {
+    // Read meta[0] (agent session metadata). cursor-agent stores hex JSON.
+    let (name, created_at, latest_root_blob_id, subagent_info) =
+        match r.get_store_meta_json("0") {
+            Ok(Some(v)) => {
             let name = v
                 .get("name")
                 .and_then(|x| x.as_str())
@@ -574,15 +690,22 @@ fn read_store_db_meta(path: &Path) -> (String, i64, u32, Option<String>) {
                 .get("latestRootBlobId")
                 .and_then(|x| x.as_str())
                 .map(str::to_string);
-            (name, created_at, root)
+            let subagent_info = parse_subagent_info(&v);
+            (name, created_at, root, subagent_info)
         }
-        _ => (String::new(), 0, None),
+        _ => (String::new(), 0, None, None),
     };
 
     // Count blobs.
     let blob_count = r.list_blob_ids().map(|v| v.len() as u32).unwrap_or(0);
 
-    (name, created_at, blob_count, latest_root_blob_id)
+    StoreDbMeta {
+        name,
+        created_at,
+        blob_count,
+        latest_root_blob_id,
+        subagent_info,
+    }
 }
 
 fn derive_slug_from_chat_root(chat_root: &str) -> String {
@@ -658,6 +781,37 @@ fn normalize_project_identity(entry: &mut CanonicalSession) {
             }
         }
     }
+}
+
+/// When a session exists on both L2 (CLI) and L3 (Desktop inject), prefer
+/// the CLI `store.db` / `meta.json` title — cursor-agent may auto-rename as
+/// the conversation evolves, while L3 inject freezes the first-prompt title.
+fn reconcile_cli_session_title(entry: &mut CanonicalSession) {
+    if entry.sources.linux_cli.is_none() || entry.sources.linux_desktop.is_none() {
+        return;
+    }
+    let Some(cli_path) = entry.sources.linux_cli.as_ref().map(|s| s.path.as_str()) else {
+        return;
+    };
+    let store_db = Path::new(cli_path);
+    let uuid = entry.uuid.as_str();
+    let cwd = entry.project_path.as_str();
+    let Some(l2_name) = super::sync::read_layer2_session_name(uuid, cwd, Some(store_db)) else {
+        return;
+    };
+    if super::sync::is_meaningful_session_name(&l2_name) {
+        entry.name = l2_name;
+    }
+}
+
+/// Recompute L2/L3 "needs refresh" flags after all layers are merged.
+fn reconcile_layer_refresh_flags(entry: &mut CanonicalSession) {
+    let cwd = entry.project_path.clone();
+    let has_l2 = entry.sources.linux_cli.is_some();
+    entry.layer_2_needs_refresh =
+        has_l2 && !super::sync::layer2_is_fully_synced(&entry.uuid, &cwd);
+    entry.layer_3_needs_refresh = entry.layer_3_present
+        && !super::sync::layer3_is_fully_synced(&entry.uuid, &cwd);
 }
 
 // ── Layer 3: Electron state.vscdb ─────────────────────────────
@@ -868,13 +1022,11 @@ fn merge_layer3_composer(
             entry.project_path = project_path.clone();
         }
         entry.layer_3_present = super::inject::composer_is_desktop_loadable(v);
-        let cwd = if !project_path.is_empty() {
+        let _cwd = if !project_path.is_empty() {
             project_path
         } else {
             entry.project_path.clone()
         };
-        entry.layer_3_needs_refresh =
-            entry.layer_3_present && !super::sync::layer3_is_fully_synced(uuid, &cwd);
         let full_json = serde_json::to_string(v).unwrap_or_default();
         entry.composer_data = Some(ComposerData {
             full_json: full_json.clone(),
@@ -1015,8 +1167,13 @@ fn merge_source(
         indexable_text: String::new(),
         layer_3_present: false,
         layer_3_needs_refresh: false,
+        layer_2_needs_refresh: false,
+        created_endpoint: None,
+        created_at_ms: None,
         composer_data: None,
         composer_id: None,
+        is_subagent: false,
+        subagent_info: None,
     });
 
     let slot = match layer {
@@ -1073,29 +1230,195 @@ fn _path_helper(p: PathBuf) -> PathBuf {
 ///
 /// v0.2.2: this function now reads from all three layers (Layer 1
 /// JSONL + Layer 2 store.db + Layer 3 state.vscdb) and merges them via
-/// [`merge_bubbles_three_way`]. The signature is unchanged — the frontend
-/// still calls `get_conversation(uuid)` and gets back a single
-/// `Conversation` with the merged `bubbles` array.
+/// Read merged conversation for the UI.
+///
+/// When Layer 3 exists, use Desktop header order as the spine and enrich
+/// from L2 (avoids stacking L1/L2/L3 bubbles with incompatible ids).
+/// CLI-only sessions fall back to L2 turns, then L1 JSONL.
 pub fn read_conversation(uuid: &str) -> Conversation {
-    let cwd = "";
     let jsonl_path = paths::find_layer1_jsonl_for(uuid);
     let (l1, total_lines, parse_errors) = match jsonl_path.as_ref() {
         None => (Vec::new(), 0usize, 0usize),
         Some(path) => read_layer1_bubbles_from_path(uuid, path),
     };
-    let l2 = read_layer2_bubbles(uuid, cwd);
-    let l3 = read_layer3_bubbles(uuid);
-    let merged = merge_bubbles_three_way(l1, l2, l3);
+    let cwd = resolve_conversation_cwd(uuid);
+
+    let l3 = super::layer2_messages::read_layer3_bubbles_ordered(uuid);
+    if !l3.is_empty() {
+        let bubbles = super::layer2_messages::enrich_bubbles_from_layer2(uuid, &cwd, &l3);
+        let bubbles = trim_l3_prefix_to_l1_anchor(bubbles, &l1);
+        return Conversation {
+            uuid: uuid.to_string(),
+            bubbles: finalize_l3_conversation_bubbles(bubbles),
+            source_path: jsonl_path.map(|p| p.display().to_string()),
+            total_lines,
+            parse_errors,
+        };
+    }
+
+    let l2 = super::layer2_messages::bubbles_from_layer2_turns(uuid, &cwd);
+    if !l2.is_empty() {
+        return Conversation {
+            uuid: uuid.to_string(),
+            bubbles: finalize_merged_conversation_bubbles(l2),
+            source_path: jsonl_path.map(|p| p.display().to_string()),
+            total_lines,
+            parse_errors,
+        };
+    }
+
     Conversation {
         uuid: uuid.to_string(),
-        bubbles: merged,
+        bubbles: finalize_merged_conversation_bubbles(l1),
         source_path: jsonl_path.map(|p| p.display().to_string()),
         total_lines,
         parse_errors,
     }
 }
 
-/// Read all bubbles from an already-resolved JSONL file path.
+fn resolve_conversation_cwd(uuid: &str) -> String {
+    if let Some(db) = paths::resolve_store_db_for(uuid, "") {
+        if let Some(chat_root) = db.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()) {
+            let chat_root = chat_root.to_string_lossy();
+            if let Some(path) = resolve_path_from_chat_root(&chat_root) {
+                return path;
+            }
+        }
+    }
+    if let Some(jsonl) = paths::find_layer1_jsonl_for(uuid) {
+        if let Some(slug) = jsonl
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+        {
+            return slug.to_string_lossy().replace('-', "/").replace("__", "-");
+        }
+    }
+    String::new()
+}
+
+/// Drop a corrupt L3 header prefix when L1's first user turn appears later
+/// in the chain (batch `write_layer3` sometimes prepends a stale block).
+fn trim_l3_prefix_to_l1_anchor(mut l3: Vec<Bubble>, l1: &[Bubble]) -> Vec<Bubble> {
+    let anchor = match l1
+        .iter()
+        .find(|b| b.role == "user")
+        .map(|b| clean_user_text(&b.text))
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => s,
+        None => return l3,
+    };
+    let l3_first_user = match l3
+        .iter()
+        .find(|b| b.role == "user")
+        .map(|b| clean_user_text(&b.text))
+    {
+        Some(s) => s,
+        None => return l3,
+    };
+    if l3_first_user == anchor {
+        return l3;
+    }
+    let Some(start) = l3.iter().position(|b| {
+        b.role == "user" && clean_user_text(&b.text) == anchor
+    }) else {
+        return l3;
+    };
+    if start > 0 {
+        l3.drain(..start);
+    }
+    l3
+}
+
+/// Post-process L3 header-chain bubbles for UI (preserve header order;
+/// do **not** role+text dedupe — duplicate user text at different headers
+/// must stay or assistant turns shift under the wrong user prompt).
+fn finalize_l3_conversation_bubbles(bubbles: Vec<Bubble>) -> Vec<Bubble> {
+    let bubbles: Vec<Bubble> = bubbles
+        .into_iter()
+        .filter_map(sanitize_bubble_for_display)
+        .collect();
+    filter_display_bubbles(bubbles)
+}
+
+/// Post-process L1/L2 merged bubbles: strip stubs, dedupe cross-layer copies.
+fn finalize_merged_conversation_bubbles(bubbles: Vec<Bubble>) -> Vec<Bubble> {
+    let bubbles: Vec<Bubble> = bubbles
+        .into_iter()
+        .filter_map(sanitize_bubble_for_display)
+        .collect();
+    filter_display_bubbles(dedupe_bubbles_by_role_text(bubbles))
+}
+
+/// Normalize one bubble for display. Returns `None` for IDE context envelopes.
+fn sanitize_bubble_for_display(mut b: Bubble) -> Option<Bubble> {
+    if b.role == "user" {
+        b.text = clean_user_text(&b.text);
+        if super::layer2_messages::is_context_user_envelope(&b.text, &b.text) {
+            return None;
+        }
+    } else if b.role == "assistant" {
+        b.text = strip_redacted_markers(&b.text);
+        if b.text.starts_with("[Thinking]") {
+            b.text = String::new();
+        }
+    }
+    Some(b)
+}
+
+/// Cursor redacts tool payloads in L3 `text`; the tool row carries the real UI.
+fn strip_redacted_markers(text: &str) -> String {
+    let mut s = text.to_string();
+    loop {
+        let next = s.replace("\n\n[REDACTED]", "").replace("[REDACTED]", "");
+        if next == s {
+            break;
+        }
+        s = next;
+    }
+    s.trim().to_string()
+}
+
+/// Hide L3 header rows that Desktop does not surface as separate messages.
+pub(crate) fn filter_display_bubbles(bubbles: Vec<Bubble>) -> Vec<Bubble> {
+    bubbles
+        .into_iter()
+        .filter(|b| {
+            !(b.role == "assistant"
+                && b.text.trim().is_empty()
+                && b.tool_calls.is_empty()
+                && b.images.is_empty())
+        })
+        .collect()
+}
+
+/// Drop duplicate user/assistant turns (same role + normalized text).
+fn dedupe_bubbles_by_role_text(bubbles: Vec<Bubble>) -> Vec<Bubble> {
+    let mut out = Vec::with_capacity(bubbles.len());
+    for b in bubbles {
+        let norm = normalized_bubble_text(&b);
+        if !norm.is_empty()
+            && out.iter().any(|x: &Bubble| {
+                x.role == b.role && normalized_bubble_text(x) == norm
+            })
+        {
+            continue;
+        }
+        out.push(b);
+    }
+    out
+}
+
+fn normalized_bubble_text(b: &Bubble) -> String {
+    if b.role == "user" {
+        clean_user_text(&b.text)
+    } else {
+        b.text.trim().to_string()
+    }
+}
+
+/// Legacy path: read L1 only from a known JSONL path.
 ///
 /// Useful for tests and for callers that already know the file location.
 pub fn read_conversation_from_path(uuid: &str, path: &Path) -> Conversation {
@@ -1282,10 +1605,9 @@ pub fn read_layer1_bubbles_from_path(uuid: &str, path: &Path) -> (Vec<Bubble>, u
 /// fall back to an empty chat_dir (uncommon — most callers have a
 /// real `cwd` from the session's `project_path`).
 pub fn read_layer2_bubbles(uuid: &str, cwd: &str) -> Vec<Bubble> {
-    let store_db = paths::store_db_for(cwd, uuid);
-    if !store_db.exists() {
+    let Some(store_db) = paths::resolve_store_db_for(uuid, cwd) else {
         return Vec::new();
-    }
+    };
     let Ok(r) = storage::open_read(&store_db) else {
         return Vec::new();
     };
@@ -1736,6 +2058,33 @@ fn l3_extract_tool_files(v: &serde_json::Value) -> Vec<String> {
     files
 }
 
+fn l3_extract_bubble_images(v: &serde_json::Value) -> Vec<BubbleImage> {
+    v.get("images")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|img| {
+                    Some(BubbleImage {
+                        mime_type: img
+                            .get("mimeType")
+                            .or_else(|| img.get("mime_type"))
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("image/jpeg")
+                            .to_string(),
+                        data_base64: img
+                            .get("data")
+                            .or_else(|| img.get("dataBase64"))
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .filter(|i| !i.data_base64.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Multi-source text extraction for L3 `bubbleId:*` blobs (cursor-history `extractBubbleText`).
 fn extract_l3_bubble_text(v: &serde_json::Value, is_assistant: bool) -> String {
     let code_block_parts = l3_extract_code_block_parts(v);
@@ -1833,10 +2182,41 @@ fn extract_l3_timestamp(v: &serde_json::Value) -> i64 {
     0
 }
 
+/// Decode one L3 header bubble for UI display (preserves prose in `text`,
+/// structured tool metadata in `tool_calls` — unlike [`decode_l3_bubble_blob`]
+/// which collapses tools into formatted text).
+pub(crate) fn decode_l3_header_bubble(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
+    let typ = v.get("type").and_then(|x| x.as_i64()).unwrap_or(0);
+    let role = match typ {
+        1 => "user",
+        2 => "assistant",
+        _ => return None,
+    };
+    let text = strip_redacted_markers(
+        v.get("text")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+    );
+    let tool_calls = l3_extract_tool_calls(v);
+    let files = l3_extract_tool_files(v);
+    let images = l3_extract_bubble_images(v);
+    let created_at_ms = extract_l3_timestamp(v);
+    Some(Bubble {
+        id: bid.to_string(),
+        role: role.to_string(),
+        text,
+        tool_calls,
+        files,
+        images,
+        created_at_ms,
+        parent_bubble_id: None,
+    })
+}
+
 /// Decode one L3 `bubbleId:*` blob as a [`Bubble`]. Returns `None` when
 /// the blob doesn't have the expected `_v`/`type`/`text` triple or
 /// `type` is something other than 1/2.
-fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
+pub(crate) fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
     let typ = v.get("type").and_then(|x| x.as_i64()).unwrap_or(0);
     let role = match typ {
         1 => "user",
@@ -1847,6 +2227,7 @@ fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
     let text = extract_l3_bubble_text(v, is_assistant);
     let tool_calls = l3_extract_tool_calls(v);
     let files = l3_extract_tool_files(v);
+    let images = l3_extract_bubble_images(v);
     let created_at_ms = extract_l3_timestamp(v);
     Some(Bubble {
         id: bid.to_string(),
@@ -1854,7 +2235,7 @@ fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
         text,
         tool_calls,
         files,
-        images: Vec::new(),
+        images,
         created_at_ms,
         parent_bubble_id: None,
     })
@@ -2012,6 +2393,7 @@ pub(crate) fn clean_user_text(text: &str) -> String {
         }
         break;
     }
+    s = strip_context_envelope_blocks(&s);
     if s.starts_with("<timestamp>") {
         if let Some(idx) = s.find("</timestamp>") {
             s = s[idx + "</timestamp>".len()..].trim().to_string();
@@ -2026,6 +2408,49 @@ pub(crate) fn clean_user_text(text: &str) -> String {
         s = s[..s.len() - close.len()].to_string();
     }
     s.trim().to_string()
+}
+
+/// Remove IDE/session context blocks that Cursor prepends to user turns.
+fn strip_context_envelope_blocks(s: &str) -> String {
+    let mut out = s.to_string();
+    const BLOCKS: &[(&str, &str)] = &[
+        ("<system_reminder>", "</system_reminder>"),
+        ("<user_info>", "</user_info>"),
+        ("<open_and_recently_viewed_files>", "</open_and_recently_viewed_files>"),
+        ("<git_status>", "</git_status>"),
+        ("<attached_files>", "</attached_files>"),
+        ("<agent_transcripts>", "</agent_transcripts>"),
+        ("<agent_skills>", "</agent_skills>"),
+        ("<rules>", "</rules>"),
+        ("<mcp_instructions>", "</mcp_instructions>"),
+        ("<user_rules>", "</user_rules>"),
+    ];
+    loop {
+        let mut changed = false;
+        for (open, close) in BLOCKS {
+            if let Some(start) = out.find(open) {
+                if let Some(rel_end) = out[start..].find(close) {
+                    let abs_end = start + rel_end + close.len();
+                    let before = out[..start].trim_end();
+                    let after = out[abs_end..].trim_start();
+                    out = if before.is_empty() && after.is_empty() {
+                        String::new()
+                    } else if before.is_empty() {
+                        after.to_string()
+                    } else if after.is_empty() {
+                        before.to_string()
+                    } else {
+                        format!("{before}\n{after}")
+                    };
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out.trim().to_string()
 }
 
 fn is_cli_image_placeholder_line(line: &str) -> bool {
@@ -2233,6 +2658,118 @@ mod tests {
         assert!(cleaned.contains("为什么变丑"));
     }
 
+    #[test]
+    fn hidden_empty_desktop_session_matches_untitled_ghost() {
+        let ghost = CanonicalSession {
+            uuid: "8723cd81-b025-454e-a52f-1d8268def0af".into(),
+            project_slug: "no-workspace".into(),
+            project_path: String::new(),
+            chat_root: String::new(),
+            name: String::new(),
+            last_updated_at: 1,
+            bubble_count: 0,
+            is_empty_draft: false,
+            is_broken: false,
+            broken_reason: None,
+            sources: Sources {
+                linux_desktop: Some(SourceInfo {
+                    last_seen_at: 1,
+                    layer: "3".into(),
+                    path: "/tmp/state.vscdb".into(),
+                }),
+                ..Default::default()
+            },
+            first_user_message_preview: String::new(),
+            files_referenced: vec![],
+            indexable_text: String::new(),
+            layer_3_present: false,
+            layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+            created_endpoint: None,
+            created_at_ms: None,
+            composer_data: None,
+            composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
+        };
+        assert!(is_hidden_empty_desktop_session(&ghost));
+    }
+
+    #[test]
+    fn hidden_empty_desktop_session_keeps_cli_and_named() {
+        let cli = CanonicalSession {
+            uuid: "11111111-1111-1111-1111-111111111111".into(),
+            project_slug: "proj".into(),
+            project_path: "/tmp".into(),
+            chat_root: "abc".into(),
+            name: "New Agent".into(),
+            last_updated_at: 1,
+            bubble_count: 0,
+            is_empty_draft: false,
+            is_broken: false,
+            broken_reason: None,
+            sources: Sources {
+                linux_cli: Some(SourceInfo {
+                    last_seen_at: 1,
+                    layer: "2".into(),
+                    path: "/tmp/store.db".into(),
+                }),
+                ..Default::default()
+            },
+            first_user_message_preview: String::new(),
+            files_referenced: vec![],
+            indexable_text: String::new(),
+            layer_3_present: false,
+            layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+            created_endpoint: None,
+            created_at_ms: None,
+            composer_data: None,
+            composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
+        };
+        assert!(!is_hidden_empty_desktop_session(&cli));
+
+        let named = CanonicalSession {
+            name: "Real chat".into(),
+            sources: Sources {
+                linux_desktop: Some(SourceInfo {
+                    last_seen_at: 1,
+                    layer: "3".into(),
+                    path: "/tmp/state.vscdb".into(),
+                }),
+                ..Default::default()
+            },
+            ..cli.clone()
+        };
+        assert!(!is_hidden_empty_desktop_session(&named));
+    }
+
+    #[test]
+    fn parse_subagent_info_reads_layer2_meta() {
+        let v = serde_json::json!({
+            "agentId": "804431cd-ff96-4562-a85d-f862e0cba564",
+            "subagentInfo": {
+                "parentAgentId": "f57a5d17-ccee-4e6b-94f2-4e97a0c7771a",
+                "rootParentAgentId": "33de2d97-940e-4335-a4ab-1f1a5b63243c",
+                "toolCallId": "tool_222c7541-43a9-4b17-8d62-110f20c76b9",
+                "typeName": "generalPurpose"
+            }
+        });
+        let info = parse_subagent_info(&v).expect("subagentInfo");
+        assert_eq!(info.root_parent_agent_id, "33de2d97-940e-4335-a4ab-1f1a5b63243c");
+        assert_eq!(info.type_name.as_deref(), Some("generalPurpose"));
+    }
+
+    #[test]
+    fn clean_user_text_strips_system_reminder_before_user_query() {
+        let raw = "<system_reminder>\nDo not spawn subagents.\n</system_reminder>\n<timestamp>Sunday</timestamp>\n<user_query>\nRun the script\n</user_query>";
+        let cleaned = clean_user_text(raw);
+        assert!(!cleaned.contains("system_reminder"));
+        assert_eq!(cleaned, "Run the script");
+    }
+
     /// Returns empty (no user line at all) → UI falls back to "Untitled · …".
     #[test]
     fn parse_no_user_message_yields_empty() {
@@ -2242,6 +2779,16 @@ mod tests {
         let p = write_tmp("no-user", body);
         let (preview, _files) = read_jsonl_preview(&p);
         assert_eq!(preview, "");
+    }
+
+    /// L3 tool rows often carry a trailing `[REDACTED]` stub in `text`.
+    #[test]
+    fn strip_redacted_markers_removes_tool_stubs() {
+        assert_eq!(
+            strip_redacted_markers("先读取 debug.md。\n\n[REDACTED]"),
+            "先读取 debug.md。"
+        );
+        assert_eq!(strip_redacted_markers("[REDACTED]"), "");
     }
 
     // ─── Conversation / bubbles ───────────────────────────────
@@ -2494,8 +3041,13 @@ mod tests {
             indexable_text: String::new(),
             layer_3_present: false,
             layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+        created_endpoint: None,
+        created_at_ms: None,
             composer_data: None,
             composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
         };
         normalize_project_identity(&mut entry);
         assert_eq!(entry.project_slug, "home-eric-workspace-enenzuo");
@@ -2520,8 +3072,13 @@ mod tests {
             indexable_text: String::new(),
             layer_3_present: false,
             layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+        created_endpoint: None,
+        created_at_ms: None,
             composer_data: None,
             composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
         };
         normalize_project_identity(&mut entry);
         // Dev box has enenzuo in workspaceStorage; skip assertion when absent.
@@ -2552,8 +3109,13 @@ mod tests {
             indexable_text: String::new(),
             layer_3_present: false,
             layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+        created_endpoint: None,
+        created_at_ms: None,
             composer_data: None,
             composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
         };
         normalize_project_identity(&mut entry);
         assert_eq!(entry.project_slug, "no-workspace");
@@ -3164,6 +3726,133 @@ mod tests {
     /// TS changes too. `#[serde(default)]` on the new Bubble fields
     /// keeps existing payloads compatible.
     #[test]
+    fn trim_l3_prefix_to_l1_anchor_drops_stale_header_block() {
+        let l1 = vec![Bubble {
+            id: "l1u".into(),
+            role: "user".into(),
+            text: "<user_query>@debug.md 诊断下</user_query>".into(),
+            tool_calls: vec![],
+            files: vec![],
+            images: vec![],
+            created_at_ms: 1,
+            parent_bubble_id: None,
+        }];
+        let l3 = vec![
+            Bubble {
+                id: "bad".into(),
+                role: "user".into(),
+                text: "先2,3,4 然后一起发版".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "a0".into(),
+                role: "assistant".into(),
+                text: "stale".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "good".into(),
+                role: "user".into(),
+                text: "@debug.md 诊断下".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+        ];
+        let out = trim_l3_prefix_to_l1_anchor(l3, &l1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "good");
+    }
+
+    #[test]
+    fn l3_finalize_keeps_duplicate_user_turns_in_header_order() {
+        let bubbles = vec![
+            Bubble {
+                id: "u1".into(),
+                role: "user".into(),
+                text: "hello".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "a1".into(),
+                role: "assistant".into(),
+                text: "reply one".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "u2".into(),
+                role: "user".into(),
+                text: "hello".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "a2".into(),
+                role: "assistant".into(),
+                text: "reply two".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            },
+        ];
+        let out = finalize_l3_conversation_bubbles(bubbles);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].id, "u1");
+        assert_eq!(out[2].id, "u2");
+    }
+
+    #[test]
+    fn dedupe_bubbles_by_role_text_drops_duplicate_user_turns() {
+        let bubbles = vec![
+            Bubble {
+                id: "a".into(),
+                role: "user".into(),
+                text: "<user_query>\n你好\n</user_query>".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 1,
+                parent_bubble_id: None,
+            },
+            Bubble {
+                id: "b".into(),
+                role: "user".into(),
+                text: "你好".into(),
+                tool_calls: vec![],
+                files: vec![],
+                images: vec![],
+                created_at_ms: 2,
+                parent_bubble_id: None,
+            },
+        ];
+        let out = dedupe_bubbles_by_role_text(bubbles);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
     fn read_conversation_returns_unchanged_signature() {
         let conv = read_conversation("definitely-not-a-real-uuid-zzzzz");
         assert_eq!(conv.uuid, "definitely-not-a-real-uuid-zzzzz");
@@ -3219,5 +3908,181 @@ mod tests {
             hit_ws > 0,
             "no chat_root resolved via workspaceStorage — reverse-lookup is broken"
         );
+    }
+
+    #[test]
+    #[ignore = "需要本机 Cursor 数据"]
+    fn live_compare_bubble_order() {
+        let uuid = std::env::var("BC_UUID")
+            .unwrap_or_else(|_| "123a56e5-0d82-4af7-9cba-8cdfe2603e74".into());
+        let l3 = crate::core::layer2_messages::read_layer3_bubbles_ordered(&uuid);
+        let conv = read_conversation(&uuid);
+        let header_pos: std::collections::HashMap<String, usize> = l3
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.id.clone(), i))
+            .collect();
+        let mut last = 0usize;
+        let mut violations = 0usize;
+        for (out_i, b) in conv.bubbles.iter().enumerate() {
+            let Some(&pos) = header_pos.get(&b.id) else {
+                eprintln!("OUT {out_i} id={} NOT IN L3 headers", &b.id[..8]);
+                violations += 1;
+                continue;
+            };
+            if pos < last {
+                eprintln!(
+                    "ORDER VIOLATION out[{out_i}] id={} header_pos={pos} < last={last}",
+                    &b.id[..8]
+                );
+                violations += 1;
+            }
+            last = pos;
+        }
+        eprintln!(
+            "l3_headers={} out={} violations={}",
+            l3.len(),
+            conv.bubbles.len(),
+            violations
+        );
+        // dump around first user#1
+        for (out_i, b) in conv.bubbles.iter().enumerate() {
+            if (12..=20).contains(&out_i) {
+                eprintln!(
+                    "out[{out_i}] hdr={} [{}] {:?}",
+                    header_pos.get(&b.id).copied().unwrap_or(9999),
+                    b.role,
+                    b.text.chars().take(70).collect::<String>()
+                );
+            }
+        }
+        assert_eq!(violations, 0, "bubble display order must follow L3 header order");
+        let out_users: Vec<_> = conv
+            .bubbles
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.role == "user")
+            .collect();
+        eprintln!("out_users={} l3_users={}", out_users.len(), l3.iter().filter(|b| b.role == "user").count());
+        for (out_i, b) in out_users.iter().take(3) {
+            eprintln!(
+                "  user out[{out_i}] hdr={} {:?}",
+                header_pos.get(&b.id).copied().unwrap_or(9999),
+                b.text.chars().take(60).collect::<String>()
+            );
+        }
+        if uuid.starts_with("123a56e5") {
+            let first = conv
+                .bubbles
+                .iter()
+                .find(|b| b.role == "user")
+                .map(|b| b.text.as_str())
+                .unwrap_or("");
+            assert!(
+                first.contains("debug.md"),
+                "first user should be @debug.md, got {first}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "需要本机 Cursor 数据"]
+    fn live_dump_session_bubbles() {
+        let uuid = std::env::var("BC_UUID")
+            .unwrap_or_else(|_| "123a56e5-0d82-4af7-9cba-8cdfe2603e74".into());
+        let conv = read_conversation(&uuid);
+        eprintln!("uuid={uuid} bubbles={}", conv.bubbles.len());
+        for (i, b) in conv.bubbles.iter().take(20).enumerate() {
+            eprintln!(
+                "{:3} [{}] tools={} imgs={} {:?}",
+                i,
+                b.role,
+                b.tool_calls.len(),
+                b.images.len(),
+                b.text.chars().take(100).collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "需要本机 Cursor 数据"]
+    fn live_audit_all_bettercursor_sessions() {
+        let l1_dir = "/home/eric/.cursor/projects/home-eric-workspace-bettercursor/agent-transcripts";
+        let entries = std::fs::read_dir(l1_dir).expect("l1 dir");
+        let mut uuids: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        uuids.sort();
+        eprintln!(
+            "{:<38} {:>3} {:>3} {:>4} {:>4} issue",
+            "uuid", "L3h", "out", "user", "asst"
+        );
+        for uuid in &uuids {
+            let l3 = crate::core::layer2_messages::read_layer3_bubbles_ordered(uuid);
+            let conv = read_conversation(uuid);
+            let l3h = l3.len();
+            let out = conv.bubbles.len();
+            let users = conv.bubbles.iter().filter(|b| b.role == "user").count();
+            let assts = conv.bubbles.iter().filter(|b| b.role == "assistant").count();
+            let mut issue = String::new();
+            for b in &conv.bubbles {
+                if b.text.contains("open_and_recently_viewed_files")
+                    || b.text.contains("<user_info>")
+                    || b.text.contains("<git_status>")
+                    || b.text.starts_with("[Thinking]")
+                {
+                    issue = format!("leak:{}", &b.text.chars().take(30).collect::<String>());
+                    break;
+                }
+            }
+            if issue.is_empty() && l3h > 0 {
+                // expect filtered output <= l3 headers (empty thinking dropped)
+                if out > l3h {
+                    issue = format!("out>l3h +{}", out - l3h);
+                }
+            }
+            if issue.is_empty() && l3h == 0 && out > 20 {
+                issue = "l2-only-large".into();
+            }
+            eprintln!(
+                "{:<38} {:>3} {:>4} {:>4} {:>4} {}",
+                &uuid[..8],
+                l3h,
+                out,
+                users,
+                assts,
+                issue
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "需要本机 Cursor 数据"]
+    fn live_conversation_23e005b7_displays_clean() {
+        let uuid = "23e005b7-1c59-4c10-be92-e6305563da77";
+        let conv = read_conversation(uuid);
+        eprintln!("bubble count: {}", conv.bubbles.len());
+        for b in &conv.bubbles {
+            eprintln!(
+                "[{}] {}",
+                b.role,
+                b.text.chars().take(120).collect::<String>()
+            );
+        }
+        assert!(
+            conv.bubbles
+                .iter()
+                .any(|b| b.role == "user" && b.text.contains("模型")),
+            "user question missing"
+        );
+        for b in &conv.bubbles {
+            assert!(
+                !b.text.contains("open_and_recently_viewed_files"),
+                "context envelope leaked: {}",
+                b.text.chars().take(80).collect::<String>()
+            );
+        }
     }
 }

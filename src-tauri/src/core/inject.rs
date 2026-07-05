@@ -31,6 +31,8 @@
 //!     / [`compose_bubble_blobs`] — three pieces of state.vscdb JSON.
 //!   - [`merge_composer_headers`] — read existing `allComposers` from
 //!     state.vscdb and append/replace our entry.
+//!   - [`archive_composer_sidebar_entry`] — Desktop-equivalent soft
+//!     delete: `isArchived: true`, clear `name` / `subtitle`.
 //!
 //! Schema reverse-engineered from
 //! `c1ea7999-005a-434f-bcf4-da8ddd9ff066` in state.vscdb.
@@ -759,6 +761,31 @@ pub fn merge_composer_headers(
     Ok(root)
 }
 
+/// Desktop-equivalent sidebar soft delete: mark `isArchived`, clear title.
+/// Returns `true` when an `allComposers` entry with matching `composerId`
+/// was found and patched in place.
+pub fn archive_composer_sidebar_entry(root: &mut serde_json::Value, uuid: &str) -> bool {
+    let Some(all) = root
+        .as_object_mut()
+        .and_then(|o| o.get_mut("allComposers"))
+        .and_then(|v| v.as_array_mut())
+    else {
+        return false;
+    };
+    let mut found = false;
+    for entry in all.iter_mut() {
+        if entry.get("composerId").and_then(|c| c.as_str()) == Some(uuid) {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("isArchived".into(), serde_json::json!(true));
+                obj.insert("name".into(), serde_json::json!(""));
+                obj.insert("subtitle".into(), serde_json::json!(""));
+            }
+            found = true;
+        }
+    }
+    found
+}
+
 fn rusqlite_value_to_string(v: rusqlite::types::Value) -> Option<String> {
     use rusqlite::types::Value::*;
     match v {
@@ -823,6 +850,33 @@ pub(crate) fn deterministic_bubble_id(uuid: &str, role: &str, ts_ms: i64, ordina
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_composer_sidebar_entry_sets_archived_and_clears_title() {
+        let uuid = "11111111-1111-1111-1111-111111111111";
+        let mut root = serde_json::json!({
+            "allComposers": [
+                {
+                    "composerId": uuid,
+                    "name": "Hello test",
+                    "subtitle": "user msg",
+                    "isArchived": false
+                },
+                {
+                    "composerId": "other",
+                    "name": "keep",
+                    "isArchived": false
+                }
+            ]
+        });
+        assert!(archive_composer_sidebar_entry(&mut root, uuid));
+        let entry = &root["allComposers"][0];
+        assert_eq!(entry["isArchived"], true);
+        assert_eq!(entry["name"], "");
+        assert_eq!(entry["subtitle"], "");
+        assert_eq!(root["allComposers"][1]["name"], "keep");
+        assert!(!archive_composer_sidebar_entry(&mut root, "missing"));
+    }
 
     #[test]
     fn hex_round_trip() {

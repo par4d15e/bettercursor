@@ -38,6 +38,23 @@ export interface CanonicalSession {
   layer_3_present: boolean;
   /** v0.3.4: L3 row exists but bubble content is stale — show re-sync. */
   layer_3_needs_refresh?: boolean;
+  /** v0.3.4: L2 store.db exists but DAG/content is stale vs L3 — show re-sync. */
+  layer_2_needs_refresh?: boolean;
+  /** v0.3.5: immutable creation endpoint (from unified.db session_origins). */
+  created_endpoint?: SourceLayer | null;
+  /** Epoch ms when the session was first created on `created_endpoint`. */
+  created_at_ms?: number | null;
+  /** True when Layer 2 meta[0].subagentInfo is present (Task subagent). */
+  is_subagent?: boolean;
+  /** Parsed subagentInfo from Layer 2 when `is_subagent`. */
+  subagent_info?: SubagentInfo | null;
+}
+
+export interface SubagentInfo {
+  parent_agent_id: string;
+  root_parent_agent_id: string;
+  tool_call_id?: string | null;
+  type_name?: string | null;
 }
 
 // v0.2.5: SOURCE_LABELS moved to `useTranslation()` in SourceBadge

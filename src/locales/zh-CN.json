@@ -11,7 +11,7 @@
   "tree": {
     "header": {
       "title": "BetterCursor",
-      "version": "v0.3.4"
+      "version": "v0.3.5"
     },
     "toolbar": {
       "sessionCount": "会话列表",
@@ -38,6 +38,9 @@
     "search": {
       "placeholder": "搜索会话名 / 项目 / 内容"
     },
+    "subagentBadge": "子代理",
+    "subagentExpand": "展开 {{count}} 条子代理",
+    "subagentCollapse": "折叠子代理",
     "selectSessionHint": "← 在左侧选择一条 session"
   },
   "detail": {
@@ -46,12 +49,16 @@
       "lastUpdated": "最后更新:",
       "project": "项目:",
       "bubbleCount": "bubble 数:",
-      "source": "来源:",
-      "uuid": "UUID:"
+      "source": "当前层:",
+      "createdEndpoint": "创建于:",
+      "uuid": "UUID:",
+      "subagent": "子代理:",
+      "subagentRoot": "根会话 {{uuid}}…",
+      "subagentType": "类型: {{type}}"
     },
     "actions": {
       "deleteSession": "删除会话",
-      "deleteTitle": "删除 Layer 1 + Layer 2 存储 (L3 由 Cursor Desktop 自己管理, 暂不删)",
+      "deleteTitle": "删除 session (可选 L1 / L2 / L3, L3 需先退出 Cursor)",
       "copyResumeTitle": "复制到剪贴板"
     },
     "syncBanner": {
@@ -71,7 +78,10 @@
       "fillAll": "一键同步",
       "refreshL3": "Layer 3 内容待更新 (可用 L2 富化)",
       "hintRefreshL3": "上次补层后 Sidebar 能打开, 但 assistant 可能仍是 [REDACTED] / 缺图. 请先退出 Cursor, 再点「重新补 Layer 3」.",
-      "refillL3": "重新补 Layer 3"
+      "refillL3": "重新补 Layer 3",
+      "refreshL2": "Layer 2 内容待更新 (可用 L3 富化)",
+      "hintRefreshL2": "上次补层后 cursor-agent --resume 可能为空. 请关闭正在跑的 agent 进程, 再点「重新补 Layer 2」.",
+      "refillL2": "重新补 Layer 2"
     },
     "brokenBanner": {
       "defaultReason": "该 session 数据不完整",
@@ -85,19 +95,21 @@
     },
     "deleteDialog": {
       "title": "删除 session",
-      "body": "即将从磁盘删除 session {{uuid}}…. 至少勾选一层才能确认, 默认 L1 + L2 都删 (Cursor-agent 看不到的层).",
+      "body": "即将从磁盘删除 session {{uuid}}…. 至少勾选一层才能确认. L3 软删对齐 Desktop 侧栏删除 (归档 + 清 bubble), 需先完全退出 Cursor.",
       "layerL1": "Layer 1 (JSONL)",
       "layerL1Path": "~/.cursor/projects/{{slug}}/agent-transcripts/{{uuid}}/",
       "layerL2": "Layer 2 (store.db)",
       "layerL2Path": "~/.cursor/chats/{{cwd}}/{{uuid}}/",
       "layerL2PathFallback": "~/.cursor/chats/<md5(cwd)>/{{uuid}}/",
       "layerL3": "Layer 3 (state.vscdb composerData)",
-      "layerL3Note": "L3 由 Cursor Desktop 自己管理, 强制删除需要 cursaves 的 staged-copy 路径, v0.2.1 暂不支持.",
+      "layerL3Note": "软删: 侧栏 isArchived + 删除 bubbleId/checkpointId, 保留 composerData. 请先完全退出 Cursor Desktop.",
       "running": "检测到 Cursor / cursor-agent 在跑 (pid 数: {{count}}). 请关闭后重试, \"确认删除\"按钮已禁用.",
       "reportL1Removed": "L1: ✓ 已删",
       "reportL1Skipped": "L1: 跳过 ({{reason}})",
       "reportL2Removed": "L2: ✓ 已删",
       "reportL2Skipped": "L2: 跳过 ({{reason}})",
+      "reportL3Removed": "L3: ✓ 已软删 (对齐 Desktop)",
+      "reportL3Skipped": "L3: 跳过 ({{reason}})",
       "skippedUnknown": "未知",
       "confirm": "确认删除",
       "deleting": "删除中…"

@@ -227,8 +227,13 @@ mod tests {
             indexable_text: String::new(),
             layer_3_present: true,
             layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+            created_endpoint: None,
+            created_at_ms: None,
             composer_data: None,
             composer_id: Some("uuid-v4".into()),
+            is_subagent: false,
+            subagent_info: None,
         }
     }
 

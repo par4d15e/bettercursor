@@ -12,7 +12,10 @@ import {
   useSessionStore,
   useGroupedSessions,
   getSortLabels,
+  ancestorSessionIds,
+  countSessionTreeNodes,
   type SortMode,
+  type SessionTreeNode,
 } from "../store/sessionStore";
 import { SourceBadge } from "./SourceBadge";
 import { BrokenBadge } from "./BrokenBadge";
@@ -37,10 +40,134 @@ import {
 } from "lucide-react";
 
 function detectSource(s: CanonicalSession): SourceLayer | null {
+  if (s.created_endpoint) return s.created_endpoint;
   if (s.sources.linux_cli) return "linux_cli";
   if (s.sources.mac) return "mac";
   if (s.sources.linux_desktop) return "linux_desktop";
   return null;
+}
+
+function sessionIndentClass(depth: number): string {
+  if (depth <= 0) return "pl-8";
+  if (depth === 1) return "pl-12";
+  if (depth === 2) return "pl-16";
+  return "pl-20";
+}
+
+interface SessionNodeListProps {
+  nodes: SessionTreeNode[];
+  depth: number;
+  selected: string | null;
+  expandedSubagents: Set<string>;
+  onToggleSubagents: (parentUuid: string) => void;
+  onSelect: (uuid: string) => void;
+}
+
+function SessionNodeList({
+  nodes,
+  depth,
+  selected,
+  expandedSubagents,
+  onToggleSubagents,
+  onSelect,
+}: SessionNodeListProps) {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      {nodes.map((node) => {
+        const { session: sess, children } = node;
+        const src = detectSource(sess);
+        const isSelected = sess.uuid === selected;
+        const hasChildren = children.length > 0;
+        const subagentsExpanded =
+          hasChildren && expandedSubagents.has(sess.uuid);
+
+        return (
+          <div key={sess.uuid}>
+            <div
+              className={`w-full pr-3 py-1.5 flex items-center gap-1 text-xs hover:bg-bg-hover ${
+                isSelected ? "bg-bg-hover border-l-2 border-accent-blue" : ""
+              } ${sessionIndentClass(depth)}`}
+            >
+              {hasChildren ? (
+                <button
+                  type="button"
+                  data-testid={`toggle-subagents-${sess.uuid.slice(0, 8)}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleSubagents(sess.uuid);
+                  }}
+                  className="p-0.5 rounded hover:bg-bg-tertiary text-fg-muted shrink-0"
+                  title={
+                    subagentsExpanded
+                      ? t("tree.subagentCollapse")
+                      : t("tree.subagentExpand", { count: children.length })
+                  }
+                >
+                  {subagentsExpanded ? (
+                    <ChevronDown size={12} />
+                  ) : (
+                    <ChevronRight size={12} />
+                  )}
+                </button>
+              ) : (
+                <span className="w-4 shrink-0" aria-hidden />
+              )}
+              <button
+                type="button"
+                onClick={() => onSelect(sess.uuid)}
+                className="flex-1 min-w-0 flex items-center gap-2 text-left"
+              >
+                {(() => {
+                  const title = resolveTitle(sess);
+                  return (
+                    <span
+                      className={`truncate flex-1 ${
+                        title.isFallback
+                          ? "text-fg-muted italic"
+                          : "text-fg-primary"
+                      }`}
+                      title={title.text}
+                    >
+                      {title.text}
+                    </span>
+                  );
+                })()}
+                {sess.is_broken && (
+                  <BrokenBadge reason={sess.broken_reason} size="sm" />
+                )}
+                {sess.is_subagent && (
+                  <span
+                    className="shrink-0 px-1 py-0.5 rounded text-[10px] font-medium bg-accent-yellow/15 text-accent-yellow border border-accent-yellow/30"
+                    title={t("tree.subagentBadge")}
+                  >
+                    {t("tree.subagentBadge")}
+                  </span>
+                )}
+                {hasChildren && !subagentsExpanded && (
+                  <span className="shrink-0 px-1 py-0.5 rounded text-[10px] font-mono bg-bg-tertiary text-fg-muted border border-border">
+                    +{children.length}
+                  </span>
+                )}
+                {src && <SourceBadge source={src} />}
+              </button>
+            </div>
+            {hasChildren && subagentsExpanded && (
+              <SessionNodeList
+                nodes={children}
+                depth={depth + 1}
+                selected={selected}
+                expandedSubagents={expandedSubagents}
+                onToggleSubagents={onToggleSubagents}
+                onSelect={onSelect}
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 export function SessionTree() {
@@ -60,6 +187,10 @@ export function SessionTree() {
   const cycleSortMode = useSessionStore((s) => s.cycleSortMode);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  /// Parents whose subagent children are visible. Empty = all subagent nests collapsed.
+  const [expandedSubagents, setExpandedSubagents] = useState<Set<string>>(
+    new Set(),
+  );
 
   // v0.2.1 — 头部 Wrench 按钮 (批量修复 orphan). 状态独立于
   // SessionDetail 的单条修复按钮 (两边调同一个 fixOrphans).
@@ -74,6 +205,24 @@ export function SessionTree() {
   useEffect(() => {
     init();
   }, [init]);
+
+  // Reveal ancestors when a nested subagent is selected from outside the tree.
+  useEffect(() => {
+    if (!selected) return;
+    const ancestors = ancestorSessionIds(grouped, selected);
+    if (ancestors.length === 0) return;
+    setExpandedSubagents((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const id of ancestors) {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [selected, grouped]);
 
   // 4s 自动消失. useEffect 挂在新 toast 上, 卸载时清理 timer.
   useEffect(() => {
@@ -120,6 +269,15 @@ export function SessionTree() {
       const next = new Set(prev);
       if (next.has(slug)) next.delete(slug);
       else next.add(slug);
+      return next;
+    });
+  };
+
+  const toggleSubagents = (parentUuid: string) => {
+    setExpandedSubagents((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentUuid)) next.delete(parentUuid);
+      else next.add(parentUuid);
       return next;
     });
   };
@@ -272,6 +430,7 @@ export function SessionTree() {
         {/* Project groups */}
         {grouped.map(({ slug, sessions }) => {
           const isCollapsed = collapsed.has(slug);
+          const sessionCount = countSessionTreeNodes(sessions);
           return (
             <div key={slug}>
               <button
@@ -285,45 +444,19 @@ export function SessionTree() {
                 )}
                 <span className="font-mono">{slug}</span>
                 <span className="ml-auto px-1.5 py-0.5 rounded bg-bg-tertiary text-fg-muted font-mono">
-                  {sessions.length}
+                  {sessionCount}
                 </span>
               </button>
-              {!isCollapsed &&
-                sessions.map((sess) => {
-                  const src = detectSource(sess);
-                  const isSelected = sess.uuid === selected;
-                  return (
-                    <button
-                      key={sess.uuid}
-                      onClick={() => setSelected(sess.uuid)}
-                      className={`w-full pl-8 pr-3 py-1.5 flex items-center gap-2 text-xs hover:bg-bg-hover ${
-                        isSelected
-                          ? "bg-bg-hover border-l-2 border-accent-blue"
-                          : ""
-                      }`}
-                    >
-                      {(() => {
-                        const t = resolveTitle(sess);
-                        return (
-                          <span
-                            className={`truncate flex-1 text-left ${
-                              t.isFallback
-                                ? "text-fg-muted italic"
-                                : "text-fg-primary"
-                            }`}
-                            title={t.text}
-                          >
-                            {t.text}
-                          </span>
-                        );
-                      })()}
-                      {sess.is_broken && (
-                        <BrokenBadge reason={sess.broken_reason} size="sm" />
-                      )}
-                      {src && <SourceBadge source={src} />}
-                    </button>
-                  );
-                })}
+              {!isCollapsed && (
+                <SessionNodeList
+                  nodes={sessions}
+                  depth={0}
+                  selected={selected}
+                  expandedSubagents={expandedSubagents}
+                  onToggleSubagents={toggleSubagents}
+                  onSelect={setSelected}
+                />
+              )}
             </div>
           );
         })}

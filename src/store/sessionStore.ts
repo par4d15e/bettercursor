@@ -221,7 +221,91 @@ export function filterSessions(
 
 export interface ProjectGroup {
   slug: string;
-  sessions: CanonicalSession[];
+  sessions: SessionTreeNode[];
+}
+
+export interface SessionTreeNode {
+  session: CanonicalSession;
+  children: SessionTreeNode[];
+}
+
+function resolveSubagentParentId(
+  sess: CanonicalSession,
+  idsInGroup: Set<string>,
+): string | null {
+  if (!sess.is_subagent || !sess.subagent_info) return null;
+  // Always hang under the root conversation — parentAgentId may be another
+  // subagent (Task chain), not the user-visible parent session.
+  const root = sess.subagent_info.root_parent_agent_id;
+  if (idsInGroup.has(root) && root !== sess.uuid) {
+    return root;
+  }
+  return null;
+}
+
+/** Nest subagent sessions under their parent within one project bucket. */
+export function buildSessionTree(
+  sessions: CanonicalSession[],
+  sortMode: SortMode = "updated_desc",
+): SessionTreeNode[] {
+  if (sessions.length === 0) return [];
+
+  const ids = new Set(sessions.map((s) => s.uuid));
+  const nodes = new Map<string, SessionTreeNode>();
+  for (const s of sessions) {
+    nodes.set(s.uuid, { session: s, children: [] });
+  }
+
+  const roots: SessionTreeNode[] = [];
+  for (const s of sessions) {
+    const node = nodes.get(s.uuid)!;
+    const parentId = resolveSubagentParentId(s, ids);
+    if (parentId) {
+      nodes.get(parentId)?.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const sortNodes = (list: SessionTreeNode[]): SessionTreeNode[] =>
+    [...list]
+      .sort((a, b) => compareSessions(a.session, b.session, sortMode))
+      .map((n) => ({
+        session: n.session,
+        children: sortNodes(n.children),
+      }));
+
+  return sortNodes(roots);
+}
+
+export function countSessionTreeNodes(nodes: SessionTreeNode[]): number {
+  return nodes.reduce(
+    (sum, n) => sum + 1 + countSessionTreeNodes(n.children),
+    0,
+  );
+}
+
+/** Parent UUIDs on the path to `uuid` (nearest parent first). */
+export function ancestorSessionIds(
+  groups: ProjectGroup[],
+  uuid: string,
+): string[] {
+  const walk = (
+    nodes: SessionTreeNode[],
+    trail: string[],
+  ): string[] | null => {
+    for (const n of nodes) {
+      if (n.session.uuid === uuid) return trail;
+      const found = walk(n.children, [...trail, n.session.uuid]);
+      if (found) return found;
+    }
+    return null;
+  };
+  for (const g of groups) {
+    const found = walk(g.sessions, []);
+    if (found) return found;
+  }
+  return [];
 }
 
 function compareSessions(a: CanonicalSession, b: CanonicalSession, mode: SortMode): number {
@@ -249,7 +333,7 @@ export function groupSessionsByProject(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([slug, list]) => ({
       slug,
-      sessions: [...list].sort((a, b) => compareSessions(a, b, sortMode)),
+      sessions: buildSessionTree(list, sortMode),
     }));
 }
 

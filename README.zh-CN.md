@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.4-success)
+![status](https://img.shields.io/badge/status-v0.3.5-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -22,7 +22,15 @@
 
 ## 功能状态
 
-### v0.3.4 (✅ 当前, 2026-07-05 完工)
+### v0.3.5 (✅ 当前, 2026-07-05 完工)
+
+- [x] **删除可选 L3 软删** — 对齐 Desktop 侧栏: `isArchived` + 清 `bubbleId` / `checkpointId`, 保留 `composerData` 壳
+- [x] **子代理识别与树形侧栏** — 读 L2 `meta[0].subagentInfo`, 挂在 `rootParentAgentId` 下, 默认折叠
+- [x] **隐藏 Desktop 空壳会话** — `Untitled · uuid`、0 bubble、无 CLI 来源的临时 composer 不再出现在列表
+- [x] **对话读取修复** — L3 header 链 + L2 富化; 裁掉错误 L3 前缀; 过滤上下文泡 / `[REDACTED]`
+- [x] **删除墓碑** — `deleted_sessions` 防止 L3 残留会话在扫描时复活
+
+### v0.3.4 (2026-07-05 完工)
 
 - [x] **L2→L3 bubble 富化** — `layer2_messages` 遍历 CLI `store.db` DAG, 写 `bubbleId` 前用 L2 完整 assistant 文本替换 L1 `[REDACTED]` stub
 - [x] **用户图片附件** — L2 `image` blob 解码为 user bubble 的 `images[]` data URL

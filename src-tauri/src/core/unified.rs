@@ -29,6 +29,7 @@ use crate::core::conflict::{self, ConflictClass};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -225,6 +226,70 @@ impl UnifiedDb {
                 ON conflicts(resolved_at_ms) WHERE resolved_at_ms IS NULL;
             ",
         )?;
+
+        let version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if version < 2 {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS session_origins (
+                    uuid TEXT PRIMARY KEY,
+                    created_endpoint_kind TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    recorded_at_ms INTEGER NOT NULL
+                );
+                INSERT INTO schema_version(version) VALUES (2);
+                ",
+            )?;
+        }
+        if version < 3 {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS deleted_sessions (
+                    uuid TEXT PRIMARY KEY,
+                    deleted_at_ms INTEGER NOT NULL
+                );
+                INSERT INTO schema_version(version) VALUES (3);
+                ",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Immutable creation endpoint (first infer wins). Distinct from
+    /// `sessions.endpoint_kind` which reflects current layer presence.
+    pub fn load_created_origins(&self) -> Result<HashMap<String, (String, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT uuid, created_endpoint_kind, created_at_ms FROM session_origins",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows.flatten() {
+            out.insert(row.0, (row.1, row.2));
+        }
+        Ok(out)
+    }
+
+    /// Record creation endpoint once — never overwrites an existing row.
+    pub fn persist_created_origin(&self, uuid: &str, kind: &str, created_at_ms: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let recorded_at_ms = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "
+            INSERT OR IGNORE INTO session_origins (
+                uuid, created_endpoint_kind, created_at_ms, recorded_at_ms
+            ) VALUES (?1, ?2, ?3, ?4)
+            ",
+            params![uuid, kind, created_at_ms, recorded_at_ms],
+        )?;
         Ok(())
     }
 
@@ -353,10 +418,36 @@ impl UnifiedDb {
     pub fn delete_session_row(&self, uuid: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
+            "DELETE FROM session_origins WHERE uuid = ?1",
+            params![uuid],
+        )?;
+        conn.execute(
             "DELETE FROM sessions WHERE uuid = ?1",
             params![uuid],
         )?;
         Ok(())
+    }
+
+    /// Tombstone: hide a uuid from bettercursor UI after L1/L2 delete
+    /// while Layer 3 remains in Cursor Desktop's state.vscdb.
+    pub fn record_deleted_session(&self, uuid: &str, deleted_at_ms: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "
+            INSERT INTO deleted_sessions (uuid, deleted_at_ms)
+            VALUES (?1, ?2)
+            ON CONFLICT(uuid) DO UPDATE SET deleted_at_ms = excluded.deleted_at_ms
+            ",
+            params![uuid, deleted_at_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn deleted_session_uuids(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT uuid FROM deleted_sessions")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.flatten().collect())
     }
 
     /// Record a pre-overwrite / pre-delete snapshot. Returns the
@@ -791,8 +882,13 @@ mod tests {
             indexable_text: String::new(),
             layer_3_present: false,
             layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+            created_endpoint: None,
+            created_at_ms: None,
             composer_data: None,
             composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
         }
     }
 
@@ -892,6 +988,15 @@ mod tests {
     /// record_archive must persist the row and return the new id;
     /// delete_session_row must cascade-clean bubbles / composer_data
     /// / archive / conflicts via FOREIGN KEY ON DELETE CASCADE.
+    #[test]
+    fn deleted_session_tombstone_hides_uuid_from_list() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let (_home, db) = fresh_unified_db();
+        db.record_deleted_session("uuid-z", 42).unwrap();
+        let hidden = db.deleted_session_uuids().unwrap();
+        assert_eq!(hidden, vec!["uuid-z".to_string()]);
+    }
+
     #[test]
     fn archive_and_delete_cascade() {
         let _lock = HOME_LOCK.lock().unwrap();

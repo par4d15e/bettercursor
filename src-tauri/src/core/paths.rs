@@ -91,6 +91,33 @@ pub fn store_db_for(cwd: impl AsRef<Path>, composer_id: &str) -> PathBuf {
     chat_dir_for(cwd, composer_id).join("store.db")
 }
 
+/// Find `~/.cursor/chats/<md5>/<uuid>/store.db` when `cwd` is unknown.
+pub fn find_store_db_for_uuid(uuid: &str) -> Option<PathBuf> {
+    let chats = chats_dir();
+    if !chats.exists() {
+        return None;
+    }
+    let entries = std::fs::read_dir(&chats).ok()?;
+    for entry in entries.flatten() {
+        let db = entry.path().join(uuid).join("store.db");
+        if db.is_file() {
+            return Some(db);
+        }
+    }
+    None
+}
+
+/// Resolve Layer 2 `store.db` — prefer `md5(cwd)` path, scan chats dir as fallback.
+pub fn resolve_store_db_for(uuid: &str, cwd: &str) -> Option<PathBuf> {
+    if !cwd.trim().is_empty() {
+        let p = store_db_for(cwd, uuid);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    find_store_db_for_uuid(uuid)
+}
+
 /// `~/.bettercursor/` — bettercursor state directory. Currently
 /// only `config.json` lives here (post-v0.2-alpha: no queue files,
 /// no offline apply scripts — sync.rs writes inline).
