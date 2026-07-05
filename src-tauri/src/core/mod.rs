@@ -20,6 +20,7 @@ pub mod config;
 pub mod conflict;
 pub mod discovery;
 pub mod inject;
+pub mod layer2_messages;
 pub mod paths;
 pub mod process;
 pub mod snapshot;

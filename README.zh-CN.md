@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.3-success)
+![status](https://img.shields.io/badge/status-v0.3.4-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -22,7 +22,14 @@
 
 ## 功能状态
 
-### v0.3.2 (✅ 当前, 2026-07-05 完工)
+### v0.3.4 (✅ 当前, 2026-07-05 完工)
+
+- [x] **L2→L3 bubble 富化** — `layer2_messages` 遍历 CLI `store.db` DAG, 写 `bubbleId` 前用 L2 完整 assistant 文本替换 L1 `[REDACTED]` stub
+- [x] **用户图片附件** — L2 `image` blob 解码为 user bubble 的 `images[]` data URL
+- [x] **重补检测** — CLI 信封 / `[REDACTED]` / 缺图时自动触发 Layer 3 重写
+- [x] **补 Layer 3 操作规范** — 见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md)
+
+### v0.3.2 (2026-07-05 完工)
 
 - [x] **`<SettingsDialog>`** — 侧栏头部齿轮入口, 整合界面语言 (`<LanguageSwitcher>`)、跨设备同步 (`<SyncPeersPanel>`)、冲突处理 (`<ConflictResolvePanel>`)
 - [x] **i18n 修复** — 合并 locale JSON 重复 `sync` 键 (同步状态不再裸露 `sync.autoSync`)
@@ -198,6 +205,10 @@ bettercursor/
 | **L1** | JSONL | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` |  transcript; CLI 与 Desktop 都会写; **有效 CLI 会话时与 L2 同 uuid** |
 | **L2** | SQLite | `~/.cursor/chats/<md5(cwd)>/<uuid>/store.db` | **仅 CLI** (`cursor-agent`) |
 | **L3** | SQLite KV | `~/.config/Cursor/User/globalStorage/state.vscdb` (`cursorDiskKV` + 各 workspace `state.vscdb`) | **Desktop** composer 索引与 bubble 正文 |
+
+### 补 Layer 3 (CLI → Desktop Sidebar)
+
+**必须先完全退出 Cursor Desktop**, 再在 bettercursor 对目标 CLI 会话执行 **补 Layer 2/3**, 然后重启 Cursor. v0.3.4+ 会检测 CLI 信封、`[REDACTED]`、缺图并自动重写 stub bubble. 完整铁律见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
 
 Rust 端 (`src-tauri/src/core/`) 负责:
 1. **`paths.rs`** — 解析 cursor user dir / chat_root MD5 等

@@ -40,6 +40,11 @@ export interface BubbleToolUse {
   input?: unknown;
 }
 
+export interface BubbleImage {
+  mime_type: string;
+  data_base64: string;
+}
+
 export interface Bubble {
   /// v0.2.2: stable 36-char GUID. Filled by the Rust side via
   /// `inject::deterministic_bubble_id` for L1 bubbles; L3 bubbles use
@@ -52,6 +57,8 @@ export interface Bubble {
   text: string;
   tool_calls: BubbleToolUse[];
   files: string[];
+  /// Layer 2 image attachments (injected into L3 `images[]` on sync).
+  images?: BubbleImage[];
   /// v0.2.2: epoch ms. L1 JSONL often has no reliable timestamp and
   /// returns 0; L3 rows and L2 blobs have it when present. Optional
   /// here (defaults to 0) so old hardcoded fixtures keep type-checking.
@@ -98,7 +105,7 @@ export async function watcherStatus(): Promise<WatcherStatus> {
 /// Result of one manual sync. Mirrors `core::sync::SyncReport` in
 /// Rust. `wrote_layer2` / `wrote_layer3` indicate which missing
 /// layers were synthesized on disk. `skipped` is the soft-skip list
-/// (e.g. "cursor_running", "already_synced") — never empty for a
+/// (e.g. "l3_locked(...)", "l2_locked(...)", "already_synced") — never empty for a
 /// successful call where no writes happened.
 export interface SyncReport {
   uuid: string;

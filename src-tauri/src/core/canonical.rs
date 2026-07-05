@@ -24,6 +24,13 @@ pub struct BubbleToolUse {
     pub input: Option<serde_json::Value>,
 }
 
+/// Image attachment decoded from Layer 2 AI SDK `image` content items.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BubbleImage {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
 /// One JSONL line, surfaced to the UI as one bubble.
 ///
 /// `role` is `"user"` or `"assistant"` (empty string for orphan events
@@ -48,6 +55,9 @@ pub struct Bubble {
     pub text: String,
     pub tool_calls: Vec<BubbleToolUse>,
     pub files: Vec<String>,
+    /// JPEG/PNG bytes from Layer 2, surfaced to L3 `images[]` on inject.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<BubbleImage>,
     /// Epoch milliseconds. Defaulted because L1 JSONL often has no
     /// reliable timestamp; L2/L3 bubbles have it set.
     #[serde(default)]
@@ -797,6 +807,10 @@ fn extract_uuids_from_str(s: &str, out: &mut HashSet<String>) {
     }
 }
 
+fn composer_has_loadable_conversation_state(v: &serde_json::Value) -> bool {
+    super::inject::composer_is_desktop_loadable(v)
+}
+
 /// Merge one Layer 3 composer into the canonical map (extracted from scan_layer3_into).
 fn merge_layer3_composer(
     by_uuid: &mut HashMap<String, CanonicalSession>,
@@ -848,7 +862,7 @@ fn merge_layer3_composer(
         if entry.project_path.is_empty() && !project_path.is_empty() {
             entry.project_path = project_path;
         }
-        entry.layer_3_present = true;
+        entry.layer_3_present = super::inject::composer_is_desktop_loadable(v);
         let full_json = serde_json::to_string(v).unwrap_or_default();
         entry.composer_data = Some(ComposerData {
             full_json: full_json.clone(),
@@ -1209,6 +1223,7 @@ pub(crate) fn read_layer1_bubbles_from_body(uuid: &str, body: &str) -> (Vec<Bubb
             text: text_parts.join("\n\n"),
             tool_calls,
             files,
+            images: Vec::new(),
             created_at_ms,
             parent_bubble_id: None,
         });
@@ -1331,6 +1346,7 @@ fn decode_l2_blob(uuid: &str, blob_id: &str, bytes: &[u8], ordinal: usize) -> Op
         text: text_body,
         tool_calls: Vec::new(),
         files: Vec::new(),
+        images: Vec::new(),
         created_at_ms,
         parent_bubble_id: None,
     })
@@ -1377,6 +1393,7 @@ fn try_decode_canonical_bubble(v: &serde_json::Value) -> Option<Bubble> {
         text,
         tool_calls,
         files,
+        images: Vec::new(),
         created_at_ms,
         parent_bubble_id: None,
     })
@@ -1824,6 +1841,7 @@ fn decode_l3_bubble_blob(bid: &str, v: &serde_json::Value) -> Option<Bubble> {
         text,
         tool_calls,
         files,
+        images: Vec::new(),
         created_at_ms,
         parent_bubble_id: None,
     })
@@ -1963,12 +1981,24 @@ fn merge_into(by_id: &mut std::collections::HashMap<String, Bubble>, incoming: B
     if !incoming.files.is_empty() {
         existing.files = incoming.files;
     }
+    if !incoming.images.is_empty() {
+        existing.images = incoming.images;
+    }
 }
 
 /// Strip wrapper tags (`<user_query>…</user_query>`, `<timestamp>…</timestamp>`)
-/// from a user bubble but **keep** all lines and newlines (full-text variant).
-fn clean_user_text(text: &str) -> String {
+/// and leading CLI `[Image]` placeholders from a user bubble.
+pub(crate) fn clean_user_text(text: &str) -> String {
     let mut s = text.trim().to_string();
+    loop {
+        let line = s.lines().next().unwrap_or("").trim();
+        if line == "[Image]" || is_cli_image_placeholder_line(line) {
+            s = s.lines().skip(1).collect::<Vec<_>>().join("\n");
+            s = s.trim().to_string();
+            continue;
+        }
+        break;
+    }
     if s.starts_with("<timestamp>") {
         if let Some(idx) = s.find("</timestamp>") {
             s = s[idx + "</timestamp>".len()..].trim().to_string();
@@ -1983,6 +2013,11 @@ fn clean_user_text(text: &str) -> String {
         s = s[..s.len() - close.len()].to_string();
     }
     s.trim().to_string()
+}
+
+fn is_cli_image_placeholder_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("[Image #") && t.ends_with(']') && t.len() > "[Image #]".len()
 }
 
 // ── Full-content index snippet ──────────────────────────────
@@ -2171,6 +2206,18 @@ mod tests {
         let p = write_tmp("timestamp", body);
         let (preview, _files) = read_jsonl_preview(&p);
         assert_eq!(preview, "real q");
+    }
+
+    /// CLI image placeholder + timestamp + user_query envelope → plain user text.
+    #[test]
+    fn clean_user_text_strips_image_timestamp_and_user_query() {
+        let raw = "[Image]\n<timestamp>Sunday, Jul 5, 2026, 11:02 AM (UTC+8)</timestamp>\n<user_query>\n[Image #1] 分析以下问题\n1. 为什么变丑\n</user_query>";
+        let cleaned = clean_user_text(raw);
+        assert!(!cleaned.contains("<user_query>"));
+        assert!(!cleaned.contains("<timestamp>"));
+        assert!(!cleaned.starts_with("[Image]\n"));
+        assert!(cleaned.contains("分析以下问题"));
+        assert!(cleaned.contains("为什么变丑"));
     }
 
     /// Returns empty (no user line at all) → UI falls back to "Untitled · …".
@@ -2907,6 +2954,7 @@ mod tests {
                 text: "1".into(),
                 tool_calls: vec![],
                 files: vec![],
+                images: vec![],
                 created_at_ms: 0,
                 parent_bubble_id: None,
             },
@@ -2916,6 +2964,7 @@ mod tests {
                 text: "2".into(),
                 tool_calls: vec![],
                 files: vec![],
+                images: vec![],
                 created_at_ms: 1000,
                 parent_bubble_id: None,
             },
@@ -2925,6 +2974,7 @@ mod tests {
                 text: "3".into(),
                 tool_calls: vec![],
                 files: vec![],
+                images: vec![],
                 created_at_ms: 0,
                 parent_bubble_id: None,
             },
@@ -2942,6 +2992,7 @@ mod tests {
             text: "late".into(),
             tool_calls: vec![],
             files: vec![],
+            images: vec![],
             created_at_ms: 2000,
             parent_bubble_id: None,
         }];
@@ -2951,6 +3002,7 @@ mod tests {
             text: "early".into(),
             tool_calls: vec![],
             files: vec![],
+            images: vec![],
             created_at_ms: 0,
             parent_bubble_id: None,
         }];
@@ -2975,6 +3027,7 @@ mod tests {
                 input: None,
             }],
             files: vec!["a.rs".into()],
+            images: vec![],
             created_at_ms: 1000,
             parent_bubble_id: None,
         };
@@ -2985,6 +3038,7 @@ mod tests {
             text: String::new(), // empty → must not overwrite
             tool_calls: Vec::new(),
             files: Vec::new(),
+            images: Vec::new(),
             created_at_ms: 0, // 0 → must not overwrite
             parent_bubble_id: None,
         };
@@ -3006,6 +3060,7 @@ mod tests {
             text: "from jsonl".to_string(),
             tool_calls: Vec::new(),
             files: Vec::new(),
+            images: Vec::new(),
             created_at_ms: 500,
             parent_bubble_id: None,
         }];
@@ -3024,6 +3079,7 @@ mod tests {
             text: "from jsonl".to_string(),
             tool_calls: Vec::new(),
             files: Vec::new(),
+            images: Vec::new(),
             created_at_ms: 0,
             parent_bubble_id: None,
         }];
@@ -3033,6 +3089,7 @@ mod tests {
             text: "from desktop".to_string(),
             tool_calls: Vec::new(),
             files: Vec::new(),
+            images: Vec::new(),
             created_at_ms: 1000,
             parent_bubble_id: None,
         }];
@@ -3052,6 +3109,7 @@ mod tests {
                 text: "third".into(),
                 tool_calls: vec![],
                 files: vec![],
+                images: vec![],
                 created_at_ms: 3000,
                 parent_bubble_id: None,
             },
@@ -3061,6 +3119,7 @@ mod tests {
                 text: "first".into(),
                 tool_calls: vec![],
                 files: vec![],
+                images: vec![],
                 created_at_ms: 1000,
                 parent_bubble_id: None,
             },
@@ -3070,6 +3129,7 @@ mod tests {
                 text: "second".into(),
                 tool_calls: vec![],
                 files: vec![],
+                images: vec![],
                 created_at_ms: 2000,
                 parent_bubble_id: None,
             },

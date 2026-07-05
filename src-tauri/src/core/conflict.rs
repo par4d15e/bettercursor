@@ -142,6 +142,7 @@ mod tests {
             text: text.into(),
             tool_calls: vec![],
             files: vec![],
+            images: vec![],
             created_at_ms: ts,
             parent_bubble_id: None,
         }

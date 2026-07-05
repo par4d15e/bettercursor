@@ -93,13 +93,32 @@
 **关键设计约束** (写后续 v0.3+ 模块时必须兼容):
 - **单 session inline 写**: 一次按钮触发, 单 session 补层, **不**走 outbox, **不**走 daemon. (用户拍板: "不要在应用内生成脚本".)
 - **补层 (单向补齐) 语义**: 只补缺失的层; 不合并内容. 不动已存在的 blob.
-- **硬锁策略**: `super::process::cursor_processes_running()` 命中 → `skipped=["cursor_running(...)"]` 拒绝.
+- **硬锁策略**: 按层细分 (#103): L3 写仅 `layer3_write_blocked()` (Desktop + cursor-server); L2 写仅 `layer2_write_blocked(uuid, cwd)` (该会话 `store.db` 被持有). `cursor-agent-worker` 不挡 L3.
 - **写前备份**: 写前 `.backup_<ts>`, 写后 `PRAGMA integrity_check` + `wal_checkpoint(TRUNCATE)`.
 - **L2 root 修复**: `fix_latest_root` (sync.rs:612) 把 `meta[0].latestRootBlobId` 写回, 让 `--resume` 工作.
 
 **遗留 / 已知限制**:
 - L2 写入路径退化: 当 Layer 3 conversationState base64 解析失败时, 退化到从 Layer 1 JSONL 合成 bubble blobs; tool_use 结构丢失 (因为 Layer 1 没有).
-- L3 写入路径不读 Layer 2 conversationState: 气泡按 `inject.rs::compose_bubble_blobs` 模板填, **是"让 Sidebar 看见"而不是"完美恢复对话"**.
+- L3 写入路径: 从 Layer 1 合成 `bubbleId` + `composerData`; 若 Layer 2 `store.db` 存在且 `latestRootBlobId` 有效, 复制 blob DAG 到 `agentKv:*` 并填充 `conversationState` (#104), 否则仅 Sidebar 可见、打开会 loading.
+- **v0.3.4 (#2/#3)**: `write_layer3` 在写 `bubbleId` 前调用 `layer2_messages::enrich_bubbles_from_layer2` — 用 L2 AI SDK DAG 还原 assistant 完整文本 (替代 L1 `[REDACTED]`)、tool-call 元数据, 以及 user 图片 (`images[]` data URL). 已注入但内容仍为 stub 的会话会触发重补 (与 CLI 信封检测并列).
+
+#### v0.3.4 (2026-07-05) — L2→L3 bubble 内容还原 + 补 L3 操作规范
+
+| 能力 | 实现位置 |
+|------|---------|
+| L2 DAG 遍历 + AI SDK 解析 | `src-tauri/src/core/layer2_messages.rs` |
+| L3 inject 前 bubble 富化 | `sync::write_layer3` → `enrich_bubbles_from_layer2` |
+| user `images[]` + assistant `toolFormerData` 提示 | `inject::compose_bubble_blobs` |
+| 重补检测 (`[REDACTED]` / 缺图 / CLI 信封) | `sync::layer3_has_loadable_composer` |
+
+**补 Layer 3 铁律** (写 `state.vscdb` 前必读):
+
+1. **完全退出 Cursor Desktop** (含所有窗口; `cursor-server` / `--type=` 子进程也算). Cursor 开着写入会损坏 `state.vscdb` WAL, 严重时需从 `state.vscdb.backup_*` 恢复.
+2. 在 bettercursor 打开目标 CLI 会话 → 点 **「补 Layer 2 / Layer 3」** (或 SessionDetail sync banner). `cursor-agent-worker` 不挡 L3; 仅 Desktop 挡.
+3. **重启 Cursor** → Sidebar 应可见且可打开; 若用户消息仍带 `<user_query>` / assistant 仍为 `[REDACTED]` / 图片缺失 → 确认已退出后 **再补一次** (v0.3.4 会自动检测并 rewrite).
+4. **不要** 在 Cursor 运行时手动编辑 `~/.config/Cursor/User/globalStorage/state.vscdb`.
+
+stub 会话可反复重注入; `bubbleId` 稳定 id 不变, 只更新 JSON 内容 + `conversationState` hydration.
 
 #### v0.2.1 (2026-07-04) — 修 orphan + 删除 session
 
@@ -1194,10 +1213,10 @@ pub fn auto_merge(a: &[Bubble], b: &[Bubble]) -> Option<Vec<Bubble>>;
 | 层 | 内容 | 并发模型 | 锁源 | Sync 写影响 |
 |----|------|----------|------|------------|
 | **L1** | JSONL (`agent-transcripts/<uuid>/*.jsonl`) | text append-only, **无 formal lock** | none | sync 通常**不**写 L1 (它是 CLI/Desktop 自己在写). 偶尔 v0.2.1 `delete_session` 走 `remove_dir_all`, 不撞中间. |
-| **L2** | SQLite `store.db` (in `~/.cursor/chats/<md5>/<uuid>/`) | SQLite WAL, **整文件 single-writer** | `cursor-agent` (只在它跑的时候) | 检测到 `cursor-agent` PID → 拒绝写. 用户关掉重试. |
-| **L3** | SQLite `state.vscdb` (在 `~/.config/Cursor/User/globalStorage/`) | SQLite WAL, **多 Cursor 进程 + cursor-server long-linger** | Cursor Desktop 主进程 + 多个 helper (fileWatcher / extensionHost / ptyHost / sandbox) + **cursor-server (默认 5min idle auto-shutdown)** | 被动等 idle + 主动 SIGTERM cursor-server + re-detect → 写. |
+| **L2** | SQLite `store.db` (in `~/.cursor/chats/<md5>/<uuid>/`) | SQLite WAL, **per-session file** | `cursor-agent` 持有**该 uuid** 的 store.db 时 | `layer2_write_blocked(uuid, cwd)` — 其它 CLI 会话不挡 |
+| **L3** | SQLite `state.vscdb` (`globalStorage/`) | SQLite WAL, Desktop + cursor-server long-linger | Cursor Desktop 主进程 + helpers + **cursor-server** | `layer3_write_blocked()` — **不含** `cursor-agent` / worker; 被动等 idle + SIGTERM + staging bypass |
 
-> 单进程 L3 + cursor-server 一起构成 cursor 总进程组: `pgrep -af "cursor-server|cursor-agent|Cursor --type=|/Cursor --updated|Cursor-bin"`.
+> L3 检测: `pgrep` 匹配 `Cursor --type=` / `cursor-server` 等. L2 检测: 非 worker 的 `cursor-agent` 且 `/proc/<pid>/fd` 持有该 uuid 的 `store.db`.
 
 ### 7.2 关键差异: L2 vs L3 的 lock 释放速度
 

@@ -135,6 +135,7 @@ pub fn parse_layer1_bubbles(uuid: &str, body: &str) -> Vec<super::canonical::Bub
             text: trimmed_text,
             tool_calls: Vec::new(),
             files: Vec::new(),
+            images: Vec::new(),
             created_at_ms,
             parent_bubble_id: None,
         });
@@ -276,21 +277,190 @@ pub fn scan_tracked_git_repos(cwd: &str) -> Vec<serde_json::Value> {
 // ── Composition (schema reverse-engineered from
 //    c1ea7999-005a-434f-bcf4-da8ddd9ff066) ─────────────────────
 
+/// Desktop can open a composer only when `conversationState` and display
+/// timestamps are present (v3 storage). Stub injects that only filled
+/// `conversationState` still spin on "Loading chat".
+pub(crate) fn composer_is_desktop_loadable(v: &serde_json::Value) -> bool {
+    let cs_ok = v
+        .get("conversationState")
+        .and_then(|x| x.as_str())
+        .map(|s| s.len() > 2)
+        .unwrap_or(false);
+    let last_updated = v.get("lastUpdatedAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let headers_have_ts = v
+        .get("fullConversationHeadersOnly")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.is_empty()
+                || arr.iter().any(|h| {
+                    h.get("createdAt")
+                        .and_then(|x| x.as_str())
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
+                })
+        })
+        .unwrap_or(true);
+    cs_ok && last_updated > 0 && headers_have_ts && composer_context_is_valid(v) && composer_agent_fields_valid(v)
+}
+
+fn composer_agent_fields_valid(v: &serde_json::Value) -> bool {
+    for key in [
+        "conversationMap",
+        "codeBlockData",
+        "usageData",
+        "originalFileStates",
+    ] {
+        if !v.get(key).map(|x| x.is_object()).unwrap_or(false) {
+            return false;
+        }
+    }
+    v.get("capabilities").map(|x| x.is_array()).unwrap_or(false)
+        && v.get("agentBackend").and_then(|x| x.as_str()).is_some()
+}
+
+/// Desktop `loadFromStorage` dereferences `context.fileSelections` unconditionally.
+fn composer_context_is_valid(v: &serde_json::Value) -> bool {
+    v.get("context")
+        .and_then(|c| c.get("fileSelections"))
+        .map(|x| x.is_array())
+        .unwrap_or(false)
+}
+
+/// Empty composer `context` matching Desktop v3 schema (c1ea7999 snapshot).
+pub fn default_composer_context() -> serde_json::Value {
+    let mentions = serde_json::json!({
+        "composers": {},
+        "selectedCommits": {},
+        "selectedPullRequests": {},
+        "gitDiff": [],
+        "gitDiffFromBranchToMain": [],
+        "selectedImages": {},
+        "selectedDocuments": {},
+        "selectedVideos": {},
+        "folderSelections": {},
+        "fileSelections": {},
+        "terminalFiles": {},
+        "selections": {},
+        "terminalSelections": {},
+        "selectedDocs": {},
+        "externalLinks": {},
+        "diffHistory": [],
+        "cursorRules": {},
+        "cursorCommands": {},
+        "uiElementSelections": [],
+        "consoleLogs": [],
+        "ideEditorsState": [],
+        "gitPRDiffSelections": {},
+        "subagentSelections": {},
+        "browserSelections": {}
+    });
+    serde_json::json!({
+        "composers": [],
+        "selectedCommits": [],
+        "selectedPullRequests": [],
+        "selectedImages": [],
+        "selectedDocuments": [],
+        "selectedVideos": [],
+        "folderSelections": [],
+        "fileSelections": [],
+        "selections": [],
+        "terminalSelections": [],
+        "selectedDocs": [],
+        "externalLinks": [],
+        "cursorRules": [],
+        "cursorCommands": [],
+        "gitPRDiffSelections": [],
+        "subagentSelections": [],
+        "browserSelections": [],
+        "extraContext": [],
+        "mentions": mentions,
+    })
+}
+
+/// Agent-mode composer fields Desktop dereferences via `Object.entries` during load.
+pub fn default_agent_composer_fields() -> serde_json::Value {
+    serde_json::json!({
+        "conversationMap": {},
+        "codeBlockData": {},
+        "usageData": {},
+        "originalFileStates": {},
+        "capabilities": [
+            {"type": 15, "data": {"bubbleDataMap": "{}"}},
+            {"type": 19, "data": {}},
+            {"type": 33, "data": {}},
+            {"type": 32, "data": {}},
+            {"type": 23, "data": {}},
+            {"type": 16, "data": {}},
+            {"type": 24, "data": {}}
+        ],
+        "capabilityContexts": [],
+        "todos": [],
+        "queueItems": [],
+        "isAgentic": true,
+        "agentBackend": "cursor-agent",
+        "isNAL": true,
+        "isQueueExpanded": true,
+        "promptContextUsageTree": {"schemaVersion": 1, "nodes": []},
+        "promptTokenBreakdown": {
+            "totalUsedTokens": 0,
+            "maxTokens": 200000,
+            "categories": []
+        },
+        "subComposerIds": [],
+        "subagentComposerIds": [],
+        "allAttachedFileCodeChunksUris": [],
+        "newlyCreatedFiles": [],
+        "newlyCreatedFolders": [],
+    })
+}
+
+/// Merge [`default_agent_composer_fields`] + [`default_composer_context`] into `composer`.
+pub fn ensure_desktop_loadable_composer(composer: &mut serde_json::Value) {
+    let Some(obj) = composer.as_object_mut() else {
+        return;
+    };
+    let defaults_ctx = default_composer_context();
+    match obj.get_mut("context") {
+        Some(existing) if existing.is_object() => {
+            if let (Some(ec), Some(def)) = (existing.as_object_mut(), defaults_ctx.as_object()) {
+                for (k, v) in def {
+                    ec.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        _ => {
+            obj.insert("context".into(), defaults_ctx);
+        }
+    }
+    if let Some(agent) = default_agent_composer_fields().as_object() {
+        for (k, v) in agent {
+            obj.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+}
+
 pub fn compose_composer_data(
     uuid: &str,
     name: &str,
-    _created_at_ms: i64,
+    created_at_ms: i64,
     last_updated_ms: i64,
     workspace_identifier: &Option<serde_json::Value>,
     _project_slug: &str,
     tracked_git_repos: &[serde_json::Value],
     bubbles: &[LayerBubble],
+    session_created_ms: i64,
 ) -> serde_json::Value {
+    let session_base = if session_created_ms > 0 {
+        session_created_ms
+    } else {
+        created_at_ms
+    };
     let headers_only: Vec<serde_json::Value> = bubbles
         .iter()
         .enumerate()
         .map(|(idx, b)| {
-            let bubble_id = deterministic_bubble_id(uuid, &b.role, b.created_at_ms, idx);
+            let bubble_id = bubble_id_for_layer3(uuid, b, idx);
+            let display_ms = bubble_display_timestamp(session_base, idx, b.created_at_ms);
             let (bubble_type, grouping) = match b.role.as_str() {
                 "user" => (
                     1,
@@ -302,7 +472,7 @@ pub fn compose_composer_data(
                 ),
                 _ => (2, serde_json::json!({})),
             };
-            let created_at_iso = ms_to_iso(b.created_at_ms);
+            let created_at_iso = ms_to_iso(display_ms);
             serde_json::json!({
                 "bubbleId": bubble_id,
                 "type": bubble_type,
@@ -312,13 +482,14 @@ pub fn compose_composer_data(
         })
         .collect();
 
-    serde_json::json!({
+    let mut root = serde_json::json!({
         "_v": 16,
         "composerId": uuid,
         "richText": "",
         "hasLoaded": true,
         "text": "",
         "name": name,
+        "context": default_composer_context(),
         "contextUsagePercent": 0.0,
         "lastUpdatedAt": last_updated_ms,
         "unifiedMode": "agent",
@@ -339,7 +510,26 @@ pub fn compose_composer_data(
         "trackedGitRepos": tracked_git_repos,
         "workspaceIdentifier": workspace_identifier.clone().unwrap_or(serde_json::Value::Null),
         "fullConversationHeadersOnly": headers_only,
-    })
+        "status": "completed",
+        "generatingBubbleIds": [],
+        "isContinuationInProgress": false,
+        "modelConfig": {
+            "modelName": "default",
+            "maxMode": false,
+            "selectedModels": [{"modelId": "default", "parameters": []}],
+        },
+    });
+    if created_at_ms > 0 {
+        if let Some(obj) = root.as_object_mut() {
+            obj.insert("createdAt".into(), serde_json::json!(created_at_ms));
+            obj.insert(
+                "conversationCheckpointLastUpdatedAt".into(),
+                serde_json::json!(last_updated_ms.max(created_at_ms)),
+            );
+        }
+    }
+    ensure_desktop_loadable_composer(&mut root);
+    root
 }
 
 pub fn compose_composer_header_entry(
@@ -391,50 +581,126 @@ pub fn compose_composer_header_entry(
 pub fn compose_bubble_blobs(
     uuid: &str,
     bubbles: &[LayerBubble],
+    session_created_ms: i64,
 ) -> Vec<(String, serde_json::Value)> {
     let mut out = Vec::new();
     for (idx, b) in bubbles.iter().enumerate() {
-        let bubble_id = deterministic_bubble_id(uuid, &b.role, b.created_at_ms, idx);
+        let bubble_id = bubble_id_for_layer3(uuid, b, idx);
+        let display_ms = bubble_display_timestamp(session_created_ms, idx, b.created_at_ms);
+        let created_at_iso = ms_to_iso(display_ms);
         let bubble_type = match b.role.as_str() {
             "user" => 1,
             _ => 2,
         };
         let body = match b.role.as_str() {
-            "user" => serde_json::json!({
-                "_v": 3,
-                "type": bubble_type,
-                "text": b.text,
-                "approximateLintErrors": [],
-                "lints": [],
-                "codebaseContextChunks": [],
-                "commits": [],
-                "pullRequests": [],
-                "attachedCodeChunks": [],
-                "assistantSuggestedDiffs": [],
-                "gitDiffs": [],
-                "interpreterResults": [],
-                "toolResults": [],
-            }),
-            _ => serde_json::json!({
-                "_v": 3,
-                "type": bubble_type,
-                "text": b.text,
-                "isAgentic": true,
-                "approximateLintErrors": [],
-                "lints": [],
-                "codebaseContextChunks": [],
-                "commits": [],
-                "pullRequests": [],
-                "attachedCodeChunks": [],
-                "assistantSuggestedDiffs": [],
-                "gitDiffs": [],
-                "interpreterResults": [],
-                "toolResults": [],
-            }),
+            "user" => {
+                let display_text = super::canonical::clean_user_text(&b.text);
+                let images_json = bubble_images_json(&b.images);
+                serde_json::json!({
+                    "_v": 3,
+                    "type": bubble_type,
+                    "bubbleId": bubble_id,
+                    "text": display_text,
+                    "richText": minimal_rich_text(&display_text),
+                    "createdAt": created_at_iso,
+                    "images": images_json,
+                    "approximateLintErrors": [],
+                    "lints": [],
+                    "codebaseContextChunks": [],
+                    "commits": [],
+                    "pullRequests": [],
+                    "attachedCodeChunks": [],
+                    "assistantSuggestedDiffs": [],
+                    "gitDiffs": [],
+                    "interpreterResults": [],
+                    "toolResults": [],
+                })
+            }
+            _ => {
+                let mut obj = serde_json::json!({
+                    "_v": 3,
+                    "type": bubble_type,
+                    "bubbleId": bubble_id,
+                    "text": b.text,
+                    "isAgentic": true,
+                    "createdAt": created_at_iso,
+                    "approximateLintErrors": [],
+                    "lints": [],
+                    "codebaseContextChunks": [],
+                    "commits": [],
+                    "pullRequests": [],
+                    "attachedCodeChunks": [],
+                    "assistantSuggestedDiffs": [],
+                    "gitDiffs": [],
+                    "interpreterResults": [],
+                    "toolResults": [],
+                });
+                if let Some(tool) = first_tool_former_data(&b.tool_calls) {
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert("toolFormerData".into(), tool);
+                    }
+                }
+                obj
+            }
         };
         out.push((bubble_id, body));
     }
     out
+}
+
+/// Desktop user bubbles carry `images[]` with data-URL `url` fields.
+fn bubble_images_json(images: &[super::canonical::BubbleImage]) -> Vec<serde_json::Value> {
+    images
+        .iter()
+        .map(|img| {
+            serde_json::json!({
+                "url": format!("data:{};base64,{}", img.mime_type, img.data_base64),
+                "dimension": { "width": 0, "height": 0 },
+            })
+        })
+        .collect()
+}
+
+/// Minimal `toolFormerData` for the first L2 tool-call (Desktop render hint).
+fn first_tool_former_data(tool_calls: &[super::canonical::BubbleToolUse]) -> Option<serde_json::Value> {
+    let tc = tool_calls.first()?;
+    let params = tc
+        .input
+        .as_ref()
+        .and_then(|v| serde_json::to_string(v).ok())
+        .unwrap_or_else(|| "{}".to_string());
+    Some(serde_json::json!({
+        "name": tc.name,
+        "params": params,
+        "status": "completed",
+    }))
+}
+
+/// Stable bubble id for inject — keep `created_at_ms=0` in the hash so
+/// re-inject does not rotate ids when we only add display timestamps.
+fn bubble_id_for_layer3(uuid: &str, b: &LayerBubble, idx: usize) -> String {
+    if !b.id.is_empty() {
+        return b.id.clone();
+    }
+    deterministic_bubble_id(uuid, &b.role, 0, idx)
+}
+
+fn bubble_display_timestamp(session_base_ms: i64, idx: usize, bubble_ms: i64) -> i64 {
+    if bubble_ms > 0 {
+        return bubble_ms;
+    }
+    if session_base_ms > 0 {
+        return session_base_ms + idx as i64;
+    }
+    0
+}
+
+/// Minimal Lexical `richText` JSON string for user bubbles (Desktop v3).
+fn minimal_rich_text(text: &str) -> String {
+    let escaped = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"{{"root":{{"children":[{{"children":[{{"detail":0,"format":0,"mode":"normal","style":"","text":{escaped},"type":"text","version":1}}],"direction":"ltr","format":"","indent":0,"type":"paragraph","version":1}}],"direction":"ltr","format":"","indent":0,"type":"root","version":1}}}}"#
+    )
 }
 
 pub fn merge_composer_headers(
@@ -584,6 +850,34 @@ mod tests {
         let a = deterministic_bubble_id("u1", "assistant", 0, 0);
         let b = deterministic_bubble_id("u1", "assistant", 0, 1);
         assert_ne!(a, b, "ordinal tie-breaker failed");
+    }
+
+    #[test]
+    fn default_composer_context_has_file_selections() {
+        let ctx = default_composer_context();
+        assert!(ctx.get("fileSelections").and_then(|x| x.as_array()).is_some());
+        assert!(ctx.get("mentions").is_some());
+    }
+
+    #[test]
+    fn default_agent_composer_fields_has_object_maps() {
+        let agent = default_agent_composer_fields();
+        assert!(agent.get("conversationMap").map(|x| x.is_object()).unwrap_or(false));
+        assert!(agent.get("codeBlockData").map(|x| x.is_object()).unwrap_or(false));
+        assert!(agent.get("capabilities").map(|x| x.is_array()).unwrap_or(false));
+    }
+
+    #[test]
+    fn ensure_desktop_loadable_composer_fills_missing_agent_fields() {
+        let mut composer = serde_json::json!({
+            "composerId": "x",
+            "context": {"fileSelections": []},
+            "conversationState": "~abc",
+            "lastUpdatedAt": 1,
+            "fullConversationHeadersOnly": [{"bubbleId":"b","createdAt":"t","type":1}]
+        });
+        ensure_desktop_loadable_composer(&mut composer);
+        assert!(composer_is_desktop_loadable(&composer));
     }
 
     #[test]

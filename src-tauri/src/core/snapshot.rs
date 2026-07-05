@@ -158,6 +158,7 @@ impl Bubble {
                 })
                 .collect(),
             files: b.files.clone(),
+            images: Vec::new(),
             created_at_ms: b.ts_ms,
             parent_bubble_id: b.parent_bubble_id.clone(),
         }
@@ -239,6 +240,7 @@ mod tests {
             text: "hello".into(),
             tool_calls: vec![],
             files: vec![],
+            images: vec![],
             created_at_ms: 1000,
             parent_bubble_id: None,
         }];
@@ -258,6 +260,7 @@ mod tests {
             text: "x".into(),
             tool_calls: vec![],
             files: vec![],
+            images: vec![],
             created_at_ms: 42,
             parent_bubble_id: None,
         }];

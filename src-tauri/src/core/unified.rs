@@ -514,6 +514,7 @@ impl UnifiedDb {
                     .as_ref()
                     .and_then(|j| serde_json::from_str(j).ok())
                     .unwrap_or_default(),
+                images: Vec::new(),
                 created_at_ms: r.ts_ms,
                 parent_bubble_id: r.parent_bubble_id.clone(),
             })
@@ -804,6 +805,7 @@ mod tests {
                 input: Some(serde_json::json!({"pattern": "*"})),
             }],
             files: vec!["main.rs".into()],
+            images: vec![],
             created_at_ms: ts,
             parent_bubble_id: None,
         }

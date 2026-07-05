@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.3-success)
+![status](https://img.shields.io/badge/status-v0.3.4-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -28,7 +28,19 @@ Design goals:
 
 ## Feature status
 
-### v0.3.2 (✅ current, shipped 2026-07-05)
+### v0.3.4 (✅ current, shipped 2026-07-05)
+
+- [x] **L2→L3 bubble enrichment** — `layer2_messages` walks the CLI
+      `store.db` DAG and replaces L1 `[REDACTED]` stubs with full
+      assistant text + tool-call metadata before `bubbleId` inject
+- [x] **User image attachments** — L2 `image` blobs decode to
+      `images[]` data URLs on user `bubbleId` rows (Desktop replay)
+- [x] **Re-inject detection** — sessions with CLI envelopes, redacted
+      assistant text, or missing images trigger Layer 3 rewrite
+- [x] **补 Layer 3 playbook** — see [SYNC_DESIGN §0.5](SYNC_DESIGN.md)
+      (quit Cursor → sync in bettercursor → restart Cursor)
+
+### v0.3.2 (2026-07-05)
 
 - [x] **`<SettingsDialog>`** — gear icon in the sidebar header; consolidates
       language switch, cross-device sync (`<SyncPeersPanel>`), and conflict
@@ -271,6 +283,14 @@ Session reads happen in **three layers** (see [SYNC_DESIGN.md §2.5 Q6](SYNC_DES
 | **L1** | JSONL | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` | Transcript; CLI + Desktop both write; **same uuid as L2 when CLI session is valid** |
 | **L2** | SQLite | `~/.cursor/chats/<md5(cwd)>/<uuid>/store.db` | **CLI only** (`cursor-agent`); Sidebar resume list on CLI |
 | **L3** | SQLite KV | `~/.config/Cursor/User/globalStorage/state.vscdb` (`cursorDiskKV`: `composerData:*`, `bubbleId:*`; plus per-workspace `workspaceStorage/*/state.vscdb`) | **Desktop** composer index + bubble bodies |
+
+### Injecting Layer 3 (CLI → Desktop Sidebar)
+
+**Always quit Cursor Desktop first** — writing `state.vscdb` while Cursor
+is running can corrupt the WAL. Then in bettercursor open the CLI session
+and run **sync Layer 2/3**; restart Cursor. v0.3.4+ rewrites stub bubbles
+when it detects CLI envelopes, `[REDACTED]` assistant text, or missing
+images that exist in Layer 2. Full playbook: [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
 
 Rust side (`src-tauri/src/core/`) handles:
 1. **`paths.rs`** — parse cursor user dir / chat_root MD5 etc.

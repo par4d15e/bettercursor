@@ -15,7 +15,8 @@
 //! until the missing layer is filled. This module writes the missing
 //! layers for a single session atomically:
 //!
-//!   1. Bail if Cursor / cursor-agent is still running (#84 race).
+//!   1. Per-layer lock check (#84 / #103): L3 only blocks on Desktop /
+//!      cursor-server; L2 only when this session's store.db is held.
 //!   2. Determine which layers are missing.
 //!   3. If Layer 2 is missing: synthesize `store.db` (blobs + meta[0])
 //!      from the Layer 3 conversation state + Layer 1 transcript.
@@ -47,7 +48,8 @@ use std::time::Instant;
 use super::canonical::{self};
 use super::inject::{
     self, compose_bubble_blobs, compose_composer_data, compose_composer_header_entry,
-    merge_composer_headers, parse_layer1_bubbles, scan_tracked_git_repos,
+    composer_is_desktop_loadable, ensure_desktop_loadable_composer, merge_composer_headers,
+    scan_tracked_git_repos,
     truncate_to_title_pub, Mutation,
 };
 use super::inject::build_workspace_identifier;
@@ -65,7 +67,7 @@ pub struct SyncReport {
     /// True iff we wrote/updated Layer 3 state.vscdb.
     pub wrote_layer3: bool,
     /// Non-fatal skip reasons. Empty when both writes succeeded.
-    /// Examples: "cursor_running", "l2_already_present",
+    /// Examples: "l3_locked(...)", "l2_locked(...)", "already_synced",
     /// "l3_already_present", "no_source_data", "no_cwd".
     pub skipped: Vec<String>,
     /// When L2 was written, the root blob id we patched into
@@ -92,26 +94,14 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
         duration_ms: 0,
     };
 
-    // ── 1. Lock check ───────────────────────────────────────
-    let running = super::process::cursor_processes_running();
-    if !running.is_empty() {
-        report.skipped.push(format!(
-            "cursor_running({} proc, e.g. {})",
-            running.len(),
-            running[0]
-        ));
-        report.duration_ms = started.elapsed().as_millis() as u64;
-        return Ok(report);
-    }
-
-    // ── 2. Discover what we already have ────────────────────
+    // ── 1. Discover what we already have ────────────────────
     let (layer1_jsonl, bubbles_from_layer1) = read_layer1(uuid);
     let layer3_data = read_layer3_composer_data(uuid);
     let layer2_path = paths::store_db_for(cwd, uuid);
     let layer3_path = paths::global_db_path().ok();
 
     let need_l2 = !layer2_path.exists();
-    let need_l3 = layer3_data.is_none();
+    let need_l3 = !layer3_has_loadable_composer(uuid, cwd);
 
     if !need_l2 && !need_l3 {
         report.skipped.push("already_synced".to_string());
@@ -126,27 +116,39 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
         return Ok(report);
     }
 
-    // ── 3. Write L2 if missing ──────────────────────────────
+    // ── 2. Write L2 if missing (session-scoped lock) ────────
     if need_l2 {
-        match write_layer2(uuid, cwd, &layer3_data, &bubbles_from_layer1) {
-            Ok(root) => {
-                report.wrote_layer2 = true;
-                report.root_blob_id = Some(root);
-            }
-            Err(e) => {
-                report.skipped.push(format!("l2_write_failed: {e}"));
+        let l2_blockers = super::process::layer2_write_blocked(uuid, cwd);
+        if !l2_blockers.is_empty() {
+            report
+                .skipped
+                .push(super::process::l2_lock_skip_reason(&l2_blockers));
+        } else {
+            match write_layer2(uuid, cwd, &layer3_data, &bubbles_from_layer1) {
+                Ok(root) => {
+                    report.wrote_layer2 = true;
+                    report.root_blob_id = Some(root);
+                }
+                Err(e) => {
+                    report.skipped.push(format!("l2_write_failed: {e}"));
+                }
             }
         }
     }
 
-    // ── 4. Write L3 if missing ──────────────────────────────
+    // ── 3. Write L3 if missing (Desktop / cursor-server lock) ─
     if need_l3 {
-        if let Some(l3_path) = layer3_path {
+        let l3_blockers = super::process::layer3_write_blocked();
+        if !l3_blockers.is_empty() {
+            report
+                .skipped
+                .push(super::process::l3_lock_skip_reason(&l3_blockers));
+        } else if let Some(l3_path) = layer3_path {
             match write_layer3(uuid, cwd, &bubbles_from_layer1) {
                 Ok(()) => report.wrote_layer3 = true,
                 Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
             }
-            let _ = l3_path; // referenced for clarity; write_layer3 reads it itself
+            let _ = l3_path;
         }
     }
 
@@ -190,17 +192,6 @@ pub fn apply_session_from_snapshot(
         duration_ms: 0,
     };
 
-    let running = super::process::cursor_processes_running();
-    if !running.is_empty() {
-        report.skipped.push(format!(
-            "cursor_running({} proc, e.g. {})",
-            running.len(),
-            running[0]
-        ));
-        report.duration_ms = started.elapsed().as_millis() as u64;
-        return Ok(report);
-    }
-
     if bubbles.is_empty() {
         report.skipped.push("no_bubbles_in_snapshot".to_string());
         report.duration_ms = started.elapsed().as_millis() as u64;
@@ -209,17 +200,31 @@ pub fn apply_session_from_snapshot(
 
     let cwd = project_path;
 
-    match write_layer2(uuid, cwd, &None, bubbles) {
-        Ok(root) => {
-            report.wrote_layer2 = true;
-            report.root_blob_id = Some(root);
+    let l2_blockers = super::process::layer2_write_blocked(uuid, cwd);
+    if l2_blockers.is_empty() {
+        match write_layer2(uuid, cwd, &None, bubbles) {
+            Ok(root) => {
+                report.wrote_layer2 = true;
+                report.root_blob_id = Some(root);
+            }
+            Err(e) => report.skipped.push(format!("l2_write_failed: {e}")),
         }
-        Err(e) => report.skipped.push(format!("l2_write_failed: {e}")),
+    } else {
+        report
+            .skipped
+            .push(super::process::l2_lock_skip_reason(&l2_blockers));
     }
 
-    match write_layer3(uuid, cwd, bubbles) {
-        Ok(()) => report.wrote_layer3 = true,
-        Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
+    let l3_blockers = super::process::layer3_write_blocked();
+    if l3_blockers.is_empty() {
+        match write_layer3(uuid, cwd, bubbles) {
+            Ok(()) => report.wrote_layer3 = true,
+            Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
+        }
+    } else {
+        report
+            .skipped
+            .push(super::process::l3_lock_skip_reason(&l3_blockers));
     }
 
     if let Ok(unified) = super::unified::UnifiedDb::open() {
@@ -246,11 +251,8 @@ fn read_layer1(uuid: &str) -> (Option<PathBuf>, Bubbles) {
     let Some(path) = paths::find_layer1_jsonl_for(uuid) else {
         return (None, Vec::new());
     };
-    let body = match std::fs::read_to_string(&path) {
-        Ok(b) => b,
-        Err(_) => return (Some(path), Vec::new()),
-    };
-    (Some(path), inject::parse_layer1_bubbles(uuid, &body))
+    let (bubbles, _, _) = canonical::read_layer1_bubbles_from_path(uuid, &path);
+    (Some(path), bubbles)
 }
 
 // ── Layer 3 read (composerData JSON) ─────────────────────────
@@ -331,6 +333,118 @@ fn read_layer3_composer_data(uuid: &str) -> Option<Layer3Data> {
         conversation_state_b64,
         bubble_blobs,
     })
+}
+
+/// True when global `composerData` is missing or is a bettercursor stub
+/// (headers + bubbleId rows but no `conversationState` → Sidebar spin).
+fn layer3_has_loadable_composer(uuid: &str, cwd: &str) -> bool {
+    let db_path = match paths::global_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return false,
+    };
+    let Ok(r) = storage::open_read(&db_path) else {
+        return false;
+    };
+    let key = format!("composerData:{uuid}");
+    let Ok(Some(v)) = r.get_json(&key, "cursorDiskKV") else {
+        return false;
+    };
+    composer_is_desktop_loadable(&v)
+        && !composer_user_bubbles_have_cli_envelope(uuid, &v)
+        && !composer_bubbles_need_layer2_refresh(uuid, cwd, &v)
+}
+
+/// True when injected bubbles still use L1 stubs while L2 has richer content.
+fn composer_bubbles_need_layer2_refresh(
+    uuid: &str,
+    cwd: &str,
+    composer: &serde_json::Value,
+) -> bool {
+    let headers = composer
+        .get("fullConversationHeadersOnly")
+        .and_then(|x| x.as_array());
+    let Some(headers) = headers else {
+        return false;
+    };
+    let db_path = match paths::global_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return false,
+    };
+    let Ok(r) = storage::open_read(&db_path) else {
+        return false;
+    };
+    let l1_bubbles: Vec<canonical::Bubble> = headers
+        .iter()
+        .filter_map(|h| {
+            let bid = h.get("bubbleId").and_then(|x| x.as_str())?;
+            let key = format!("bubbleId:{uuid}:{bid}");
+            let bv = r.get_json(&key, "cursorDiskKV").ok().flatten()?;
+            let typ = bv.get("type").and_then(|x| x.as_i64()).unwrap_or(0);
+            let role = match typ {
+                1 => "user",
+                2 => "assistant",
+                _ => return None,
+            };
+            let text = bv.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let images = bv
+                .get("images")
+                .and_then(|x| x.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            Some(canonical::Bubble {
+                id: bid.to_string(),
+                role: role.to_string(),
+                text,
+                tool_calls: Vec::new(),
+                files: Vec::new(),
+                images: if images {
+                    vec![canonical::BubbleImage {
+                        mime_type: "image/jpeg".into(),
+                        data_base64: "x".into(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+                created_at_ms: 0,
+                parent_bubble_id: None,
+            })
+        })
+        .collect();
+    super::layer2_messages::layer2_has_richer_turns(uuid, cwd, &l1_bubbles)
+}
+
+/// True when injected user `bubbleId` rows still contain CLI envelope tags.
+fn composer_user_bubbles_have_cli_envelope(uuid: &str, composer: &serde_json::Value) -> bool {
+    let headers = composer
+        .get("fullConversationHeadersOnly")
+        .and_then(|x| x.as_array());
+    let Some(headers) = headers else {
+        return false;
+    };
+    let db_path = match paths::global_db_path() {
+        Ok(p) if p.exists() => p,
+        _ => return false,
+    };
+    let Ok(r) = storage::open_read(&db_path) else {
+        return false;
+    };
+    for h in headers {
+        if h.get("type").and_then(|x| x.as_i64()) != Some(1) {
+            continue;
+        }
+        let Some(bid) = h.get("bubbleId").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let key = format!("bubbleId:{uuid}:{bid}");
+        let Ok(Some(bv)) = r.get_json(&key, "cursorDiskKV") else {
+            continue;
+        };
+        let text = bv.get("text").and_then(|x| x.as_str()).unwrap_or("");
+        if text.contains("<user_query>") || text.contains("<timestamp>") || text.starts_with("[Image]\n") {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Layer 2 write (store.db) ─────────────────────────────────
@@ -879,30 +993,27 @@ pub struct FixOrphansReport {
 /// Layer 2 is deleted (Layer 1 path requires the slug to disambiguate
 /// which `<project>/agent-transcripts/` directory to remove).
 ///
-/// Pre-flight: refuses to proceed if Cursor / cursor-agent is
-/// running — same `#84` lock as `sync_session`.
+/// Pre-flight: refuses L2 removal when this session's `store.db` is held
+/// by a live `cursor-agent`. L1 transcript delete proceeds independently.
 pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Result<DeleteReport> {
     use std::fs;
 
-    let running = super::process::cursor_processes_running();
-    if !running.is_empty() {
-        return Ok(DeleteReport {
-            uuid: uuid.to_string(),
-            removed_l1: false,
-            removed_l2: false,
-            skipped_l1: None,
-            skipped_l2: None,
-            cursor_running: true,
-            running_processes: running,
-        });
-    }
+    let l2_blockers = if cwd.trim().is_empty() {
+        Vec::new()
+    } else {
+        super::process::layer2_write_blocked(uuid, cwd)
+    };
+    let l2_locked = !l2_blockers.is_empty();
 
     // ── Layer 2 ───────────────────────────────────────────────
     let l2_removed;
     let l2_skip;
     let chat_root = paths::chat_root_for(cwd);
     let l2_dir = paths::chats_dir().join(&chat_root).join(uuid);
-    if l2_dir.is_dir() {
+    if l2_locked && l2_dir.is_dir() {
+        l2_removed = false;
+        l2_skip = Some(super::process::l2_lock_skip_reason(&l2_blockers));
+    } else if l2_dir.is_dir() {
         match fs::remove_dir_all(&l2_dir) {
             Ok(()) => {
                 l2_removed = true;
@@ -989,8 +1100,8 @@ pub fn delete_session(uuid: &str, cwd: &str, project_slug: Option<&str>) -> Resu
         removed_l2: l2_removed,
         skipped_l1: l1_skip,
         skipped_l2: l2_skip,
-        cursor_running: false,
-        running_processes: Vec::new(),
+        cursor_running: l2_locked && l2_dir.is_dir(),
+        running_processes: if l2_locked { l2_blockers } else { Vec::new() },
     })
 }
 
@@ -1014,8 +1125,125 @@ pub struct DeleteReport {
 
 // ── Layer 3 write (state.vscdb composer entry) ───────────────
 
+/// Layer 2 `store.db` conversation DAG — source for Desktop `conversationState`.
+struct Layer2ConversationHydration {
+    root_blob: Vec<u8>,
+    created_at_ms: i64,
+    blobs: Vec<(String, Vec<u8>)>,
+}
+
+/// Read CLI `store.db` when present so Layer 3 inject can set
+/// `conversationState` + copy blobs into `agentKv:*` (Desktop chat loader).
+fn read_layer2_conversation_hydration(uuid: &str, cwd: &str) -> Option<Layer2ConversationHydration> {
+    if cwd.trim().is_empty() {
+        return None;
+    }
+    let store_db = paths::store_db_for(cwd, uuid);
+    if !store_db.is_file() {
+        return None;
+    }
+    let conn = Connection::open_with_flags(&store_db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let meta_hex: String = conn
+        .query_row("SELECT value FROM meta WHERE key = '0'", [], |r| r.get(0))
+        .ok()?;
+    let meta_bytes = hex_decode(&meta_hex).ok()?;
+    let meta: serde_json::Value = serde_json::from_slice(&meta_bytes).ok()?;
+    let root_id = meta
+        .get("latestRootBlobId")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())?;
+    let created_at_ms = meta.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
+    let root_blob: Vec<u8> = conn
+        .query_row("SELECT data FROM blobs WHERE id = ?1", params![root_id], |r| {
+            r.get(0)
+        })
+        .ok()?;
+    let mut blobs = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, data FROM blobs").ok()?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))).ok()?;
+    for row in rows.flatten() {
+        blobs.push(row);
+    }
+    if blobs.is_empty() {
+        return None;
+    }
+    Some(Layer2ConversationHydration {
+        root_blob,
+        created_at_ms,
+        blobs,
+    })
+}
+
+fn patch_composer_with_layer2_hydration(
+    composer: &mut serde_json::Value,
+    hydration: &Layer2ConversationHydration,
+    last_updated_ms: i64,
+) {
+    let b64 = base64_encode(&hydration.root_blob);
+    let Some(obj) = composer.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "conversationState".into(),
+        serde_json::Value::String(format!("~{b64}")),
+    );
+    obj.insert("status".into(), serde_json::Value::String("completed".into()));
+    obj.insert("generatingBubbleIds".into(), serde_json::json!([]));
+    obj.insert(
+        "isContinuationInProgress".into(),
+        serde_json::Value::Bool(false),
+    );
+    let created = if hydration.created_at_ms > 0 {
+        hydration.created_at_ms
+    } else {
+        last_updated_ms
+    };
+    if created > 0 {
+        let checkpoint = last_updated_ms.max(created);
+        obj.insert("createdAt".into(), serde_json::json!(created));
+        obj.insert("lastUpdatedAt".into(), serde_json::json!(checkpoint));
+        obj.insert(
+            "conversationCheckpointLastUpdatedAt".into(),
+            serde_json::json!(checkpoint),
+        );
+    }
+}
+
+/// Session-level timestamps for L3 inject when L1 JSONL bubbles lack `timestamp`.
+fn session_timestamps_for_layer3(
+    bubbles: &[canonical::Bubble],
+    hydration: &Option<Layer2ConversationHydration>,
+) -> (i64, i64) {
+    let from_bubbles = bubbles
+        .iter()
+        .map(|b| b.created_at_ms)
+        .filter(|&t| t > 0)
+        .max()
+        .unwrap_or(0);
+    let session_created = hydration
+        .as_ref()
+        .and_then(|h| (h.created_at_ms > 0).then_some(h.created_at_ms))
+        .unwrap_or(from_bubbles);
+    let last_updated = if from_bubbles > 0 {
+        from_bubbles
+    } else if session_created > 0 {
+        session_created + bubbles.len().saturating_sub(1) as i64
+    } else {
+        0
+    };
+    (session_created, last_updated)
+}
+
+fn copy_layer2_blobs_to_agent_kv(conn: &Connection, blobs: &[(String, Vec<u8>)]) -> Result<()> {
+    for (id, data) in blobs {
+        apply_disk_kv_binary(conn, &format!("agentKv:blob:{id}"), data)?;
+    }
+    Ok(())
+}
+
 fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<()> {
-    if bubbles.is_empty() {
+    let enriched = super::layer2_messages::enrich_bubbles_from_layer2(uuid, cwd, bubbles);
+    if enriched.is_empty() {
         return Err(anyhow!("no Layer 1 bubbles to synthesize Layer 3 from"));
     }
 
@@ -1025,26 +1253,20 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         Some(cwd.to_string())
     };
 
-    let name = bubbles
+    let name = enriched
         .iter()
         .find(|b| b.role == "user")
         .map(|b| truncate_to_title_pub(&b.text))
         .unwrap_or_else(|| "CLI 会话".to_string());
-    let subtitle = bubbles
+    let subtitle = enriched
         .iter()
         .find(|b| b.role == "user")
         .map(|b| truncate_to_title_pub(&b.text))
         .unwrap_or_else(|| name.clone());
-    let created_at_ms = bubbles
-        .iter()
-        .map(|b| b.created_at_ms)
-        .find(|&t| t > 0)
-        .unwrap_or(0);
-    let last_updated_ms = bubbles
-        .iter()
-        .map(|b| b.created_at_ms)
-        .max()
-        .unwrap_or(created_at_ms);
+
+    let layer2_hydration = read_layer2_conversation_hydration(uuid, cwd);
+    let (created_at_ms, last_updated_ms) =
+        session_timestamps_for_layer3(&enriched, &layer2_hydration);
 
     let workspace_identifier = build_workspace_identifier(cwd).unwrap_or(serde_json::Value::Null);
     let project_slug = if cwd.is_empty() {
@@ -1058,7 +1280,7 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         scan_tracked_git_repos(cwd)
     };
 
-    let composer_data = compose_composer_data(
+    let mut composer_data = compose_composer_data(
         uuid,
         &name,
         created_at_ms,
@@ -1066,7 +1288,8 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         &Some(workspace_identifier.clone()),
         &project_slug,
         &tracked_git_repos,
-        bubbles,
+        &enriched,
+        created_at_ms,
     );
     let header_entry = compose_composer_header_entry(
         uuid,
@@ -1077,9 +1300,9 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         &Some(workspace_identifier),
         &tracked_git_repos,
     );
-    let bubble_blobs = compose_bubble_blobs(uuid, bubbles);
+    let bubble_blobs = compose_bubble_blobs(uuid, &enriched, created_at_ms);
 
-    // Collect agentKv blob refs from new + existing composerData (§9.8).
+    // Collect agentKv blob refs from composer (incl. conversationState after hydration).
     let mut agent_blob_ids = extract_agent_blob_ids_from_composer(&composer_data);
     let db_path = paths::global_db_path()?;
     if let Ok(r) = storage::open_read(&db_path) {
@@ -1108,6 +1331,17 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
         "CREATE TABLE IF NOT EXISTS ItemTable(key TEXT PRIMARY KEY, value TEXT);
          CREATE TABLE IF NOT EXISTS cursorDiskKV(key TEXT PRIMARY KEY, value TEXT);",
     )?;
+
+    if let Some(ref hydration) = layer2_hydration {
+        patch_composer_with_layer2_hydration(
+            &mut composer_data,
+            hydration,
+            last_updated_ms,
+        );
+        copy_layer2_blobs_to_agent_kv(&conn, &hydration.blobs)?;
+        agent_blob_ids.extend(extract_agent_blob_ids_from_composer(&composer_data));
+    }
+    ensure_desktop_loadable_composer(&mut composer_data);
 
     let merged_headers = merge_composer_headers(uuid, &header_entry)?;
     let mutations = vec![
@@ -1454,6 +1688,78 @@ mod tests {
         assert_eq!(new_meta["latestRootBlobId"], serde_json::Value::String(a_id));
     }
 
+    #[test]
+    fn read_layer2_hydration_reads_root_and_all_blobs() {
+        let dir = tempdir().unwrap();
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let db = dir.path().join("store.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE blobs(id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+        let c = vec![0u8; 0];
+        let c_id = sha256_hex(&c);
+        let a = build_protobuf_ref(&c_id);
+        let a_id = sha256_hex(&a);
+        for (id, data) in [(&a_id, &a), (&c_id, &c)] {
+            conn.execute(
+                "INSERT INTO blobs(id, data) VALUES (?1, ?2)",
+                params![id, data],
+            )
+            .unwrap();
+        }
+        let meta0 = serde_json::json!({
+            "agentId": uuid,
+            "latestRootBlobId": a_id,
+            "name": "test",
+            "mode": "default",
+            "isRunEverything": false,
+            "createdAt": 1_700_000_000_000_i64
+        });
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES ('0', ?1)",
+            params![hex_encode(meta0.to_string().as_bytes())],
+        )
+        .unwrap();
+        drop(conn);
+
+        let hydration = {
+            let conn = Connection::open(&db).unwrap();
+            let meta_hex: String = conn
+                .query_row("SELECT value FROM meta WHERE key = '0'", [], |r| r.get(0))
+                .unwrap();
+            let meta_bytes = hex_decode(&meta_hex).unwrap();
+            let meta: serde_json::Value = serde_json::from_slice(&meta_bytes).unwrap();
+            let root_id = meta["latestRootBlobId"].as_str().unwrap();
+            let root_blob: Vec<u8> = conn
+                .query_row("SELECT data FROM blobs WHERE id = ?1", params![root_id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let mut blobs = Vec::new();
+            let mut stmt = conn.prepare("SELECT id, data FROM blobs").unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))
+                .unwrap();
+            for row in rows.flatten() {
+                blobs.push(row);
+            }
+            super::Layer2ConversationHydration {
+                root_blob,
+                created_at_ms: 1_700_000_000_000,
+                blobs,
+            }
+        };
+        let mut composer = serde_json::json!({"composerId": uuid, "fullConversationHeadersOnly": []});
+        super::patch_composer_with_layer2_hydration(&mut composer, &hydration, 1_700_000_001_000);
+        let cs = composer["conversationState"].as_str().unwrap();
+        assert!(cs.starts_with('~'));
+        assert_eq!(composer["status"], "completed");
+        assert_eq!(composer["createdAt"], 1_700_000_000_000_i64);
+    }
+
     /// Build a minimal protobuf blob that references a single 32-byte
     /// hash (the helper for find_root_blob_simple_chain).
     fn build_protobuf_ref(hash_hex: &str) -> Vec<u8> {
@@ -1462,6 +1768,35 @@ mod tests {
         let mut out = vec![0x0A, 32];
         out.extend_from_slice(&hash);
         out
+    }
+
+    #[test]
+    #[ignore]
+    fn live_reinject_cli_sessions() {
+        for (uuid, cwd) in [
+            (
+                "3c0068a9-cf99-4d34-8e0e-f13349d22ebd",
+                "/home/eric/workspace/bettercursor",
+            ),
+            (
+                "123a56e5-0d82-4af7-9cba-8cdfe2603e74",
+                "/home/eric/workspace/bettercursor",
+            ),
+        ] {
+            let report = sync_session(uuid, cwd).expect("sync_session");
+            eprintln!("{uuid}: {report:?}");
+            assert!(report.wrote_layer3, "expected L3 rewrite for {uuid}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_reinject_3c0068a9() {
+        let uuid = "3c0068a9-cf99-4d34-8e0e-f13349d22ebd";
+        let cwd = "/home/eric/workspace/bettercursor";
+        let report = sync_session(uuid, cwd).expect("sync_session");
+        eprintln!("{report:?}");
+        assert!(report.wrote_layer3, "expected L3 rewrite, skipped={:?}", report.skipped);
     }
 
     /// Live smoke test: fill in Layer 2 for `cfa4177f` (Desktop-only
