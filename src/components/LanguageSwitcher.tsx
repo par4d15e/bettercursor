@@ -1,10 +1,9 @@
-// src/components/LanguageSwitcher.tsx — header dropdown for switching
+// src/components/LanguageSwitcher.tsx — header control for switching
 // the active i18next language.
 //
-// v0.2.5: simple native <select> so we don't pull in a dropdown menu
-// library just for one picker. The selected value is sourced from
-// `i18n.language` (the canonical i18next ref) and persists across
-// reloads via the `localStorage` cache configured in `src/i18n/index.ts`.
+// v0.2.5: originally a native <select>. Replaced with a segmented
+// button group because WebKitGTK renders <select>/<option> with the
+// host OS light palette, which clashes with our always-dark theme.
 //
 // Switching is synchronous: i18next emits `languageChanged` and every
 // `useTranslation()` consumer re-renders with the new strings. No
@@ -13,27 +12,54 @@
 import { useTranslation } from "react-i18next";
 import { SUPPORTED_LOCALES, type Locale } from "../i18n";
 
-export function LanguageSwitcher() {
-  const { i18n } = useTranslation();
-  // Native <select> dispatches onChange with the new value already as
-  // the right Locale type — cast is safe because the <option>s are
-  // pinned to SUPPORTED_LOCALES.
+const LOCALE_LABEL_KEYS: Record<Locale, "language.zh-CN" | "language.en"> = {
+  "zh-CN": "language.zh-CN",
+  en: "language.en",
+};
+
+function resolveActiveLocale(language: string): Locale {
+  if (SUPPORTED_LOCALES.includes(language as Locale)) {
+    return language as Locale;
+  }
+  if (language.startsWith("zh")) return "zh-CN";
+  if (language.startsWith("en")) return "en";
+  return "zh-CN";
+}
+
+export function LanguageSwitcher({ size = "sm" }: { size?: "sm" | "md" }) {
+  const { t, i18n } = useTranslation();
+  const active = resolveActiveLocale(i18n.resolvedLanguage ?? i18n.language);
+  const textSize = size === "md" ? "text-xs" : "text-[10px]";
+
   return (
-    <select
+    <div
       data-testid="language-switcher"
-      value={i18n.language}
-      onChange={(e) => {
-        const next = e.target.value as Locale;
-        if (SUPPORTED_LOCALES.includes(next)) {
-          void i18n.changeLanguage(next);
-        }
-      }}
-      className="bg-bg-tertiary border border-border text-xs text-fg-secondary rounded px-1.5 py-0.5 cursor-pointer hover:text-fg-primary focus:outline-none focus:border-border-strong"
-      title="Language"  // hardcoded; same label works for any locale
-      aria-label="Language"
+      role="group"
+      aria-label={t("language.switch")}
+      title={t("language.switch")}
+      className={`inline-flex items-center rounded border border-border overflow-hidden ${textSize}`}
     >
-      <option value="zh-CN">中文</option>
-      <option value="en">English</option>
-    </select>
+      {SUPPORTED_LOCALES.map((locale) => {
+        const isActive = locale === active;
+        return (
+          <button
+            key={locale}
+            type="button"
+            data-locale={locale}
+            aria-pressed={isActive}
+            onClick={() => {
+              if (!isActive) void i18n.changeLanguage(locale);
+            }}
+            className={`px-1.5 py-0.5 transition-colors ${
+              isActive
+                ? "bg-bg-hover text-fg-primary"
+                : "bg-bg-tertiary text-fg-secondary hover:bg-bg-hover hover:text-fg-primary"
+            }`}
+          >
+            {t(LOCALE_LABEL_KEYS[locale])}
+          </button>
+        );
+      })}
+    </div>
   );
 }

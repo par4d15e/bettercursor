@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.0-success)
+![status](https://img.shields.io/badge/status-v0.3.2-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -22,7 +22,20 @@
 
 ## 功能状态
 
-### v0.3.0 (✅ 当前, 2026-07-05 完工)
+### v0.3.2 (✅ 当前, 2026-07-05 完工)
+
+- [x] **`<SettingsDialog>`** — 侧栏头部齿轮入口, 整合界面语言 (`<LanguageSwitcher>`)、跨设备同步 (`<SyncPeersPanel>`)、冲突处理 (`<ConflictResolvePanel>`)
+- [x] **i18n 修复** — 合并 locale JSON 重复 `sync` 键 (同步状态不再裸露 `sync.autoSync`)
+- [x] **暗色语言切换** — 分段按钮替代原生 `<select>`; 根节点 `color-scheme: dark`
+- [x] **侧栏精简** — 头部显示产品名 `BetterCursor`; 工具栏「全部折叠/展开」; 移除无效返回按钮
+- [x] **冲突文案** — 中性表述 + 有待处理冲突时设置按钮显示角标
+
+### v0.3.1 (2026-07-05 完工)
+
+- [x] **LAN 跨设备同步** — mDNS 发现、6 位配对、trusted peers、outbox、后台 sync loop
+- [x] **`<SyncPeersDialog>` / `<ConflictResolveDialog>`** — v0.3.1 独立弹窗; **v0.3.2 起迁入 `<SettingsDialog>`**
+
+### v0.3.0 (2026-07-05 完工)
 
 - [x] **`~/.bettercursor/unified.db`** (PR-1): 8 表 + FTS5 + `rebuild_from_cursor_state` + archive / conflicts / sync_runs
 - [x] **pre-PR-2 读路径补全**: L3 bubble 完整文本 / Cursor 3.0+ session discovery / timestamp gaps / cursor-history parity fixtures
@@ -31,7 +44,6 @@
 - [x] **Transport async** (`tokio` + `async-trait`); Tauri 命令内部 `block_on`, 前端签名不变
 - [x] **agentKv 最小切片**: `write_layer3` 复制 `conversationState` 引用的 agent blob
 - [x] **126 Rust 单测** (`cargo test --lib`)
-- [ ] **SyncPeersDialog / outbox / ConflictResolveDialog UI** → v0.3.1
 
 查询 unified.db 示例:
 
@@ -61,10 +73,8 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
 - [x] 跨层去重合并, 项目分组, 按会话名 / 项目 / 内容 / UUID 全文搜索
 - [x] MD5 `chat_root` 与 Python 守护进程字节级一致
 
-### v0.3 / v0.3.0+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3.2+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] `~/.bettercursor/unified.db` (snapshot codec v4 — bubbles / blob_refs / raw_blobs — + `Conflict` 5-way enum; `Transport` trait 迁 `async_trait`). **大版本**
-- [ ] 离线 outbox + `<SyncPeersDialog>` UI + `<ConflictResolveDialog>`
 - [ ] T3/T4/T5 adapter: git / S3 / Tailscale
 
 ## 下载安装
@@ -324,10 +334,11 @@ packages:
 v0.2.5 (✅ done)  跨平台打包 · i18n · 后台 sync · 对话记录 · 修复 orphan · 删除
 v0.2.6 (✅ now)   跨设备 sync — Transport trait 初版 · SSH/rsync (T2) impl
                   · 4 个 Tauri 命令 · Intel dmg
-v0.3.0 (next)     ~/.bettercursor/unified.db · snapshot codec v4 ·
-                  async Transport trait · Conflict 5-way · outbox
-v0.3.1 (later)    <SyncPeersDialog> + <ConflictResolveDialog> UI
-v0.3.2+           T3 Git · T4 S3 · T5 Tailscale adapter
+v0.3.0 (✅ done)   ~/.bettercursor/unified.db · snapshot codec v4 ·
+                  async Transport · Conflict 5-way
+v0.3.1 (✅ done)   LAN mDNS 配对 · outbox · sync loop
+v0.3.2 (✅ now)   <SettingsDialog> UI 整合 · i18n 修复 · 侧栏体验
+v0.3.3+           T3 Git · T4 S3 · T5 Tailscale adapter
 ```
 
 ## 致谢

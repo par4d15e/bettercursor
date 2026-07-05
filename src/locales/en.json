@@ -10,14 +10,15 @@
   },
   "tree": {
     "header": {
-      "title": "Sessions",
-      "back": "Back",
-      "version": "v0.3.1"
+      "title": "BetterCursor",
+      "version": "v0.3.2"
     },
     "toolbar": {
       "sessionCount": "Session list",
       "sortBy": "Sort: {{mode}} (click to cycle)",
       "multiSelect": "Multi-select",
+      "collapseAll": "Collapse all",
+      "expandAll": "Expand all",
       "fixOrphans": "Repair all Layer 2 orphan sessions (latestRootBlobId is empty string). store.db is auto-backed-up."
     },
     "fixOrphansToast": {
@@ -118,22 +119,7 @@
     "xHoursAgo": "{{n}}h ago",
     "tooltip": "{{label}} · watching: {{dirs}}",
     "tooltipNoDirs": "{{label}}",
-    "syncNowTitle": "Rescan local Cursor storage now"
-  },
-  "broken": {
-    "label": "Incomplete data"
-  },
-  "source": {
-    "mac": "Mac Desktop",
-    "linux_cli": "Linux CLI",
-    "linux_desktop": "Linux Desktop"
-  },
-  "language": {
-    "switch": "Language",
-    "zh-CN": "中文",
-    "en": "English"
-  },
-  "sync": {
+    "syncNowTitle": "Rescan local Cursor storage now",
     "peers": {
       "title": "Cross-device sync",
       "pairing": "Pairing",
@@ -153,10 +139,35 @@
       "pulled": "Pulled {{count}} snapshots"
     },
     "conflicts": {
-      "title": "Sync conflicts",
-      "none": "No unresolved conflicts",
+      "buttonTitle": "Conflict resolution",
+      "buttonTitleWithCount": "{{count}} pending conflict(s)",
+      "title": "Conflict resolution",
+      "description": "When two devices edit the same session at the same time during cross-device sync, entries appear below for you to review.",
+      "none": "No pending conflicts",
+      "noneHint": "Cross-device sync looks healthy — nothing needs your attention.",
       "acceptMerged": "Accept merge",
       "skip": "Skip"
     }
+  },
+  "broken": {
+    "label": "Incomplete data"
+  },
+  "source": {
+    "mac": "Mac Desktop",
+    "linux_cli": "Linux CLI",
+    "linux_desktop": "Linux Desktop"
+  },
+  "language": {
+    "switch": "Language",
+    "zh-CN": "中文",
+    "en": "English"
+  },
+  "settings": {
+    "title": "Settings",
+    "buttonTitle": "Settings",
+    "buttonTitleWithConflicts": "Settings ({{count}} pending conflict(s))",
+    "language": "Language",
+    "crossDeviceSync": "Cross-device sync",
+    "conflicts": "Conflict resolution"
   }
 }

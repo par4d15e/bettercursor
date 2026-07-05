@@ -1666,12 +1666,15 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | 路径 | 状态 | 备注 |
 |------|------|------|
 | `src/components/SessionDetail.tsx` | ✅ v0.2.1 | sync banner + 修复 + 删除 (内联) |
-| `src/components/SessionTree.tsx` | ✅ v0.2.1 | WrenchButton 批量 fix_orphans |
+| `src/components/SessionTree.tsx` | ✅ v0.3.2 | 产品名标题 + 全部折叠/展开 + `<SettingsButton>` |
 | `src/lib/tauri.ts` | ✅ v0.2.1 | `syncSessionLayer23` + `fixOrphans` + `deleteSession` wrappers |
 | `src/store/sessionStore.ts` | ✅ v0.1 | Zustand session 列表状态 |
+| `src/components/SettingsDialog.tsx` | ✅ v0.3.2 | 语言 + 跨设备同步 + 冲突处理 |
+| `src/components/SettingsButton.tsx` | ✅ v0.3.2 | 头部齿轮入口 + 冲突角标 |
+| `src/components/SyncPeersPanel.tsx` | ✅ v0.3.2 | 设置内 mDNS 配对 + push/pull |
+| `src/components/ConflictResolvePanel.tsx` | ✅ v0.3.2 | 设置内冲突列表 + 接受合并/跳过 |
+| `src/components/LanguageSwitcher.tsx` | ✅ v0.3.2 | 暗色分段按钮 (v0.2.5 原为 header `<select>`) |
 | `src/components/SyncBanner.tsx` | 🆕 v0.3.1 待拆 | 当前内联在 SessionDetail.tsx |
-| `src/components/ConflictResolveDialog.tsx` | ✅ v0.3.1 | §6.7 冲突列表 + 接受合并/跳过 |
-| `src/components/SyncPeersDialog.tsx` | ✅ v0.3.1 | mDNS 发现 + 配对 + push/pull |
 | `src/store/syncStore.ts` | ✅ v0.3.1 | 配对/发现/冲突状态 |
 
 ### 11.3 已删除 (历史)
@@ -1680,6 +1683,8 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 
 | ~~路径~~ | 用途 | 删除原因 |
 |---------|------|---------|
+| ~~`src/components/SyncPeersDialog.tsx`~~ | v0.3.1 独立弹窗 | v0.3.2 拆为 `SyncPeersPanel` 迁入 `SettingsDialog` |
+| ~~`src/components/ConflictResolveDialog.tsx`~~ | v0.3.1 独立弹窗 | v0.3.2 拆为 `ConflictResolvePanel` 迁入 `SettingsDialog` |
 | ~~`scripts/apply.py`~~ (504 行) | v0.2-alpha 离线两阶段 inject | v0.2.1 inline 路径不再需要 (commit `e4902d6`) |
 | ~~`tests/test_apply_atomic_rename.py`~~ (177 行) | apply.py 配套测试 | 随 apply.py 一起删 |
 

@@ -17,7 +17,8 @@
 >   - **v0.2.5** (2026-07-04 完工) = 跨平台打包 + i18n — version bump 三件套 (0.1.0→0.2.5) + `bundle.macOS` (未签名 dmg, Mac 10.15+) + `bundle.linux.deb` depends + react-i18next (zh-CN/en) + `<LanguageSwitcher>` (localStorage 持久化) + GitHub Actions release workflow (ubuntu+macos+windows matrix). 详见 [README.md](README.md) §下载安装.
 >   - **v0.2.6** (2026-07-04 完工) = cross-device sync — **Transport trait 初版 + SSH/rsync (T2) impl + 4 个 Tauri 命令** (`transport_list_peers` / `transport_test` / `transport_push` / `transport_pull`) + `~/.bettercursor/transports.json` peer 配置 + 同步 trait (有意识偏离 SYNC_DESIGN §4.4 spec 的 async_trait; v0.3.0 上 outbox 时再迁). 同步 metadata-only snapshot (8 字段, 不含 bubbles/blobs — 那是 v0.3.0 unified.db + 完整 codec 的活). **无 UI** (出 SyncPeersDialog 留 v0.3.0); 用法靠 `invoke('transport_*')` + 手动编辑 transports.json. 详见 [SYNC_DESIGN.md §4.4 / §10.1 / §11](SYNC_DESIGN.md).
 >   - **v0.2.6 housekeeping** (2026-07-04 完工, 跟 v0.2.6 一起打包发布) = CI matrix 加 `macos-13` (Intel x64 dmg) + Node 20→22 + vitest 2 + jsdom 25 + `@testing-library/react` 16 + `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware 单测 (15 case). 无业务代码改动.
->   - **v0.3.0+** = unified.db (§3) + 完整 snapshot codec v4 (bubbles / blob_refs / raw_blobs) + 5-way Conflict enum + 离线 outbox + 异步 Transport trait + `<SyncPeersDialog>` UI + git / S3 / Tailscale / folder watcher 多种 transport.
+>   - **v0.3.1** (2026-07-05 完工) = LAN 跨设备开箱即用 — mDNS 发现 + 6 位配对 + outbox + `<SyncPeersDialog>` / `<ConflictResolveDialog>` (v0.3.2 起迁入 `<SettingsDialog>`). 详见 [SYNC_DESIGN.md §10.1](SYNC_DESIGN.md).
+>   - **v0.3.2** (2026-07-05 完工) = UI housekeeping — `<SettingsDialog>` 整合语言/跨设备同步/冲突处理 + 修复 locale `sync` 键重复 + 暗色语言切换 + 侧栏产品名 + 全部折叠/展开. 详见 [README.md](README.md).
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -134,7 +135,7 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.3.0 PR-2 — `snapshot_meta.rs` 重命名** (v0.2.6 8-field push 载体保留) | `core/transport/snapshot_meta.rs` | **v0.3.0 PR-2 ✅** |
 | **v0.3.0 PR-2 — agentKv 写入 (最小切片)** (`write_layer3` 从 `conversationState` 提取 blob id 并复制 `agentKv:blob:{hex}`) | `core/sync.rs` | **v0.3.0 PR-2 ✅** |
 | **v0.3.0 PR-2 — 单元测试 28+ 新 case** (snapshot 5 / conflict 8 / ssh async 4 / sync agentKv 1; 全量 `cargo test --lib` 126 case) | 各 `::tests` | **v0.3.0 PR-2 ✅** |
-| 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对 + `SyncPeersDialog` / `ConflictResolveDialog`; SSH (T2b) 保留为高级模式 |
+| 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对; **v0.3.2** 起 UI 收进 `<SettingsDialog>`; SSH (T2b) 保留为高级模式 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
@@ -143,7 +144,7 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **`core::conflict.rs` 五态分类** | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** |
 | **Doctor 孤儿会话审计/恢复** (L3 有 composerData 但未注册 sidebar) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ PR-2b |
 | **parity fixtures** (cursor-history spec 010–013 场景 → Rust 单测) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
-| UI: SyncPeersDialog / 推送按钮 / sync history | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | 设计稿 (v0.3.1) |
+| UI: 设置面板 (语言 / 跨设备同步 / 冲突处理) | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | **v0.3.2 ✅** (`<SettingsDialog>` + `<SyncPeersPanel>` + `<ConflictResolvePanel>`) |
 | Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | **v0.2.5 ✅** (Apple Silicon) + **v0.2.6 ✅** (Intel x64 via `macos-13` matrix) |
 
 ### 0.6 怎么跑

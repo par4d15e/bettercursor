@@ -4,7 +4,7 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.0-success)
+![status](https://img.shields.io/badge/status-v0.3.2-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
@@ -28,7 +28,27 @@ Design goals:
 
 ## Feature status
 
-### v0.3.0 (✅ current, shipped 2026-07-05)
+### v0.3.2 (✅ current, shipped 2026-07-05)
+
+- [x] **`<SettingsDialog>`** — gear icon in the sidebar header; consolidates
+      language switch, cross-device sync (`<SyncPeersPanel>`), and conflict
+      resolution (`<ConflictResolvePanel>`)
+- [x] **i18n fix** — merged duplicate `sync` keys in locale JSON (status badge
+      no longer shows raw `sync.autoSync`)
+- [x] **Dark-theme language switcher** — segmented buttons replace native
+      `<select>`; `color-scheme: dark` on root
+- [x] **Sidebar polish** — product name `BetterCursor` in header; collapse/expand
+      all project groups; removed non-functional back button
+- [x] **Conflict UX** — neutral copy + badge on settings when conflicts pending
+
+### v0.3.1 (2026-07-05)
+
+- [x] **LAN cross-device sync** — mDNS discovery, 6-digit pairing, trusted peers,
+      outbox, background sync loop
+- [x] **`<SyncPeersDialog>` / `<ConflictResolveDialog>`** — shipped in v0.3.1;
+      **superseded by `<SettingsDialog>` in v0.3.2**
+
+### v0.3.0 (2026-07-05)
 
 - [x] **`~/.bettercursor/unified.db`** (PR-1): 8 tables + FTS5 +
       `rebuild_from_cursor_state` + archive / conflicts / sync_runs
@@ -44,7 +64,6 @@ Design goals:
 - [x] **agentKv minimal slice**: `write_layer3` copies agent blobs
       referenced by `conversationState`
 - [x] **126 Rust unit tests** (`cargo test --lib`)
-- [ ] **SyncPeersDialog / outbox / ConflictResolveDialog UI** → v0.3.1
 
 Inspect unified.db:
 
@@ -110,12 +129,8 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
       project / content / UUID
 - [x] MD5 `chat_root` byte-identical to the Python reference
 
-### v0.3 / v0.3.0+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3.2+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] `~/.bettercursor/unified.db` (snapshot codec v4 — bubbles /
-      blob_refs / raw_blobs — + `Conflict` 5-way enum; migrate
-      `Transport` trait to `async_trait`). **Major version.**
-- [ ] Offline outbox + `<SyncPeersDialog>` UI + `<ConflictResolveDialog>`
 - [ ] T3/T4/T5 adapters: git / S3 / Tailscale
 
 ## Download & install
@@ -410,10 +425,11 @@ v0.2.5 (✅ done)  Cross-platform packaging · i18n · background sync ·
                  conversation records · repair orphan · delete
 v0.2.6 (✅ now)   Cross-device sync — Transport trait first cut ·
                  SSH/rsync (T2) impl · 4 Tauri commands · Intel dmg
-v0.3.0 (next)     ~/.bettercursor/unified.db · snapshot codec v4 ·
-                 async Transport trait · Conflict 5-way · outbox
-v0.3.1 (later)    <SyncPeersDialog> + <ConflictResolveDialog> UI
-v0.3.2+           T3 Git · T4 S3 · T5 Tailscale adapters
+v0.3.0 (✅ done)   ~/.bettercursor/unified.db · snapshot codec v4 ·
+                 async Transport · Conflict 5-way
+v0.3.1 (✅ done)   LAN mDNS pairing · outbox · sync loop
+v0.3.2 (✅ now)   <SettingsDialog> UI polish · i18n fix · sidebar UX
+v0.3.3+           T3 Git · T4 S3 · T5 Tailscale adapters
 ```
 
 ## Acknowledgements

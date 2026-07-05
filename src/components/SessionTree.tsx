@@ -3,8 +3,8 @@
 // v0.2.5: i18n — every visible string now goes through `useTranslation`'s
 // `t`, including the dynamic `SORT_LABELS` lookup (formerly a static
 // `Record<SortMode, string>` exported from `sessionStore`; we now
-// compute it per-render via `getSortLabels(t)`). `<LanguageSwitcher />`
-// also lives in the header next to `<SyncStatusBadge />`.
+// compute it per-render via `getSortLabels(t)`). Settings (gear icon)
+// in the header opens `<SettingsDialog />` for language / sync / conflicts.
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -18,23 +18,22 @@ import { SourceBadge } from "./SourceBadge";
 import { BrokenBadge } from "./BrokenBadge";
 import { SyncNowButton } from "./SyncNowButton";
 import { SyncStatusBadge } from "./SyncStatusBadge";
-import { LanguageSwitcher } from "./LanguageSwitcher";
-import { SyncPeersDialog } from "./SyncPeersDialog";
-import { ConflictResolveDialog } from "./ConflictResolveDialog";
+import { SettingsButton } from "./SettingsButton";
+import { SettingsDialog } from "./SettingsDialog";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
 import { fixOrphans, syncNow as syncNowTauri, type FixOrphansReport } from "../lib/tauri";
 import {
-  ChevronLeft,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Search,
   ArrowUpDown,
   ListFilter,
   Wrench,
   CheckCircle2,
   AlertTriangle,
-  Users,
 } from "lucide-react";
 
 function detectSource(s: CanonicalSession): SourceLayer | null {
@@ -70,8 +69,7 @@ export function SessionTree() {
     | { kind: "ok" | "err"; text: string; report?: FixOrphansReport }
     | null
   >(null);
-  const [syncOpen, setSyncOpen] = useState(false);
-  const [conflictsOpen, setConflictsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     init();
@@ -126,6 +124,18 @@ export function SessionTree() {
     });
   };
 
+  const allSlugs = grouped.map((g) => g.slug);
+  const allCollapsed =
+    allSlugs.length > 0 && allSlugs.every((slug) => collapsed.has(slug));
+
+  const toggleAllGroups = () => {
+    if (allCollapsed) {
+      setCollapsed(new Set());
+    } else {
+      setCollapsed(new Set(allSlugs));
+    }
+  };
+
   // Pull the current `sortMode`'s label out so the toolbar button can
   // read it without a re-derivation in JSX (and so the `title`
   // attribute stays in sync if the user cycles the sort).
@@ -135,37 +145,12 @@ export function SessionTree() {
     <div className="flex flex-col h-full bg-bg-secondary border-r border-border text-fg-primary">
       {/* Header / toolbar — always visible */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-secondary">
-        <button
-          className="p-1 rounded hover:bg-bg-hover text-fg-secondary"
-          title={t("tree.header.back")}
-        >
-          <ChevronLeft size={16} />
-        </button>
         <h1 className="text-sm font-semibold text-fg-primary">
           {t("tree.header.title")}
         </h1>
-        {/* v0.2.3: replaces the old "LIVE" badge — now shows the
-            watcher state + "Xs 前" counter. Polls watcher_status
-            every 5s, ticks the counter every 1s locally. */}
         <span className="ml-auto inline-flex items-center gap-1.5">
-          <button
-            type="button"
-            className="p-1 rounded hover:bg-bg-hover text-fg-secondary"
-            title={t("sync.peers.title")}
-            onClick={() => setSyncOpen(true)}
-          >
-            <Users size={14} />
-          </button>
-          <button
-            type="button"
-            className="p-1 rounded hover:bg-bg-hover text-fg-secondary"
-            title={t("sync.conflicts.title")}
-            onClick={() => setConflictsOpen(true)}
-          >
-            <AlertTriangle size={14} />
-          </button>
           <SyncStatusBadge />
-          <LanguageSwitcher />
+          <SettingsButton onClick={() => setSettingsOpen(true)} />
         </span>
         <span className="text-[10px] text-fg-muted font-mono">
           {t("tree.header.version")}
@@ -178,6 +163,24 @@ export function SessionTree() {
           {total}
         </span>
         <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="toggle-all-groups-button"
+            className="p-1 rounded hover:bg-bg-hover disabled:opacity-40"
+            title={
+              allCollapsed
+                ? t("tree.toolbar.expandAll")
+                : t("tree.toolbar.collapseAll")
+            }
+            onClick={toggleAllGroups}
+            disabled={allSlugs.length === 0}
+          >
+            {allCollapsed ? (
+              <ChevronsDownUp size={14} />
+            ) : (
+              <ChevronsUpDown size={14} />
+            )}
+          </button>
           <button
             className="p-1 rounded hover:bg-bg-hover"
             title={t("tree.toolbar.multiSelect")}
@@ -333,8 +336,7 @@ export function SessionTree() {
           </div>
         )}
       </div>
-      <SyncPeersDialog open={syncOpen} onClose={() => setSyncOpen(false)} />
-      <ConflictResolveDialog open={conflictsOpen} onClose={() => setConflictsOpen(false)} />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

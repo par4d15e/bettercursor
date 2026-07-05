@@ -10,14 +10,15 @@
   },
   "tree": {
     "header": {
-      "title": "会话管理",
-      "back": "返回",
-      "version": "v0.3.1"
+      "title": "BetterCursor",
+      "version": "v0.3.2"
     },
     "toolbar": {
       "sessionCount": "会话列表",
       "sortBy": "排序: {{mode}} (点击切换)",
       "multiSelect": "多选",
+      "collapseAll": "全部折叠",
+      "expandAll": "全部展开",
       "fixOrphans": "修复所有 Layer 2 orphan session (latestRootBlobId 是空字符串). 已自动备份 store.db."
     },
     "fixOrphansToast": {
@@ -118,22 +119,7 @@
     "xHoursAgo": "{{n}}h 前",
     "tooltip": "{{label}} · 监听: {{dirs}}",
     "tooltipNoDirs": "{{label}}",
-    "syncNowTitle": "立即重新扫描本机 Cursor 存储"
-  },
-  "broken": {
-    "label": "数据残缺"
-  },
-  "source": {
-    "mac": "Mac Desktop",
-    "linux_cli": "Linux CLI",
-    "linux_desktop": "Linux Desktop"
-  },
-  "language": {
-    "switch": "语言",
-    "zh-CN": "中文",
-    "en": "English"
-  },
-  "sync": {
+    "syncNowTitle": "立即重新扫描本机 Cursor 存储",
     "peers": {
       "title": "跨设备同步",
       "pairing": "配对",
@@ -153,10 +139,35 @@
       "pulled": "已拉取 {{count}} 条快照"
     },
     "conflicts": {
-      "title": "同步冲突",
-      "none": "无未解决冲突",
+      "buttonTitle": "冲突处理",
+      "buttonTitleWithCount": "{{count}} 条待处理冲突",
+      "title": "冲突处理",
+      "description": "跨设备同步时，若两台设备同时修改同一会话，相关记录会列在下方供你确认。",
+      "none": "暂无待处理冲突",
+      "noneHint": "当前跨设备同步正常，无需手动处理。",
       "acceptMerged": "接受合并",
       "skip": "跳过"
     }
+  },
+  "broken": {
+    "label": "数据残缺"
+  },
+  "source": {
+    "mac": "Mac Desktop",
+    "linux_cli": "Linux CLI",
+    "linux_desktop": "Linux Desktop"
+  },
+  "language": {
+    "switch": "语言",
+    "zh-CN": "中文",
+    "en": "English"
+  },
+  "settings": {
+    "title": "设置",
+    "buttonTitle": "设置",
+    "buttonTitleWithConflicts": "设置（{{count}} 条待处理冲突）",
+    "language": "界面语言",
+    "crossDeviceSync": "跨设备同步",
+    "conflicts": "冲突处理"
   }
 }
