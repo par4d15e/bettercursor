@@ -789,7 +789,7 @@ T0   Manual file copy            (manual, fallback)
 | T1 | 文件夹 watcher (`core::watcher`) | U 盘 / NAS mount | 半自动 | mount point 要固定 | 待 v0.3.2 (?) |
 | **T2a** ⭐ | LAN TCP + mDNS (`_bettercursor._tcp`) + 6 位配对码 | 同网 Mac↔Linux 默认用户 | **零配置发现, 一次配对, 托盘常驻** | 仅限局域网; 无 TLS (v0.3.1 用 pairing secret) | **✅ v0.3.1 默认** |
 | **T2b** | SSH + rsync | 已有 SSH key / headless | 零第三方, 增量, 可恢复 | 需手写 `transports.json` + key | ✅ 高级模式 (v0.2.6 起) |
-| T3 | Git over SSH/HTTPS | 想看 history 的用户 | diff 可视化, 老 snapshot 可回放 | 仓库膨胀, 写冲突 | 待 v0.3.2 (?) |
+| T3 | Git over SSH/HTTPS | 想看 history 的用户 | diff 可视化, 老 snapshot 可回放 | 仓库膨胀, 写冲突 | 待 v0.3.8+ (?) |
 | T4 | S3 / R2 / B2 | 多端 ≥3 / 没 SSH | scale, durability | 第三依赖, 1 个 API key 要管 | 待拍板 |
 | T5 | Tailscale mesh | 已有 Tailscale 的用户 | 自动发现, 直连 | 需装 Tailscale | 待 v0.3.x |
 
@@ -1630,13 +1630,18 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.3.0 PR-1** (2026-07-04) | **`~/.bettercursor/unified.db` (§3) — read-cache + archive + sync_runs**. 8 表 (`schema_version` / `sessions` / `bubbles` / `bubbles_fts` / `blobs` / `composer_data` / `sync_runs` / `archive` / `conflicts`) + FTS5 虚表 (无 triggers 手动维护, `unicode61` tokenizer) + `UnifiedDb::rebuild_from_cursor_state` 幂等 ingest + `record_archive` / `record_conflict` / `record_sync_run` / `finish_sync_run` / `search_bubbles` / `delete_session_row` / `unresolved_conflicts` helpers + `paths::unified_db_path()`. `Bubble.parent_bubble_id: Option<String>` + `ComposerData { full_json, subset_json }` + `CanonicalSession.{composer_data, composer_id}` + `Sources::preferred_endpoint_kind()` + `Sources::preferred_source_path()`. **Migration A coexist**: v0.2.6 inline-write 路径保留, 4 个 hook 点 (`sync_session` / `fix_orphans` / `delete_session` / `sync_now`) 同步写 unified.db. **0 新 Cargo dep** (rusqlite + bundled + sha2 + hex 已 in). 8 单元测 + 4 canonical 字段测 = ~12 case PR-1 阶段. | 3-4d | **✅ PR-1 已落地 2026-07-04** |
 | **v0.3.0 pre-PR-2** | **读路径补全 (§2.8 + §11.5)**: `extract_l3_bubble_text` + `extractToolCalls` 移植; Cursor 3.0+ session discovery (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*`); timestamp fallback (spec 010); cursor-history spec 010–013 → Rust parity fixtures. **不**改 Transport / unified.db schema. | 2-3d | **✅ 已落地 2026-07-05** |
 | **v0.3.0 PR-2** | snapshot codec v4 (§2, bubbles / blob_refs / raw_blobs, `SNAPSHOT_VERSION=4`) + `Transport` trait 转 `async_trait` (§4) + `ConflictClass` 5-way enum (§6, New/Identical/IncomingNewer/LocalAhead/Diverged) + `conflict::classify` / `bubble_diff` / `auto_merge` / `auto_archive_before_overwrite` + `lib::transport_pull` 走 v4 codec + unified.db upsert + Conflict 分类 (New/Identical/IncomingNewer → upsert; LocalAhead → 跳过; Diverged → auto_merge + archive). **含 §9.8 agentKv 写入**. `core::transport::snapshot` 改名 `core::transport::snapshot_meta` (给新 `core::snapshot` 让位). 冲突算法参考 `vendored/cursaves/cursor_saves/importer.py::_check_conflict`. 新增 2 个 Cargo dep: `tokio = "1"` (full features) + `async-trait = "0.1"` (~1.5MB binary 增量, 跟 v0.3.1 outbox `tokio::time::interval` 自然衔接). | 3-4d | **✅ PR-2 已落地 2026-07-05** |
-| **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + SSH workspace 路径解析 + git remote 项目标识 (§11.5 中优先级项). 默认 dry-run; **不** auto-create workspace (借鉴 cursaves 注册逻辑, 不借鉴 `find_or_create_workspace`). | 2d | ⚪ PR-2 后 |
 | **v0.3.1 Phase A** | `transport_push` 改发 v4 snapshot + `transport_pull` 后 `apply_session_from_snapshot` 写 Cursor L2/L3 + 双机 SSH e2e 手册 | 2-3d | **✅ Phase A 已落地** |
 | **v0.3.1 Phase B** | T2a `LanTcpTransport` + mDNS 发现 + 6 位配对 → `trusted_peers` + outbox + 5min 后台 sync loop + `<SyncPeersDialog>` + `<ConflictResolveDialog>` | 5-7d | **✅ Phase B 已落地** |
-| **v0.3.2** | T3 Git adapter (路线图) — 历史可视化 | 5d | ⚪ 待拍板 |
-| **v0.3.3** | T4 S3 / T5 Tailscale adapter (路线图) | 4d | ⚪ 待拍板 |
+| **v0.3.2** | `<SettingsDialog>` UI 整合 (语言 / 跨设备 / 冲突) | 1d | **✅ 已落地 2026-07-05** |
+| **v0.3.3** | version bump 三件套 + UI 版本号 | 0.5d | **✅ 已落地 2026-07-05** |
+| **v0.3.4** | L2→L3 bubble 富化 + 用户图片注入 + 补 L3 操作规范 (§0.5) | 2d | **✅ 已落地 2026-07-05** |
+| **v0.3.5** | L3 软删 + 子代理树 + 空壳过滤 + 对话读取修复 + `deleted_sessions` | 2d | **✅ 已落地 2026-07-05** |
+| **v0.3.6** | **跨端同步完善** (§10.4) — v4 snapshot 富化 (图片 / agentKv / `raw_blobs`) + Mac↔Linux `project_path` 重写 + `Identical` 时补写缺失 L2/L3 + pull→apply 结果 UI 反馈 + 后台 loop 补 pull (LAN) | 3-4d | ⚪ **当前优先** |
+| **v0.3.7** | T2b SSH peer 设置 UI + `transports.json` 可视化编辑 (高级模式) | 2d | ⚪ v0.3.6 后 |
+| **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + git remote 项目标识. 默认 dry-run; **不** auto-create workspace | 2d | ⏸️ **延后观察** (2026-07-05 拍板: 根因未清晰, 先跨端 sync) |
+| **v0.3.8+** | T3 Git / T4 S3 / T5 Tailscale adapter (路线图) | 4-5d | ⚪ 待拍板 |
 
-总计: v0.2.x 已全部完工; v0.3.x 大版本 ~19-23 天拍板后开干.
+总计: v0.2.x 已全部完工; v0.3.0–v0.3.5 跨端 MVP 已落地; **v0.3.6 起聚焦跨端可靠性**.
 
 ### 10.2 依赖图
 
@@ -1656,16 +1661,62 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
                                           v0.3.0 ✅ (unified.db PR-1 + codec v4 + conflict 5-way + async trait PR-2)
                                               │
                                               ▼
-                                          v0.3.1 (outbox + conflict UI + lock + SyncPeersDialog)
+                                          v0.3.1 ✅ (outbox + conflict UI + LAN pairing)
+                                              │
+                                              ▼
+                                    v0.3.2–v0.3.5 ✅ (UI + L2/L3 补层 + 软删)
+                                              │
+                                              ▼
+                                    v0.3.6 ⚪ (跨端 sync 完善 — 当前优先)
                                               │
                                 ┌─────────────┴──────────────┐
                                 ▼                            ▼
-                          v0.3.2 (T3 Git)             v0.3.3 (T4/T5)
+                          v0.3.7 (SSH UI)            PR-2b Doctor ⏸️ (观察期)
+                                              │
+                                              ▼
+                                    v0.3.8+ (T3/T4/T5 待拍板)
 ```
 
 - **v0.2.6 vs v0.3.0 关键差异**: v0.2.6 Transport trait 是**同步**的 (0 新 dep, 调 `std::process::Command`); **v0.3.0 PR-2 ✅** trait 已迁 async (`tokio::process::Command` + `async-trait`). snapshot codec 从 v0.2.6 的 metadata-only (8 字段, `snapshot_meta.rs`) 升到 v0.3.0 的完整 v4 (`core/snapshot.rs`, bubbles / blob_refs / raw_blobs); pull 优先 v4 decode, fallback metadata-only.
 - **v0.3.0 是分水岭**: 用户可以选 v0.2.6 (一两个月能用) 永久, 也可以跳过 0.2.x 直接上 0.3.0 (但要承担 5-6 天停更).
-- **不要并行**: T3 / T4 / T5 都是 v0.3+ 才拍板; 0.2-0.3.x 阶段就只做 T2 SSH.
+- **v0.3.6 优先于 PR-2b**: 跨端 MVP (v0.3.1) 已能 push/pull, 但 Mac↔Linux 实战仍有多处缺口 (§10.4); Doctor 孤儿根因未清晰, 延后观察.
+- **不要并行**: T3 / T4 / T5 都是 v0.3.8+ 才拍板; v0.3.6–v0.3.7 聚焦 T2 可靠性.
+
+### 10.4 v0.3.6 — 跨端同步完善 (2026-07-05 拍板, 当前优先)
+
+> **背景**: v0.3.1 LAN 配对 + v4 push/pull + `apply_session_from_snapshot` 已闭环 MVP, 但 Mac↔Linux 双机实测仍暴露多处「能 sync 到 unified.db、Cursor 侧栏却不对」的缺口. **Doctor 孤儿会话 (PR-2b) 延后** — 「L3 有 composerData 但侧栏没有」与 L2 `fix_orphans` (空 `latestRootBlobId`) / 项目分组孤儿 (`chat-<md5>`) 是三种不同概念, 根因案例尚不足, 先完善跨端链路.
+
+#### 10.4.1 已具备 (v0.3.1–v0.3.5)
+
+| 能力 | 实现 |
+|------|------|
+| v4 snapshot push/pull | `transport_push` / `transport_pull` + `LanTcpTransport` / `SshRsyncTransport` |
+| 冲突五态 + unified.db upsert | `conflict::classify` → `upsert_session_from_snapshot` |
+| pull 后写 Cursor L2/L3 | `apply_session_from_snapshot` (New / IncomingNewer / Diverged 路径) |
+| LAN 配对 + trusted peers | mDNS + 6 位码 + `<SyncPeersPanel>` |
+| 后台 push + outbox | `sync_loop.rs` 5min tick, push-only |
+| 本地 L2/L3 富化 | v0.3.4 L2→L3 bubble + 图片; v0.3.5 软删 / 子代理 |
+
+#### 10.4.2 已知缺口 (代码现状 → v0.3.6 目标)
+
+| # | 缺口 | 现状 (`src-tauri/`) | v0.3.6 目标 |
+|---|------|---------------------|-------------|
+| G1 | **v4 snapshot 丢附件** | `from_canonical_v4` 的 `blob_refs` / `raw_blobs` 恒空; `Bubble::from_snapshot` 丢弃 `images` | snapshot 携带图片 + agentKv blob; apply 时还原 |
+| G2 | **跨端路径未重写** | `apply_session_from_snapshot` 直接用远端 `project_path` (`/Users/...` vs `/home/...`) | `rewrite_paths` (借鉴 cursaves): 按 `project_slug` 或用户映射表重写本机 cwd |
+| G3 | **Identical 不写 L2/L3** | `ConflictClass::Identical` 只 upsert unified.db, 本地缺 L2/L3 时不补写 | Identical + 本地层缺失 → 仍走 apply |
+| G4 | **pull 结果不可见** | `apply.skipped` 仅 `log::warn!`, UI 无反馈 | `PullReport` 扩展 per-session apply 状态; `<SyncPeersPanel>` 展示 |
+| G5 | **后台 loop 单向** | `sync_loop` 只 push + outbox flush, 无 auto-pull | trusted peer 周期 pull (LAN, 可配置间隔) |
+| G6 | **SSH 无 UI** | T2b 靠手编 `transports.json` | 留 v0.3.7; v0.3.6 文档写清高级用法 |
+
+#### 10.4.3 孤儿会话 — 延后观察 (非 v0.3.6 范围)
+
+| 类型 | 含义 | 现状 |
+|------|------|------|
+| **L2 孤儿** | `latestRootBlobId == ""`, CLI resume 失败 | ✅ `fix_orphans` (v0.2.1) |
+| **项目孤儿** | 反查 workspace 失败 → `chat-<md5>` / `no-workspace` | ⚠️ 分组问题, 内容通常完整; v0.3.x 已部分缓解 |
+| **Doctor 孤儿** | global 有 `composerData`, 侧栏 `composerHeaders` 无注册 | ⏸️ PR-2b 延后; 跨端 apply 后是否出现需更多复现案例 |
+
+**观察期动作**: 用户反馈时记录 uuid + 三层 sources + `project_path` + 是否刚 transport_pull; 积累 ≥3 例再开 PR-2b.
 
 ### 10.3 不在 v0.2.x / v0.3.x 路线图 (明确)
 
@@ -1696,7 +1747,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | `src-tauri/src/core/transport/config.rs` | ✅ SHIPPED (v0.2.6 — TransportConfigFile + PeerConfig) | ~190 | §5.3 `~/.bettercursor/transports.json` |
 | `src-tauri/tests/fixtures/fake-ssh.sh` | ✅ SHIPPED (v0.2.6) | ~40 | test fixture |
 | `src-tauri/tests/fixtures/fake-rsync.sh` | ✅ SHIPPED (v0.2.6) | ~50 | test fixture |
-| `src-tauri/src/core/transport/git.rs` | 🆕 NEW (later, v0.3.2) | — | §4 T3 |
+| `src-tauri/src/core/transport/git.rs` | 🆕 NEW (later, v0.3.8+) | — | §4 T3 |
 | `src-tauri/src/core/conflict.rs` | ✅ SHIPPED (v0.3.0 PR-2) | ~215 | §6 |
 | `src-tauri/src/core/lock.rs` | 🆕 NEW (升级自 `core::process`, 保留 v0.2.x 兼容) | — | §7.4 |
 | `src-tauri/src/cli/bettercursor.rs` | 🆕 NEW binary | — | §5.6 (CLI push / apply / outbox) |
@@ -1769,12 +1820,12 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 
 | 借鉴什么 | 上游 | 落点 |
 |---------|------|------|
-| Doctor 孤儿审计/恢复 | cursaves `doctor_audit` / `doctor_recover` | 新 Tauri command + `core/doctor.rs` |
+| Doctor 孤儿审计/恢复 | cursaves `doctor_audit` / `doctor_recover` | 新 Tauri command + `core/doctor.rs` | ⏸️ 延后观察 (§10.4.3) |
 | Git remote 项目标识 | cursaves `paths.py::get_project_identifier` | `paths.rs` + snapshot `project_slug` |
 | SSH workspace 路径 | cursaves `paths.py::list_all_workspaces` | `paths.rs` |
 | 导入后 workspace 注册 (不自动建 workspace) | cursaves `importer.py::_register_in_*` | 对齐 `inject.rs` |
 | DB fingerprint 减扫 | cursaves `watch.py::_get_db_fingerprint` | `watcher.rs` |
-| 跨设备路径重写 | cursaves `importer.py::rewrite_paths` | v4 import / `sync.rs` |
+| 跨设备路径重写 | cursaves `importer.py::rewrite_paths` | v4 import / `sync.rs` | ⚪ **v0.3.6 G2** |
 | TokenUsage / 降级标记 | cursor-history spec 009/012 | `Bubble` / `Conversation` / UI |
 | 轻量 spec 驱动 (parser 契约) | cursor-history `specs/` 结构 | `docs/PARSER_SPEC.md` (仅协议级变更时) |
 
@@ -1831,6 +1882,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | 9 | v0.2.1 **`fix_orphans` 全量扫** + `.backup_<ts>` 自动留 | 防御性, 一个后端多个 UI 入口复用 | 单条入口 + 手动备份 | 2026-7-04 |
 | 10 | **锁检测独立** `core::process` (后续升 `core::lock`) | 模块化, 单测覆盖 | 留在 sync.rs 内联 (难测试) | 2026-7-04 |
 | 11 | **Session uuid 模型**: 有效 CLI 会话 L1↔L2 同 uuid; L2 栈 vs L3 栈 ID 池分立; merge key = uuid, 不做跨栈猜测 join | 与用户实测 + scan_all 实现一致; 避免误读 vibe-replay「两栈」为 L1/L2 不一致 | 为跨栈 heuristics 改默认键 | 2026-7-05 |
+| 12 | **v0.3.6 优先跨端 sync 完善, PR-2b Doctor 延后观察** | v0.3.1 MVP 已通但 Mac↔Linux 仍有 G1–G5 缺口; Doctor 孤儿与 L2 orphan 是不同概念, 复现案例不足 | 先做 PR-2b Doctor | 2026-7-05 |
 
 ### 12.2 已拍板: 不做 (negative decisions)
 
@@ -1848,8 +1900,10 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 
 | 决策 | 候选项 | 评估维度 | 推荐 |
 |------|--------|---------|------|
-| T3 Git adapter 何时做? | v0.3.2 / 永远不做 / 留给 community plugin | 用户需求 + 维护成本 | v0.3.2 (当 ≥2 用户明确要求) |
-| T4 S3 / T5 Tailscale adapter? | v0.3.3 / 永远不做 | 用户群体 + 安全审查 | 永远不做 (除非出现 ≥5 用户社区诉求) |
+| v0.3.6 做什么? | 跨端 sync 完善 / PR-2b Doctor / T3 Git | 用户痛点 + 根因清晰度 | **跨端 sync 完善** (§10.4) — 2026-07-05 已拍板 |
+| PR-2b Doctor 何时做? | v0.3.6 / 观察期后 / 永远不做 | 复现案例数 + 与跨端 apply 关系 | **观察期** — 积累 ≥3 例再开 |
+| T3 Git adapter 何时做? | v0.3.8 / 永远不做 / 留给 community plugin | 用户需求 + 维护成本 | v0.3.8 (当 ≥2 用户明确要求) |
+| T4 S3 / T5 Tailscale adapter? | v0.3.8+ / 永远不做 | 用户群体 + 安全审查 | 永远不做 (除非出现 ≥5 用户社区诉求) |
 | v0.3.0 unified.db 是否替换 v0.2-inline-write 路径? | 替换 (大写) / 共存 (兼容) / 取舍 | 数据迁移风险 + 用户教育 | 替换 + 提供一次性 migration tool |
 | v0.3.1 conflict UI 默认动作? | 单一 LWW (自动) / 严格 3-way UI (每次问) | UX 摩擦 vs 数据保真度 | 单一 LWW 默认 + "detected conflict" 通知, 点击才进 UI |
 

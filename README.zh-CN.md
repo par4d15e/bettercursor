@@ -90,7 +90,10 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
 
 ### v0.3.2+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] T3/T4/T5 adapter: git / S3 / Tailscale
+- [ ] **v0.3.6 — 跨端同步完善** (当前优先): v4 snapshot 富化 (图片 / agentKv / `raw_blobs`)、Mac↔Linux 路径重写、`Identical` 时补写缺失 L2/L3、pull apply 结果 UI 反馈、后台 auto-pull (LAN)
+- [ ] **v0.3.7** — T2b SSH peer 设置 UI (高级模式)
+- [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapter (待拍板)
+- [ ] **PR-2b Doctor** — 延后观察; 先收集孤儿会话复现案例 ([SYNC_DESIGN §10.4.3](SYNC_DESIGN.md))
 
 ## 下载安装
 
@@ -350,13 +353,13 @@ packages:
 
 ```
 v0.2.5 (✅ done)  跨平台打包 · i18n · 后台 sync · 对话记录 · 修复 orphan · 删除
-v0.2.6 (✅ now)   跨设备 sync — Transport trait 初版 · SSH/rsync (T2) impl
-                  · 4 个 Tauri 命令 · Intel dmg
-v0.3.0 (✅ done)   ~/.bettercursor/unified.db · snapshot codec v4 ·
+v0.2.6 (✅ done)  跨设备 sync — Transport trait 初版 · SSH/rsync (T2) impl
+v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                   async Transport · Conflict 5-way
-v0.3.1 (✅ done)   LAN mDNS 配对 · outbox · sync loop
-v0.3.2 (✅ now)   <SettingsDialog> UI 整合 · i18n 修复 · 侧栏体验
-v0.3.3+           T3 Git · T4 S3 · T5 Tailscale adapter
+v0.3.1 (✅ done)  LAN mDNS 配对 · outbox · sync loop
+v0.3.2–v0.3.5 (✅ done)  设置面板 · L2/L3 富化 · L3 软删
+v0.3.6 (⚪ next)  跨端同步完善 — 见 SYNC_DESIGN §10.4
+v0.3.7+           SSH UI · T3/T4/T5 adapter · Doctor (延后观察)
 ```
 
 ## 致谢

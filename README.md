@@ -156,7 +156,14 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
 
 ### v0.3.2+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] T3/T4/T5 adapters: git / S3 / Tailscale
+- [ ] **v0.3.6 — Cross-device sync hardening** (current priority): v4 snapshot
+      enrichment (images / agentKv / `raw_blobs`), Mac↔Linux path rewrite,
+      Identical→apply when L2/L3 missing, pull apply feedback in UI,
+      background auto-pull (LAN)
+- [ ] **v0.3.7** — SSH peer UI for T2b advanced mode
+- [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapters (TBD)
+- [ ] **PR-2b Doctor** — deferred; observe orphan cases first
+      ([SYNC_DESIGN §10.4.3](SYNC_DESIGN.md))
 
 ## Download & install
 
@@ -455,13 +462,14 @@ in 30 s.
 ```
 v0.2.5 (✅ done)  Cross-platform packaging · i18n · background sync ·
                  conversation records · repair orphan · delete
-v0.2.6 (✅ now)   Cross-device sync — Transport trait first cut ·
-                 SSH/rsync (T2) impl · 4 Tauri commands · Intel dmg
-v0.3.0 (✅ done)   ~/.bettercursor/unified.db · snapshot codec v4 ·
+v0.2.6 (✅ done)  Cross-device sync — Transport trait first cut ·
+                 SSH/rsync (T2) impl · 4 Tauri commands
+v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                  async Transport · Conflict 5-way
-v0.3.1 (✅ done)   LAN mDNS pairing · outbox · sync loop
-v0.3.2 (✅ now)   <SettingsDialog> UI polish · i18n fix · sidebar UX
-v0.3.3+           T3 Git · T4 S3 · T5 Tailscale adapters
+v0.3.1 (✅ done)  LAN mDNS pairing · outbox · sync loop
+v0.3.2–v0.3.5 (✅ done)  Settings UI · L2/L3 enrichment · L3 soft delete
+v0.3.6 (⚪ next)  Cross-device sync hardening — see SYNC_DESIGN §10.4
+v0.3.7+           SSH UI · T3/T4/T5 adapters · Doctor (deferred)
 ```
 
 ## Acknowledgements

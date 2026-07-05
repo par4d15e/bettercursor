@@ -17,6 +17,10 @@
 >   - **v0.2.6 housekeeping** (2026-07-04 完工, 跟 v0.2.6 一起打包发布) = CI matrix 加 `macos-13` (Intel x64 dmg) + Node 20→22 + vitest 2 + jsdom 25 + `@testing-library/react` 16 + `<SyncStatusBadge>` / `<BrokenBadge>` i18n-aware 单测 (15 case). 无业务代码改动.
 >   - **v0.3.1** (2026-07-05 完工) = LAN 跨设备开箱即用 — mDNS 发现 + 6 位配对 + outbox + `<SyncPeersDialog>` / `<ConflictResolveDialog>` (v0.3.2 起迁入 `<SettingsDialog>`). 详见 [SYNC_DESIGN.md §10.1](SYNC_DESIGN.md).
 >   - **v0.3.2** (2026-07-05 完工) = UI housekeeping — `<SettingsDialog>` 整合语言/跨设备同步/冲突处理 + 修复 locale `sync` 键重复 + 暗色语言切换 + 侧栏产品名 + 全部折叠/展开. 详见 [README.md](README.md).
+>   - **v0.3.3** (2026-07-05 完工) = version bump 三件套 + UI 版本号显示.
+>   - **v0.3.4** (2026-07-05 完工) = L2→L3 bubble 富化、用户图片注入、补 Layer 3 操作规范. 详见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
+>   - **v0.3.5** (2026-07-05 完工) = L3 软删、子代理树、隐藏空壳 Desktop 会话、对话读取修复、`deleted_sessions` tombstone. 详见 [README.md](README.md).
+>   - **下一步 (v0.3.6 规划)** = **跨端同步完善** — v4 snapshot 富化 (图片 / agentKv / raw_blobs)、Mac↔Linux 路径重写、pull→apply 反馈、双向 sync loop. **Doctor 孤儿会话延后观察** (根因未清晰, 见 [SYNC_DESIGN §10.4](SYNC_DESIGN.md)).
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -138,9 +142,10 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** (最小切片: `write_layer3` 复制已有 agentKv) |
-| **L3 统一写 API** (batch + backup 保留 N 份 + verify) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 部分 — `sync.rs` 有 inline write; 缺 cursaves 级 backup 策略 → PR-2b |
+| **L3 统一写 API** (batch + backup 保留 N 份 + verify) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | ⚪ 部分 — `sync.rs` 有 inline write + `.backup_<ts>`; 缺 cursaves 级保留 N 份策略 |
 | **`core::conflict.rs` 五态分类** | [SYNC_DESIGN.md §6](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** |
-| **Doctor 孤儿会话审计/恢复** (L3 有 composerData 但未注册 sidebar) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⚪ PR-2b |
+| **跨端 sync 完善** (v4 富化 / 路径重写 / pull 反馈 / 双向 loop) | [SYNC_DESIGN.md §10.4](SYNC_DESIGN.md) | ⚪ **v0.3.6 优先** |
+| **Doctor 孤儿会话审计/恢复** (L3 有 composerData 但未注册 sidebar) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | ⏸️ **延后观察** — 与 L2 `fix_orphans` / 项目分组孤儿是不同概念; 根因案例不足, 先完善跨端 sync |
 | **parity fixtures** (cursor-history spec 010–013 场景 → Rust 单测) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | UI: 设置面板 (语言 / 跨设备同步 / 冲突处理) | [SYNC_DESIGN.md §9](SYNC_DESIGN.md) | **v0.3.2 ✅** (`<SettingsDialog>` + `<SyncPeersPanel>` + `<ConflictResolvePanel>`) |
 | Mac 端 cross-compile / dmg 打包 | Phase T4 (PRD §7) | **v0.2.5 ✅** (Apple Silicon) + **v0.2.6 ✅** (Intel x64 via `macos-13` matrix) |
