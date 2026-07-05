@@ -181,13 +181,13 @@ bettercursor/
 
 ## 架构概览
 
-会话读取分 **三层**:
+会话读取分 **三层** (UUID 身份模型见 [SYNC_DESIGN.md §2.5 Q6](SYNC_DESIGN.md)):
 
 | 层 | 存储 | 路径 (Linux) | 角色 |
 |---|---|---|---|
-| **L1** | JSONL | `<workspaceStorage>/<chat_root>/<composer>/<session>.jsonl` | 最新, Cursor CLI 主存 |
-| **L2** | SQLite `ItemTable` | `<…>/state.vscdb` (aiDiskKV) | 编辑器内缓存 |
-| **L3** | SQLite `cursorDiskKV` | `<…>/state.vscdb` (cursorDiskKV) | 编辑器元数据 |
+| **L1** | JSONL | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` |  transcript; CLI 与 Desktop 都会写; **有效 CLI 会话时与 L2 同 uuid** |
+| **L2** | SQLite | `~/.cursor/chats/<md5(cwd)>/<uuid>/store.db` | **仅 CLI** (`cursor-agent`) |
+| **L3** | SQLite KV | `~/.config/Cursor/User/globalStorage/state.vscdb` (`cursorDiskKV` + 各 workspace `state.vscdb`) | **Desktop** composer 索引与 bubble 正文 |
 
 Rust 端 (`src-tauri/src/core/`) 负责:
 1. **`paths.rs`** — 解析 cursor user dir / chat_root MD5 等

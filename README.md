@@ -249,13 +249,13 @@ bettercursor/
 
 ## Architecture overview
 
-Session reads happen in **three layers**:
+Session reads happen in **three layers** (see [SYNC_DESIGN.md §2.5 Q6](SYNC_DESIGN.md) for UUID identity):
 
 | Layer | Storage | Path (Linux) | Role |
 |---|---|---|---|
-| **L1** | JSONL | `<workspaceStorage>/<chat_root>/<composer>/<session>.jsonl` | Latest, primary Cursor CLI write target |
-| **L2** | SQLite `ItemTable` | `<…>/state.vscdb` (aiDiskKV) | In-editor conversation cache |
-| **L3** | SQLite `cursorDiskKV` | `<…>/state.vscdb` (cursorDiskKV) | In-editor metadata |
+| **L1** | JSONL | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` | Transcript; CLI + Desktop both write; **same uuid as L2 when CLI session is valid** |
+| **L2** | SQLite | `~/.cursor/chats/<md5(cwd)>/<uuid>/store.db` | **CLI only** (`cursor-agent`); Sidebar resume list on CLI |
+| **L3** | SQLite KV | `~/.config/Cursor/User/globalStorage/state.vscdb` (`cursorDiskKV`: `composerData:*`, `bubbleId:*`; plus per-workspace `workspaceStorage/*/state.vscdb`) | **Desktop** composer index + bubble bodies |
 
 Rust side (`src-tauri/src/core/`) handles:
 1. **`paths.rs`** — parse cursor user dir / chat_root MD5 etc.

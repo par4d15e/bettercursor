@@ -9,6 +9,12 @@
 //!   - Layer 1 (JSONL): `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl`
 //!   - Layer 2 (CLI):   `~/.cursor/chats/<md5(cwd)>/<uuid>/store.db`
 //!   - Layer 3 (Electron): `<user_dir>/globalStorage/state.vscdb`
+//!
+//! Session UUID (see SYNC_DESIGN §2.5 Q6):
+//!   - Valid CLI session: L1 directory name == L2 directory name == composer_id.
+//!   - Valid Desktop session: L3 `composerData:<uuid>` (+ `bubbleId:<uuid>:*`); L2 absent.
+//!   - L2 session pool vs L3 session pool are usually disjoint on mixed-use machines;
+//!     that is stack-vs-stack, not L1-vs-L2 mismatch.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

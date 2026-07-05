@@ -207,6 +207,9 @@ pub fn scan_all() -> Result<Vec<CanonicalSession>> {
     // information:
     //   - state.vscdb → Desktop (or Mac)
     //   - store.db   → CLI only
+    // Valid CLI sessions: L1 agent-transcripts/<uuid>/ and L2 chats/.../<uuid>/
+    // share the same composer_id (see SYNC_DESIGN §2.5 Q6). L2 vs L3 ID pools
+    // on a mixed-use machine are usually disjoint stacks — not an L1/L2 bug.
     // We run them in priority order so the higher-fidelity writer
     // wins: Layer 3 first (sets linux_desktop), Layer 2 second (sets
     // linux_cli), Layer 1 last (fills preview/indexable_text without

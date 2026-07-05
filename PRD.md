@@ -215,7 +215,7 @@ cd .. && python3 tests/test_layer2_import.py
 | US-4 | 我点 "复制 resume 命令" 按钮, 拿到 `cursor-agent --resume <uuid>`. | 剪贴板里有正确命令. |
 | US-5 | 我用搜索框过滤 session 名称 / 项目 / 内容关键字. | 实时过滤, 高亮匹配. |
 | US-6 | 我点 "刷新" 按钮, **重新扫描** 本机存储. | 1-2 秒内列表更新. |
-| US-7 | 重复的 UUID (同一 session 在多层都存在) **不出现两次**. | canonical merge 按 uuid + project_slug dedup. |
+| US-7 | 重复的 UUID (同一 session 在多层都存在) **不出现两次**. | canonical merge 按 uuid dedup; 有效 CLI 会话 L1/L2 同 uuid; 未 sync 的 L2 栈与 L3 栈 uuid 池分立 — 见 [SYNC_DESIGN §2.5 Q6](SYNC_DESIGN.md). |
 
 ### 2.3 非目标 (Non-goals, 强调)
 
@@ -418,9 +418,12 @@ const orphans = await invoke<FixOrphansReport>('fix_orphans');
 
 ### 6.1 多源同 UUID 合并
 
-**场景**: 同一 session 在 Layer 2 (CLI store.db) 和 Layer 3 (Desktop state.vscdb) 各有一份.
+**场景 A — 同端 sync 补层后**: 一条 session 经 `sync_session` / `transport_pull` 在 L2 (CLI) 与 L3 (Desktop) **各有一份**, uuid **相同** (写回路径刻意保持 `composer_id` 不变).
 **策略**: `canonical::merge` 按 uuid 去重, 每个 source 字段保留, UI 上用 `<SourceBadge>` 标多个.
 **风险**: 两个 source 的 `last_updated_at` 不一致. 用最新值作为 sort key, 详情面板里两个 source 都展示.
+
+**场景 B — 混用 CLI + Desktop 的自然会话 (未 sync)**: 机器上同时存在 **L2 栈会话池** (仅 L1+L2) 与 **L3 栈会话池** (L3 ± L1), 两套 uuid **通常不相交** — 这是 Cursor 产品形态, 不是 scan  bug. 详见 [SYNC_DESIGN.md §2.5 Q6](SYNC_DESIGN.md).
+**策略**: 列表里各显示各的; 跨端接力靠 v4 snapshot + apply, **不** 假设「Desktop 某 uuid = CLI 某 uuid」 unless 用户已 sync 过.
 
 ### 6.2 chat_root 计算
 

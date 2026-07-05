@@ -9,7 +9,7 @@
 > **状态**: 设计稿. v0.2-alpha + v0.2.1 已落地 (见 §0.5 callout). §3 unified.db / §4 transport 适配器 / §6 冲突解决 / §7 lock module 升级 仍是待拍板.
 >
 > **章节 map**:
-> §0 背景与现状 → §1 核心架构 → §2 Snapshot codec → §3 unified.db schema → §4 传输适配器层 → §5 SSH/rsync (default) → §6 冲突解决 → §7 锁画像 → §8 多端接力 → §9 Cursor 集成 → §10 路线图 → §11 文件清单 (**含 §11.5 vendored 借鉴索引**) → §12 决策 → §13 风险.
+> §0 背景与现状 → §1 核心架构 → §2 Snapshot codec (§2.5 Q6 = UUID 身份) → §3 unified.db schema → §4 传输适配器层 → §5 SSH/rsync (T2b) → §6 冲突解决 → §7 锁画像 → §8 多端接力 → §9 Cursor 集成 → §10 路线图 → §11 文件清单 (**§11.5 vendored** / **§11.6 社区参考**) → §12 决策 → §13 风险.
 
 ### Reading guide: 旧章节 → 新章节 映射表
 
@@ -197,6 +197,7 @@
 
 但它**不是**真相来源. 真相永远是 Cursor 自己的三层. 这意味着:
 
+- **Session 身份**: 有效 CLI 会话 L1↔L2 共用同一 uuid; Desktop 会话以 L3 `composerData` uuid 为主; L2 栈与 L3 栈的 ID 池在混用机器上通常分立 — 详见 §2.5 Q6.
 - **不可写**: 写只能写 Cursor 三层 (通过 `core::inject::Mutation` / `core::sync::sync_session` 现有路径).
 - **可重建**: unified.db 损坏就 `cargo tauri dev` 启动时 `core::canonical::scan_all()` 重新回填.
 - **不同步**: 我们 sync **Cursor 三层的内容** (序列化进 snapshot), 不是同步两份 unified.db.
@@ -358,6 +359,27 @@ Layer 2 chat_root 是 md5(cwd) — 不可逆哈希. 反查策略:
 | 老的 `desktop-<uuid>` fallback (已废弃) | `"no-workspace"` (新值) | no-workspace |
 
 **旧行为 bug**: `desktop-<uuid>` 让人误以为这是 Cursor 命名的真项目. 已统一改为 `"no-workspace"`.
+
+#### Q6. Session UUID 身份模型 — L1↔L2 一致, L2 栈与 L3 栈分立 (2026-07-05 实测拍板)
+
+> 背景: 社区逆向 ([vibe-replay 深度文](https://vibe-replay.com/blog/cursor-local-storage/)) 提出 Cursor 本地存储像「分布式状态系统」, 且 **store.db 会话 ID 集合** 与 **composerData 会话 ID 集合** 在一台混用 CLI + Desktop 的机器上可能 **完全不相交**. 这与 bettercursor 在有效会话上的 **实测** 不矛盾 — 需把「哪两层共享 uuid」说清楚.
+
+**拍板结论 (本仓库 + 用户实测)**:
+
+| 会话类型 | UUID 在各层的关系 | bettercursor 行为 |
+|---------|------------------|---------------------|
+| **CLI 有效会话** | L1 目录名 = L2 目录名 = `composer_id` (**一致**) | `scan_layer1_into` + `scan_layer2_into` 用同一 uuid merge |
+| **Desktop 有效会话** | L3 `composerData:<uuid>` + `bubbleId:<uuid>:*`; L1 若有则通常 **同 uuid**; **无 L2** | L3 标 `linux_desktop`; L1 只补 preview/indexable |
+| **sync / transport 写回后** | 仍用 snapshot 里的 `composer_id` 写 L2/L3, **不换 uuid** | `apply_session_from_snapshot` 保持跨端 identity |
+| **混机上的两「栈」** | **L2 会话池** (CLI) 与 **L3 会话池** (Desktop) 的 ID 集合往往不相交 — 说的是 **栈与栈**, 不是 L1 vs L2 | 不做跨栈 UUID 猜测 join; 靠 snapshot sync 把会话搬到对端 |
+
+**易混点 (文档/社区表述)**:
+
+- vibe-replay 的「0 个 transcript 同时 match store 与 composer」= JSONL 分别挂在 **CLI 栈或 Desktop 栈**, 不是证明 L1/L2 uuid 不一致.
+- [ChatCrystal 踩坑文](https://jishuzhan.net/article/2055923341928271873) 只描述 Desktop 两库 (workspace `ItemTable` 索引 + global `cursorDiskKV` bubble), **未覆盖 L2 store.db** — 对 Mac↔Linux CLI 接力不完整.
+- **不在** bettercursor session 主路径的旁路存储 (只读/不 ingest): `agentKv:*` (request 轴), `messageRequestContext`, `checkpointId`, `~/.cursor/prompt_history.json`, `~/.cursor/ai-tracking/`, VS Code `User/History/`. v0.3.0+ 对 `agentKv` 仅有 **最小写入** (跨端 apply), UI 列表不依赖它.
+
+**代码契约**: `canonical::scan_all()` 以 **uuid 为唯一 merge key**; PRD US-7「同 uuid 不出现两次」建立在此模型上. 若未来需合并「用户心智上同一条对话但 Cursor 发了两个 uuid」的 edge case, 应另做 heuristics join, **不** 改默认 uuid 键.
 
 ### 2.6 Rust signatures
 
@@ -1736,11 +1758,20 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 - notify 实时监听 + Windows 支持 + 桌面 GUI + i18n
 - Rust 单测覆盖 (`canonical.rs` 等)
 
+#### 11.6 社区逆向参考 (非官方 spec, 2026-07-05)
+
+> Cursor **无**官方本地存储 schema 文档. 下列为第三方逆向, 用于交叉验证 §2.5 Q6; **以本仓库 `paths.rs` + `canonical.rs` 实测为准**. 离线快照见 `vendored/` 对应目录.
+
+| 来源 | vendored 路径 | 覆盖范围 | 与 bettercursor 对齐点 | 差异 / 缺口 |
+|------|---------------|---------|----------------------|------------|
+| vibe-replay | [`vendored/vibe-replay-cursor-local-storage/`](../vendored/vibe-replay-cursor-local-storage/) | L1 JSONL + L2 store.db + L3 state.vscdb + agentKv/checkpoint 旁路 | 「非单文件日志、多层 stack」; L3 `composerData`+`bubbleId`; L2 CLI chats | 强调 store 栈 vs composer 栈 ID 不相交; 我们 **不** ingest checkpoint/ai-tracking |
+| ChatCrystal 踩坑文 | [`vendored/chatcrystal-state-vscdb-pitfalls/`](../vendored/chatcrystal-state-vscdb-pitfalls/) | workspace `ItemTable` + global `cursorDiskKV` | `bubbleId:<composerId>:<bid>`; 空 assistant bubble 跳过; 孤立 composer 扫 global | **未写 L2**; 简化成「工作区=索引、全局=正文」 — 我们 L3 还读 global `composerData:` + workspace pointer keys |
+
 ---
 
 ## §12 决策记录
 
-### 12.1 已拍板表 (10 条)
+### 12.1 已拍板表 (11 条)
 
 | # | 决策 | 理由 | 替代 | 拍板时间 |
 |---|------|------|------|----------|
@@ -1754,6 +1785,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | 8 | v0.2.1 **delete = `remove_dir_all`** (无 trash) | 用户明示"直接 rm" | trash sidecar + 还原 UI | 2026-07-04 |
 | 9 | v0.2.1 **`fix_orphans` 全量扫** + `.backup_<ts>` 自动留 | 防御性, 一个后端多个 UI 入口复用 | 单条入口 + 手动备份 | 2026-7-04 |
 | 10 | **锁检测独立** `core::process` (后续升 `core::lock`) | 模块化, 单测覆盖 | 留在 sync.rs 内联 (难测试) | 2026-7-04 |
+| 11 | **Session uuid 模型**: 有效 CLI 会话 L1↔L2 同 uuid; L2 栈 vs L3 栈 ID 池分立; merge key = uuid, 不做跨栈猜测 join | 与用户实测 + scan_all 实现一致; 避免误读 vibe-replay「两栈」为 L1/L2 不一致 | 为跨栈 heuristics 改默认键 | 2026-7-05 |
 
 ### 12.2 已拍板: 不做 (negative decisions)
 

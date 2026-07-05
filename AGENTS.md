@@ -13,7 +13,9 @@ bettercursor/
 ├── bettercursor/, adapter/  # 旧版 Python 守护进程(存档,不维护,仅做算法参考)
 ├── vendored/                # 上游 Cursor 解析库快照(子仓库,只读参考)
 │   ├── cursaves/            # Python — 写路径 / 导入导出 / agentKv / 冲突 / Doctor
-│   └── cursor-history/      # TypeScript — L3 bubble 解析 / session recovery / spec+测试
+│   ├── cursor-history/      # TypeScript — L3 bubble 解析 / session recovery / spec+测试
+│   ├── vibe-replay-cursor-local-storage/  # 网页文章快照 — 多层本地存储 stack 模型
+│   └── chatcrystal-state-vscdb-pitfalls/  # 网页文章快照 — Desktop L3 解析踩坑
 ├── README.md  PRD.md  SYNC_DESIGN.md  TAURI_RUST_PLAN.md  BACKGROUND.md  goal.md
 ```
 
@@ -23,6 +25,8 @@ bettercursor/
 |--------|------|------|----------|
 | `vendored/cursaves/` | [Callum-Ward/cursaves](https://github.com/Callum-Ward/cursaves) | **AGPL-3.0** | WAL 写 batch、agentKv、冲突五态、导入导出 ancillary、Doctor、workspace 注册、DB fingerprint |
 | `vendored/cursor-history/` | [S2thend/cursor-history](https://github.com/S2thend/cursor-history) | MIT | `extractBubbleText` / `extractToolCalls`、global session recovery、timestamp fallback、parity fixtures、spec 010–013 |
+| `vendored/vibe-replay-cursor-local-storage/` | [vibe-replay 博客](https://vibe-replay.com/blog/cursor-local-storage/) | 网页文章快照 | L1/L2/L3 stack、store vs composer 两栈、agentKv/checkpoint 旁路 |
+| `vendored/chatcrystal-state-vscdb-pitfalls/` | [技术栈 / ChatCrystal](https://jishuzhan.net/article/2055923341928271873) | 网页文章快照 | workspace+global 两库、`bubbleId:` key、孤立 composer、thinking 格式 |
 
 **硬性约束**(与 [PRD.md §12.5](PRD.md) 一致):
 

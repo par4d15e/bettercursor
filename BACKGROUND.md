@@ -175,6 +175,18 @@ Mac 的 `~/Library/Application Support/Cursor/User/workspaceStorage/` 里有 16 
 切 SSH 配置 = 换 workspace hash。旧 hash 不会被自动清，里面残留的空草稿会一直存在。
 **这是 Mac 那 4 条空草稿的来源** — 不是真 session，是 Cursor UI 切 workspace 的产物。
 
+### 2.4 Session UUID 在各层的关系 (2026-07-05 补充)
+
+> 与 [SYNC_DESIGN.md §2.5 Q6](SYNC_DESIGN.md) 同步. 社区文 ([vibe-replay](https://vibe-replay.com/blog/cursor-local-storage/)) 的「两栈 ID 不相交」指 **L2 store.db 池** vs **L3 composerData 池**, 不是 L1 vs L2.
+
+| 有效会话类型 | L1 JSONL | L2 store.db | L3 composerData + bubbleId | uuid |
+|-------------|----------|-------------|---------------------------|------|
+| Linux CLI (`cursor-agent`) | ✅ 有, 目录名 = uuid | ✅ 有, 目录名 = uuid | ❌ 通常无 | **L1 = L2 = uuid** (实测一致) |
+| Linux/Mac Desktop | ✅ 常有 | ❌ 无 (L2 仅 CLI) | ✅ 有 | **L1 ≈ L3 = uuid** |
+| sync 补层 / transport 后 | 视端而定 | 可补 | 可补 | **snapshot composer_id 不变** |
+
+bettercursor `scan_all()` 以 uuid 为 merge key; 不做「CLI uuid 猜测对应 Desktop uuid」的 join.
+
 ---
 
 ## 3. 目标架构 — 反向推送 (Reverse Push)
