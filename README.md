@@ -258,7 +258,7 @@ bettercursor/
 ├── tests/                 # Python compatibility tests (parity check)
 ├── bettercursor/, adapter/# Old Python daemon reference impl (archive)
 ├── vendored/              # Upstream Cursor parsing library (subrepo)
-├── PRD.md · SYNC_DESIGN.md · TAURI_RUST_PLAN.md · BACKGROUND.md · goal.md
+├── PRD.md · SYNC_DESIGN.md · AGENTS.md · docs/
 └── .github/workflows/     # release.yml (3-OS matrix)
 ```
 
@@ -414,9 +414,8 @@ in 30 s.
 |---|---|
 | [PRD.md](PRD.md) | Product requirements v0.1 feature matrix + acceptance criteria |
 | [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ sync capability design |
-| [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) | Python → Rust module mapping + Cargo dep manifest |
-| [BACKGROUND.md](BACKGROUND.md) | Project history (Python daemon → Tauri rewrite) |
-| [goal.md](goal.md) | Original brief |
+| [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ sync / cross-device design |
+| [docs/README.md](docs/README.md) | Doc layout; local archive in `docs/local/` (gitignored) |
 
 ## Roadmap
 

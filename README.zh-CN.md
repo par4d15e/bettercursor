@@ -185,7 +185,7 @@ bettercursor/
 ├── tests/                 # Python 兼容性测试 (parity check)
 ├── bettercursor/, adapter/# 旧 Python 守护进程代码 (存档)
 ├── vendored/              # 上游 Cursor 解析库 (子仓库)
-├── PRD.md · SYNC_DESIGN.md · TAURI_RUST_PLAN.md · BACKGROUND.md · goal.md
+├── PRD.md · SYNC_DESIGN.md · AGENTS.md · docs/
 └── .github/workflows/     # release.yml (3-OS matrix)
 ```
 
@@ -324,9 +324,8 @@ packages:
 |---|---|
 | [PRD.md](PRD.md) | 产品需求 v0.1 功能矩阵 + 验收标准 |
 | [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ 同步功能设计文档 |
-| [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) | Python → Rust 模块映射 + Cargo 依赖清单 |
-| [BACKGROUND.md](BACKGROUND.md) | 项目历程 (Python 守护进程 → Tauri 重构) |
-| [goal.md](goal.md) | 原始 brief |
+| [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ 同步与跨设备设计 |
+| [docs/README.md](docs/README.md) | 文档布局; 本地归档见 `docs/local/` (gitignore) |
 
 ## 路线图
 

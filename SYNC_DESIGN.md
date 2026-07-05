@@ -13,7 +13,7 @@
 
 ### Reading guide: 旧章节 → 新章节 映射表
 
-> 本次 (2026-07-04) 整体重写后, 旧 SYNC_DESIGN 的章节号已变. [PRD.md](PRD.md) / [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) 里旧链接仍然有效指向本文件, 但需要查表. 后续如果同步更新 cross-ref, 直接搜 grep -n "SYNC_DESIGN" 改成本表的"新章节号".
+> 本次 (2026-07-04) 整体重写后, 旧 SYNC_DESIGN 的章节号已变. [PRD.md](PRD.md) 里旧链接仍然有效指向本文件, 但需要查表. 后续如果同步更新 cross-ref, 直接搜 grep -n "SYNC_DESIGN" 改成本表的"新章节号". (`TAURI_RUST_PLAN.md` 已迁入 `docs/local/`, gitignore.)
 
 | 旧 SYNC_DESIGN 章节号 (2026-07-03) | 内容 | 本 doc 新章节号 |
 |-----------------------------------|------|----------------|
@@ -1819,7 +1819,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 
 拍板完成后:
 1. 更新 [PRD.md §0.5](PRD.md) 状态行
-2. 更新 [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) Phase 章节
+2. 大改时同步 [PRD.md](PRD.md) 功能矩阵 (迁移计划见 `docs/local/TAURI_RUST_PLAN.md`)
 3. 在本表加一行, 标注日期 + commit 哈希
 
 ---
@@ -1873,8 +1873,8 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | 主题 | 链接 |
 |------|------|
 | 产品现状 | [PRD.md](PRD.md) §0 |
-| 背景调研 | [BACKGROUND.md](BACKGROUND.md) §6.5 (SSH 反向推送史) |
-| 实施计划 | [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) §3 (commands) |
+| 背景调研 | `docs/local/BACKGROUND.md` §6.5 (SSH 反向推送史, 本地归档) |
+| 实施计划 | `docs/local/TAURI_RUST_PLAN.md` §3 (commands, 本地归档) |
 | Tailscale 历史 | [mihomo-tailscale-fakeip-conflict.md](mihomo-tailscale-fakeip-conflict.md) (旧 v0.2 设计参考, 已不作为 default) |
 | Cursor 存储路径 | [vendored/cursaves/cursor_saves/paths.py](../vendored/cursaves/cursor_saves/paths.py) (Python 参考) |
 | vendored 借鉴索引 | [§11.5](SYNC_DESIGN.md) (cursaves + cursor-history 对比结论) |

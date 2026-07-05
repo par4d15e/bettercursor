@@ -3,10 +3,8 @@
 > 文档目的: 一个 **Tauri + Rust 桌面应用**, 参照 [cc-switch-session.png](cc-switch-session.png) 的"会话管理"界面, 列出本机 Cursor 产生的所有 session 并标注来源 (Mac / Linux CLI / Linux Desktop).
 >
 > 配套文档:
->   - [BACKGROUND.md](BACKGROUND.md) — 调研 + 发现的考古记录
->   - [goal.md](goal.md) — 用户原始需求 (3 条)
->   - [TAURI_RUST_PLAN.md](TAURI_RUST_PLAN.md) — Tauri+Rust 实施计划
 >   - [SYNC_DESIGN.md](SYNC_DESIGN.md) — **后续能力 (v0.2+) 设计稿: 本地同步 / 跨设备 / snapshot codec**
+>   - [docs/README.md](docs/README.md) — 文档布局; 考古 / handoff / 迁移计划见 `docs/local/` (gitignore)
 >
 > **状态**:
 >   - **v0.1** (2026-07-03 完工) = **只读 session 查看器**, 1:1 还原 cc-switch 界面. 详见 §0.

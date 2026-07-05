@@ -29,7 +29,11 @@ Thumbs.db
 sessions.csv
 *.tmp
 *.bak
-HANDOFF.md
+
+# ── Local dev notes & article snapshots (not for daily dev) ──
+docs/local/
+vendored/chatcrystal-state-vscdb-pitfalls/
+vendored/vibe-replay-cursor-local-storage/
 
 # ── Vendored sub-repos (have their own git history) ─────────
 vendored/cursaves/
