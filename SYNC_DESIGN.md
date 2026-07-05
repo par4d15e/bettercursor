@@ -338,9 +338,13 @@ Cursor Desktop 在空 window 模式下创建会话时:
 
 Layer 2 chat_root 是 md5(cwd) — 不可逆哈希. 反查策略:
 
-1. **优先** `~/.config/Cursor/User/workspaceStorage/<hash>/workspace.json`: 读 `folder` URI, md5 该路径, 匹配 → 用该 hash 作为 slug.
+1. **优先** `~/.config/Cursor/User/workspaceStorage/<hash>/workspace.json`: 读 `folder` URI, md5 该路径, 匹配 → 用 `sanitize_project_path(folder_path)` 作为 slug (与 L1/L3 一致). workspaceStorage 目录名本身 (32-char hash) **仅** 用于 inject 写回时的 `workspaceIdentifier.id`, 不作为 UI 分组 key.
 2. **回退** `~/.cursor/projects/<slug>/agent-transcripts/`: 该路径**不可靠** — Cursor 的项目 slug (`home-eric-workspace-enenzuo`) 是 sanitize(cwd) 不是 md5, 同一 slug 下可有多个 chat_root. **不要**用它做反查.
-3. **最终 fallback**: 保留 `chat-<md5>` 作为唯一 slug. (用户视角下仍是孤立的 hash 字符串, 但不会跟真项目合并.)
+3. **最终 fallback**: 保留 `chat-<md5>` 作为唯一 slug (孤儿 CLI bucket, 不与真项目合并).
+4. **合并后规范化** (`scan_all` 收尾, `normalize_project_identity`):
+   - 若 `project_path` 非空 → `project_slug = sanitize(project_path)`
+   - 否则若 `chat_root` 可反查 → **同时** 填 `project_path` 与 `project_slug` (纯 CLI 会话补全 `cwd`, 供 L2↔L3 sync / delete / snapshot apply)
+   - `no-workspace` 不动
 
 #### Q4. Cursor 残留的"空 chat_root / 数字 slug" 目录
 
@@ -352,11 +356,14 @@ Layer 2 chat_root 是 md5(cwd) — 不可逆哈希. 反查策略:
 
 | 数据来源 | project_slug 取值 | UI 标题示例 |
 |----------|------------------|------------|
-| L3 有 workspaceIdentifier + L1/L2 命中真项目 | `home-eric-workspace-enenzuo` (L1 dir 名) | enenzuo (10) |
-| L2 命中, workspaceStorage 反查命中 | workspaceStorage hash (32 char) | b9c96f3499915796... (4) |
-| L2 命中, workspaceStorage 反查失败 | `chat-<md5>` | chat-592ffb8da5... (1) |
-| L3 有 `empty-window` 或 fsPath 为空 | `"no-workspace"` | no-workspace (43) |
+| L3 有 workspaceIdentifier.path | `sanitize(fsPath)` → `home-eric-workspace-enenzuo` | enenzuo (N) |
+| L2 命中, workspaceStorage 反查命中 | 同上 (`sanitize(folder_path)`) | enenzuo (N) — 与 L3/L1 **同一分组** |
+| L1 仅有 transcript (无 L2/L3 path) | `~/.cursor/projects/<slug>/` 目录名 | home-eric-workspace-enenzuo |
+| L2 命中, workspaceStorage 反查失败 | `chat-<md5>` | chat-592ffb8da5... (孤儿) |
+| L3 有 `empty-window` 或 fsPath 为空 | `"no-workspace"` | no-workspace |
 | 老的 `desktop-<uuid>` fallback (已废弃) | `"no-workspace"` (新值) | no-workspace |
+
+**#101 统一规则**: 所有真项目 session 的 `project_slug` 一律为 `sanitize(cwd)` (与 `~/.cursor/projects/` 目录名同格式). workspaceStorage hash 只出现在 `workspace_identifier` / inject 写回, 不出现在侧边栏分组 key.
 
 **旧行为 bug**: `desktop-<uuid>` 让人误以为这是 Cursor 命名的真项目. 已统一改为 `"no-workspace"`.
 
@@ -417,7 +424,7 @@ pub struct SourceEndpoint {
 pub struct ComposerMeta {
     pub composer_id: String,            // UUID
     pub last_updated_at: i64,           // ms epoch, LWW 主键 (§6)
-    pub project_path: String,           // L3 workspaceIdentifier.uri.fsPath, 或 ""
+    pub project_path: String,           // L3 workspaceIdentifier.uri.fsPath; 或 L2 chat_root 反查 (#102)
     pub project_slug: String,           // 见 §2.5 Q5
     pub workspace_id: String,           // L3 workspaceIdentifier.id (32 char hex) 或 "empty-window"
     pub chat_root: String,              // Layer 2 dir basename = md5(cwd)

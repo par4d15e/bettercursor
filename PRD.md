@@ -311,6 +311,8 @@ cd .. && python3 tests/test_layer2_import.py
 }
 ```
 
+`project_slug` 一律为 `sanitize(cwd)` (例: `/home/eric/workspace/enenzuo` → `home-eric-workspace-enenzuo`), 与 `~/.cursor/projects/` 目录名及 L2 workspaceStorage 反查结果一致 (#101). 纯 CLI 会话的 `project_path` 由 L2 `chat_root` 经 workspaceStorage 反查回填 (#102). workspaceStorage 32-char hash 仅作 `workspace_identifier`, 不作为分组 key.
+
 ### 4.2 4 层存储的写入规则
 
 | 层 | 路径 | 写入 daemon 行为 |
@@ -344,7 +346,7 @@ const sessions = await invoke<CanonicalSession[]>('list_sessions');
 [
   {
     uuid: "c1ea7999-005a-434f-bcf4-da8ddd9ff066",
-    project_slug: "enenzuo",
+    project_slug: "home-eric-workspace-enenzuo",
     project_path: "/home/eric/workspace/enenzuo",
     chat_root: "c19d07070edc77b1fdcdaf0dfecaf97f",
     name: "WeChat profile 设计",

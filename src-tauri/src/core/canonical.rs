@@ -224,6 +224,8 @@ pub fn scan_all() -> Result<Vec<CanonicalSession>> {
     // directly and bypasses that check, so we walk all entries once
     // at the end and recompute the derived fields uniformly.
     for entry in by_uuid.values_mut() {
+        normalize_project_identity(entry);
+
         // `is_empty_draft` = zero bubbles AND no source at any layer.
         // A session that has Layer 1/2/3 data but `bubble_count == 0`
         // is **not** empty — the conversation exists, we just can't
@@ -581,18 +583,18 @@ fn derive_slug_from_chat_root(chat_root: &str) -> String {
     //   - When no match exists, fall back to `chat-<md5>` so the session
     //     is still uniquely groupable; it just won't merge with the
     //     real project. (#99/#100)
-    if let Some(slug) = reverse_chat_root_via_workspace_storage(chat_root) {
-        return slug;
+    if let Some(path) = resolve_path_from_chat_root(chat_root) {
+        return paths::sanitize_project_path(&path);
     }
     format!("chat-{chat_root}")
 }
 
 /// Reverse-lookup via `~/.config/Cursor/User/workspaceStorage/<hash>/workspace.json`.
-/// If md5 of any `folder` URI matches the chat_root, return the
-/// sanitized path as the project slug. This is the canonical mapping
-/// because Cursor itself stores `folder` URIs there — md5(folder) is
-/// exactly the chat_root the Layer 2 store.db lives under.
-fn reverse_chat_root_via_workspace_storage(chat_root: &str) -> Option<String> {
+/// If md5 of any `folder` URI matches the chat_root, return the folder
+/// filesystem path. Cursor stores cwd as `md5(cwd)` under
+/// `~/.cursor/chats/<chat_root>/` — this is how pure CLI sessions recover
+/// `project_path` when Layer 3 is absent (#102).
+fn resolve_path_from_chat_root(chat_root: &str) -> Option<String> {
     let ws_dir = paths::workspace_storage_dir().ok()?;
     if !ws_dir.is_dir() {
         return None;
@@ -612,14 +614,35 @@ fn reverse_chat_root_via_workspace_storage(chat_root: &str) -> Option<String> {
         }
         let computed = paths::chat_root_for(path);
         if computed == chat_root {
-            // Use the workspaceStorage hash as the slug — it matches
-            // what Layer 3 `workspaceIdentifier.id` references, so all
-            // three layers converge on the same group. The user sees
-            // the hash in the sidebar but it's stable and clickable.
-            return Some(entry.file_name().to_string_lossy().into_owned());
+            return Some(path.to_string());
         }
     }
     None
+}
+
+/// Reconcile `project_path` + `project_slug` after all layers merge.
+/// `merge_source` is first-writer-wins; Layer 3 fills path when present,
+/// but pure CLI sessions only have L2 `chat_root` — backfill path here
+/// so L2↔L3 sync / delete / snapshot apply get a real `cwd` (#101/#102).
+fn normalize_project_identity(entry: &mut CanonicalSession) {
+    if entry.project_slug == "no-workspace" {
+        return;
+    }
+    if !entry.project_path.is_empty() {
+        entry.project_slug = paths::sanitize_project_path(&entry.project_path);
+        return;
+    }
+    if !entry.chat_root.is_empty() {
+        if let Some(path) = resolve_path_from_chat_root(&entry.chat_root) {
+            entry.project_path = path.clone();
+            entry.project_slug = paths::sanitize_project_path(&path);
+        } else {
+            let derived = derive_slug_from_chat_root(&entry.chat_root);
+            if !derived.starts_with("chat-") {
+                entry.project_slug = derived;
+            }
+        }
+    }
 }
 
 // ── Layer 3: Electron state.vscdb ─────────────────────────────
@@ -2381,6 +2404,100 @@ mod tests {
     }
 
     #[test]
+    fn slug_from_path_matches_sanitize() {
+        assert_eq!(
+            paths::sanitize_project_path("/home/eric/workspace/enenzuo"),
+            "home-eric-workspace-enenzuo",
+        );
+        assert_eq!(
+            paths::sanitize_project_path("/home/eric/workspace/bettercursor"),
+            "home-eric-workspace-bettercursor",
+        );
+    }
+
+    #[test]
+    fn normalize_project_identity_prefers_project_path_over_hash() {
+        let mut entry = CanonicalSession {
+            uuid: "uuid-1".into(),
+            project_slug: "a2a619b49a9779a3952a95ce4c9579bf".into(),
+            project_path: "/home/eric/workspace/enenzuo".into(),
+            chat_root: "c19d07070edc77b1fdcdaf0dfecaf97f".into(),
+            name: String::new(),
+            last_updated_at: 0,
+            bubble_count: 0,
+            is_empty_draft: false,
+            is_broken: false,
+            broken_reason: None,
+            sources: Sources::default(),
+            first_user_message_preview: String::new(),
+            files_referenced: vec![],
+            indexable_text: String::new(),
+            layer_3_present: false,
+            composer_data: None,
+            composer_id: None,
+        };
+        normalize_project_identity(&mut entry);
+        assert_eq!(entry.project_slug, "home-eric-workspace-enenzuo");
+    }
+
+    #[test]
+    fn normalize_project_identity_fills_path_from_chat_root() {
+        let mut entry = CanonicalSession {
+            uuid: "uuid-cli".into(),
+            project_slug: String::new(),
+            project_path: String::new(),
+            chat_root: "c19d07070edc77b1fdcdaf0dfecaf97f".into(),
+            name: String::new(),
+            last_updated_at: 0,
+            bubble_count: 0,
+            is_empty_draft: false,
+            is_broken: false,
+            broken_reason: None,
+            sources: Sources::default(),
+            first_user_message_preview: String::new(),
+            files_referenced: vec![],
+            indexable_text: String::new(),
+            layer_3_present: false,
+            composer_data: None,
+            composer_id: None,
+        };
+        normalize_project_identity(&mut entry);
+        // Dev box has enenzuo in workspaceStorage; skip assertion when absent.
+        if paths::workspace_storage_dir().is_ok() {
+            if let Some(path) = resolve_path_from_chat_root(&entry.chat_root) {
+                assert_eq!(entry.project_path, path);
+                assert_eq!(entry.project_slug, paths::sanitize_project_path(&path));
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_project_identity_leaves_no_workspace_unchanged() {
+        let mut entry = CanonicalSession {
+            uuid: "uuid-2".into(),
+            project_slug: "no-workspace".into(),
+            project_path: String::new(),
+            chat_root: String::new(),
+            name: String::new(),
+            last_updated_at: 0,
+            bubble_count: 0,
+            is_empty_draft: false,
+            is_broken: false,
+            broken_reason: None,
+            sources: Sources::default(),
+            first_user_message_preview: String::new(),
+            files_referenced: vec![],
+            indexable_text: String::new(),
+            layer_3_present: false,
+            composer_data: None,
+            composer_id: None,
+        };
+        normalize_project_identity(&mut entry);
+        assert_eq!(entry.project_slug, "no-workspace");
+        assert!(entry.project_path.is_empty());
+    }
+
+    #[test]
     fn extract_workspace_path_handles_object_form() {
         // Real Cursor writes workspaceIdentifier as an object with a
         // nested uri. Before this helper existed, scan_layer3_into
@@ -2980,15 +3097,13 @@ mod tests {
         assert_eq!(conv.parse_errors, 0);
     }
 
-    /// Live probe: confirm `reverse_chat_root_via_projects` /
-    /// `reverse_chat_root_via_workspace_storage` resolve at least one
-    /// real chat_root on the dev machine. This guards the
-    /// "no more 30+ orphan chat-<md5> rows" promise from #99/#100.
+    /// Live probe: confirm `resolve_path_from_chat_root` resolves at least
+    /// one real chat_root on the dev machine.
     /// Skipped by default — run with:
-    ///   cargo test canonical::tests::probe_reverse_chat_root_real -- --ignored --nocapture
+    ///   cargo test canonical::tests::probe_resolve_path_from_chat_root_real -- --ignored --nocapture
     #[test]
     #[ignore]
-    fn probe_reverse_chat_root_real() {
+    fn probe_resolve_path_from_chat_root_real() {
         let chats = match std::fs::read_dir("/home/eric/.cursor/chats") {
             Ok(d) => d,
             Err(_) => return, // dev machine may not have chats/ — silent no-op
@@ -2998,8 +3113,9 @@ mod tests {
         for entry in chats.flatten() {
             let chat_root = entry.file_name().to_string_lossy().into_owned();
             if chat_root.len() != 32 { continue; } // skip non-md5 (shouldn't happen but defensive)
-            if let Some(slug) = reverse_chat_root_via_workspace_storage(&chat_root) {
-                eprintln!("chat_root={chat_root} → workspaceStorage.slug={slug}");
+            if let Some(path) = resolve_path_from_chat_root(&chat_root) {
+                let slug = paths::sanitize_project_path(&path);
+                eprintln!("chat_root={chat_root} → project.path={path} slug={slug}");
                 hit_ws += 1;
             } else {
                 eprintln!("chat_root={chat_root} → UNRESOLVED (stays as chat-<md5>)");
