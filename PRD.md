@@ -140,6 +140,7 @@ Layer 3 (state.vscdb)─┘                            ↓
 | 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对; **v0.3.2** 起 UI 收进 `<SettingsDialog>`; SSH (T2b) 保留为高级模式 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
 | **交互性能收口** (写后单次权威刷新 + watcher 忽略自写回声 + 重 IO 不阻塞 UI 线程) | [SYNC_DESIGN.md §1.3A](SYNC_DESIGN.md) | **v0.3.7 进行中** |
+| **LAN 自动发现稳定性** (mDNS 广播自动携带地址 + 搜索端显式 stop/shutdown) | [SYNC_DESIGN.md §4.5](SYNC_DESIGN.md) | **v0.3.7b 进行中** |
 | **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** (最小切片: `write_layer3` 复制已有 agentKv) |

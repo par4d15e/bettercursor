@@ -881,6 +881,10 @@ pub struct RemoteSessionMeta {
 > - `core::discovery` — mDNS 广播与浏览
 > - `~/.bettercursor/trusted_peers.json` — 配对结果
 > - `~/.bettercursor/outbox/<peer_id>/` — 离线排队 + 5min 后台 flush (`core::sync_loop`)
+>
+> **稳定性约束** (v0.3.7b 补齐):
+> - mDNS 广播必须通过 `ServiceInfo::enable_addr_auto()` 自动附带本机可达地址; 不能注册空地址后指望浏览端兜底.
+> - 浏览端必须在同一调用内消费 `ServiceResolved` 事件, 并在返回前显式 `stop_browse` + `shutdown`, 避免 daemon 提前析构导致空列表或 closed channel 日志.
 
 ---
 
@@ -1676,6 +1680,7 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.3.5** | L3 软删 + 子代理树 + 空壳过滤 + 对话读取修复 + `deleted_sessions` | 2d | **✅ 已落地 2026-07-05** |
 | **v0.3.6** | **跨端同步完善** (§10.4) — v4 snapshot 富化 (图片 / agentKv / `raw_blobs`) + Mac↔Linux `project_path` 重写 + `Identical` 时补写缺失 L2/L3 + pull→apply 结果 UI 反馈 + 后台 loop 补 pull (LAN) | 3-4d | **✅ 已落地 2026-07-05** |
 | **v0.3.7a** (2026-07-06) | **交互性能收口** (§1.3A) — 写后单次权威 refresh、watcher suppress 自写回声、`sync_now/get_conversation/fix_orphans/delete_session/sync_session_layer23` 脱离 UI 线程执行、前端去掉写后额外 `sync_now` | 1-1.5d | ⚪ **当前优先** |
+| **v0.3.7b** (2026-07-06) | **LAN 自动发现稳定性** (§4.5) — mDNS 广播自动附带地址、浏览端显式 stop/shutdown、补发现链路日志 | 0.5d | ⚪ 当前优先 |
 | **v0.3.7** | T2b SSH peer 设置 UI + `transports.json` 可视化编辑 (高级模式) | 2d | ⏸️ 顺延到性能收口之后 |
 | **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + git remote 项目标识. 默认 dry-run; **不** auto-create workspace | 2d | ⏸️ **延后观察** (2026-07-05 拍板: 根因未清晰, 先跨端 sync) |
 | **v0.3.8+** | T3 Git / T4 S3 / T5 Tailscale adapter (路线图) | 4-5d | ⚪ 待拍板 |

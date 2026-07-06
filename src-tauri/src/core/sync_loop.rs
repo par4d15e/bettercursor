@@ -26,20 +26,27 @@ pub fn start_background_sync(app: tauri::AppHandle) {
     let device_id = device_id();
     let device_name = local_hostname();
     if port > 0 {
-        let _ = crate::core::discovery::spawn_mdns_service(&device_id, &device_name, port);
+        match crate::core::discovery::spawn_mdns_service(&device_id, &device_name, port) {
+            Ok(()) => {
+                log::info!(
+                    "mDNS advertise started: device_name={} port={}",
+                    device_name,
+                    port
+                );
+            }
+            Err(e) => {
+                log::warn!("mDNS advertise start failed: {e:#}");
+            }
+        }
     }
 
     std::thread::Builder::new()
         .name("bettercursor-sync-loop".into())
-        .spawn(move || {
-            loop {
-                let interval_secs = crate::core::config::load()
-                    .auto_pull_interval_secs
-                    .max(60);
-                std::thread::sleep(Duration::from_secs(interval_secs));
-                if let Err(e) = tick(&app) {
-                    log::warn!("background sync tick failed: {e:#}");
-                }
+        .spawn(move || loop {
+            let interval_secs = crate::core::config::load().auto_pull_interval_secs.max(60);
+            std::thread::sleep(Duration::from_secs(interval_secs));
+            if let Err(e) = tick(&app) {
+                log::warn!("background sync tick failed: {e:#}");
             }
         })
         .ok();
@@ -131,7 +138,11 @@ fn push_dirty_sessions(app: &tauri::AppHandle) -> Result<()> {
             let payload = crate::core::transport::PushSnapshot::V4(snap.clone());
             let rt = tokio::runtime::Runtime::new()?;
             if let Err(e) = rt.block_on(transport.push(&payload)) {
-                log::warn!("auto push {} to {} failed, enqueue outbox: {e:#}", session.uuid, peer.id);
+                log::warn!(
+                    "auto push {} to {} failed, enqueue outbox: {e:#}",
+                    session.uuid,
+                    peer.id
+                );
                 let _ = crate::core::transport::outbox::enqueue(&peer.id, &session.uuid, &body);
             }
         }
