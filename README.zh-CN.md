@@ -4,12 +4,17 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.6-success)
+![app](https://img.shields.io/badge/app-0.3.6-success)
+![release](https://img.shields.io/badge/release-v0.3.7b-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
 ![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
+
+当前仓库最新 tag 是 `v0.3.7b`. 但 `package.json` / `Cargo.toml` /
+`tauri.conf.json` 的应用版本字段仍是 `0.3.6`, 所以 `v0.3.7a` /
+`v0.3.7b` 属于 `0.3.6` 版本线上的维护 tag.
 
 ## 它是什么
 
@@ -22,7 +27,20 @@
 
 ## 功能状态
 
-### v0.3.6 (✅ 当前, 2026-07-05 完工)
+### v0.3.7b (✅ 最新维护 tag, 2026-07-06)
+
+- [x] **LAN 自动发现修复** — mDNS 广播改用 `ServiceInfo::enable_addr_auto()`, 不再发布空地址服务
+- [x] **搜索生命周期修复** — `discovery_browse` 在同次调用内消费 `ServiceResolved`, 返回前显式 `stop_browse` / `shutdown`
+- [x] **可达地址优先级** — 发现结果优先非回环 IPv4, 再回退 IPv6, 避免 `127.0.0.1` 假阳性和错误 `host:port`
+
+### v0.3.7a (2026-07-06)
+
+- [x] **交互卡顿收口** — `sync_now` / 对话解析 / 写路径重 IO 从 UI 线程移走
+- [x] **单次权威刷新** — 写操作只保留一次后端 refresh, 去掉前端额外 `sync_now` 回环
+- [x] **watcher 忽略自写回声** — 文件监听在短窗口内跳过自身写入引发的重复全量扫描
+- [x] **设置页解除阻塞** — 打开设置时不再自动 LAN browse, 邻近设备扫描改为手动触发
+
+### v0.3.6 (✅ 应用版本线, 2026-07-05 完工)
 
 - [x] **v4 snapshot 富化** — `images` + `blob_refs` / `raw_blobs` (agentKv); apply 时写回 L3
 - [x] **Mac↔Linux 路径重写** — `path_rewrite` + `~/.bettercursor/config.json` 的 `path_mappings`
@@ -96,7 +114,7 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
 - [x] 跨层去重合并, 项目分组, 按会话名 / 项目 / 内容 / UUID 全文搜索
 - [x] MD5 `chat_root` 与 Python 守护进程字节级一致
 
-### v0.3.2+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3.7+ (规划, 详见 [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
 - [ ] **v0.3.7** — T2b SSH peer 设置 UI (高级模式)
 - [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapter (待拍板)
@@ -127,6 +145,8 @@ LAN 配对是默认路径. 需要 SSH/rsync 时手编 `~/.bettercursor/transport
 ## 下载安装
 
 每个 git tag (`v*.*.*`) 都触发 [`.github/workflows/release.yml`](.github/workflows/release.yml) 三平台矩阵 build, 产物在 [Releases](../../releases) 页:
+
+注意: 在下一次明确的 version bump 之前, `v0.3.7a` / `v0.3.7b` 这类维护 tag 打出来的构建, 内嵌应用版本和产物文件名仍然会是 `0.3.6`.
 
 ### Linux
 
@@ -374,7 +394,6 @@ packages:
 | 文件 | 内容 |
 |---|---|
 | [PRD.md](PRD.md) | 产品需求 v0.1 功能矩阵 + 验收标准 |
-| [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ 同步功能设计文档 |
 | [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ 同步与跨设备设计 |
 | [docs/README.md](docs/README.md) | 文档布局; 本地归档见 `docs/local/` (gitignore) |
 
@@ -387,7 +406,9 @@ v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                   async Transport · Conflict 5-way
 v0.3.1 (✅ done)  LAN mDNS 配对 · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  设置面板 · L2/L3 富化 · L3 软删
-v0.3.6 (✅ current)  跨端同步完善 — 见 SYNC_DESIGN §10.4
+v0.3.6 (✅ app line)  跨端同步完善 — 见 SYNC_DESIGN §10.4
+v0.3.7a (✅ done)  交互性能收口
+v0.3.7b (✅ latest tag)  局域网发现稳定性
 v0.3.7 (⚪ next)     SSH peer UI
 v0.3.7+           SSH UI · T3/T4/T5 adapter · Doctor (延后观察)
 ```
@@ -400,4 +421,4 @@ v0.3.7+           SSH UI · T3/T4/T5 adapter · Doctor (延后观察)
 
 ---
 
-> 当前为个人早期项目. v0.2.6 是首个带跨设备 sync 能力的 release.
+> 当前为个人早期项目. v0.2.6 是首个带跨设备 sync 能力的 release; 最新维护 tag 是 `v0.3.7b`.

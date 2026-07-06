@@ -4,12 +4,17 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![status](https://img.shields.io/badge/status-v0.3.6-success)
+![app](https://img.shields.io/badge/app-0.3.6-success)
+![release](https://img.shields.io/badge/release-v0.3.7b-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
 ![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
+
+Current repo tag: `v0.3.7b`. App version fields in `package.json` / `Cargo.toml` /
+`tauri.conf.json` remain `0.3.6`, so release tags `v0.3.7a` / `v0.3.7b` are
+maintenance tags on top of the `0.3.6` app version line.
 
 ## What it is
 
@@ -28,7 +33,27 @@ Design goals:
 
 ## Feature status
 
-### v0.3.6 (✅ current, shipped 2026-07-05)
+### v0.3.7b (✅ latest maintenance tag, 2026-07-06)
+
+- [x] **LAN discovery fix** — mDNS publish now uses `ServiceInfo::enable_addr_auto()`
+      so peers advertise reachable local addresses instead of empty address sets
+- [x] **Browse lifecycle fix** — `discovery_browse` now consumes `ServiceResolved`
+      events in-process and explicitly `stop_browse` / `shutdown`s the daemon
+- [x] **Reachable host preference** — discovered peers prefer non-loopback IPv4,
+      then IPv6, avoiding `127.0.0.1` false positives and malformed `host:port`
+
+### v0.3.7a (2026-07-06)
+
+- [x] **Interaction latency cut-down** — heavy `sync_now` / conversation parse /
+      write-path work moved off the UI thread
+- [x] **Single authoritative refresh** — write actions emit one backend refresh;
+      removed extra frontend `sync_now` loops
+- [x] **Watcher self-write suppression** — fs watcher ignores a short self-write
+      window to avoid duplicate full rescans
+- [x] **Settings-load unblock** — LAN browse no longer runs eagerly on settings
+      open; nearby peer scan is manual
+
+### v0.3.6 (✅ app version line, shipped 2026-07-05)
 
 - [x] **v4 snapshot enrichment** — `images` + `blob_refs` / `raw_blobs` (agentKv);
       restored on apply
@@ -167,7 +192,7 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
       project / content / UUID
 - [x] MD5 `chat_root` byte-identical to the Python reference
 
-### v0.3.2+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3.7+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
 - [ ] **v0.3.7** — SSH peer UI for T2b advanced mode
 - [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapters (TBD)
@@ -203,6 +228,10 @@ Every git tag (`v*.*.*`) triggers
 [`.github/workflows/release.yml`](.github/workflows/release.yml) to build
 on three platforms. Artifacts end up on the
 [Releases](../../releases) page.
+
+Note: until the next explicit version bump, maintenance tags `v0.3.7a` /
+`v0.3.7b` still build artifacts whose embedded app version and filenames remain
+`0.3.6`.
 
 ### Linux
 
@@ -485,7 +514,6 @@ in 30 s.
 | File | Content |
 |---|---|
 | [PRD.md](PRD.md) | Product requirements v0.1 feature matrix + acceptance criteria |
-| [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ sync capability design |
 | [SYNC_DESIGN.md](SYNC_DESIGN.md) | v0.2+ sync / cross-device design |
 | [docs/README.md](docs/README.md) | Doc layout; local archive in `docs/local/` (gitignored) |
 
@@ -500,7 +528,9 @@ v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                  async Transport · Conflict 5-way
 v0.3.1 (✅ done)  LAN mDNS pairing · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  Settings UI · L2/L3 enrichment · L3 soft delete
-v0.3.6 (✅ current)  Cross-device sync hardening — see SYNC_DESIGN §10.4
+v0.3.6 (✅ app line)  Cross-device sync hardening — see SYNC_DESIGN §10.4
+v0.3.7a (✅ done)  Interaction performance cut-down
+v0.3.7b (✅ latest tag)  LAN discovery stabilization
 v0.3.7 (⚪ next)     SSH peer UI
 v0.3.7+           SSH UI · T3/T4/T5 adapters · Doctor (deferred)
 ```
@@ -517,4 +547,4 @@ v0.3.7+           SSH UI · T3/T4/T5 adapters · Doctor (deferred)
 ---
 
 > Currently a personal/early-stage project. v0.2.6 is the first
-> release that ships cross-device sync.
+> release that ships cross-device sync; the latest maintenance tag is `v0.3.7b`.
