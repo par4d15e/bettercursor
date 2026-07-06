@@ -55,16 +55,13 @@ pub fn mark_processed(peer_id: &str, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    static HOME_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn with_temp_home<F: FnOnce()>(f: F) {
-        let _lock = HOME_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("BETTERCURSOR_TEST_HOME", tmp.path());
         f();
-        std::env::remove_var("HOME");
+        std::env::remove_var("BETTERCURSOR_TEST_HOME");
     }
 
     #[test]

@@ -16,7 +16,6 @@ import {
   fixOrphans,
   getConversation,
   getResumeCommand,
-  syncNow as syncNowTauri,
   syncSessionLayer23,
   type Conversation,
   type DeleteReport,
@@ -54,10 +53,12 @@ export function SessionDetail() {
   const { t, i18n } = useTranslation();
   const selectedUuid = useSessionStore((s) => s.selectedUuid);
   const sessions = useSessionStore((s) => s.sessions);
+  const lastScanAt = useSessionStore((s) => s.lastScanAt);
   const session = useMemo(
     () => sessions.find((x) => x.uuid === selectedUuid) ?? null,
     [sessions, selectedUuid],
   );
+  const convCacheRef = useRef<Map<string, Conversation>>(new Map());
   const [resumeCmd, setResumeCmd] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [conv, setConv] = useState<Conversation | null>(null);
@@ -88,8 +89,19 @@ export function SessionDetail() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
+    convCacheRef.current.clear();
+  }, [lastScanAt]);
+
+  useEffect(() => {
     if (!selectedUuid) {
       setConv(null);
+      setConvError(null);
+      return;
+    }
+    const cached = convCacheRef.current.get(selectedUuid);
+    if (cached) {
+      setConv(cached);
+      setConvLoading(false);
       setConvError(null);
       return;
     }
@@ -98,10 +110,14 @@ export function SessionDetail() {
     setConvError(null);
     getConversation(selectedUuid)
       .then((c) => {
-        if (!cancelled) setConv(c);
+        if (!cancelled) {
+          convCacheRef.current.set(selectedUuid, c);
+          setConv(c);
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) {
+          convCacheRef.current.delete(selectedUuid);
           setConv(null);
           setConvError(e instanceof Error ? e.message : String(e));
         }
@@ -112,7 +128,7 @@ export function SessionDetail() {
     return () => {
       cancelled = true;
     };
-  }, [selectedUuid]);
+  }, [selectedUuid, lastScanAt]);
 
   const sources = useMemo(() => {
     if (!session) return [];
@@ -148,10 +164,9 @@ export function SessionDetail() {
 
   // v0.2-alpha one-click L2↔L3 补层 sync. `cwd` is sourced from the
   // session's `project_path` (Layer 3 workspaceIdentifier when present,
-  // otherwise empty → Rust side falls back to chats-dir scan). On
-  // success we `syncNowTauri()` so the new `sources.linux_cli` /
-  // `layer_3_present` flags propagate to the sidebar badge and the
-  // missing[] banner disappears.
+  // otherwise empty → Rust side falls back to chats-dir scan). Rust
+  // 侧在命令返回前会统一 refresh cache 并 emit `sessions-updated`,
+  // 所以前端这里不再补一发 `sync_now`.
   const handleCopyResume = async () => {
     if (!session) return;
     const src = primarySource ?? "linux_cli";
@@ -175,10 +190,6 @@ export function SessionDetail() {
       const cwd = session.project_path || null;
       const report = await syncSessionLayer23(session.uuid, cwd);
       setSyncReport(report);
-      // Whether we wrote anything, refresh so source tags reflect
-      // new on-disk state. `cursor_running` skip still leaves state
-      // unchanged, but the user expects a refresh either way.
-      await syncNowTauri().catch(() => undefined);
     } catch (e: unknown) {
       setSyncError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -197,7 +208,6 @@ export function SessionDetail() {
     try {
       const report = await fixOrphans();
       setRepairReport(report);
-      await syncNowTauri().catch(() => undefined);
     } catch (e: unknown) {
       setRepairError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -235,7 +245,6 @@ export function SessionDetail() {
         deleteL3Checked,
       );
       setDeleteReport(report);
-      await syncNowTauri().catch(() => undefined);
       deleteDialogRef.current?.close();
     } catch (e: unknown) {
       setDeleteError(e instanceof Error ? e.message : String(e));

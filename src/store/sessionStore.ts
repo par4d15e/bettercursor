@@ -101,10 +101,9 @@ export const useSessionStore = create<SessionState>((set) => ({
       console.log("[bettercursor] syncNow: calling Tauri command...");
       const count = await syncNow();
       console.log(`[bettercursor] syncNow: Rust returned ${count} sessions`);
-      const fresh = await listSessions();
-      console.log(
-        `[bettercursor] syncNow: listSessions returned ${fresh.length} sessions`,
-      );
+      // `sync_now` 结束前 Rust 已经刷新了 AppState 并 emit
+      // `sessions-updated`; 这里不再额外补一次 listSessions，避免
+      // 同一轮手动刷新触发重复拉取。
       // Re-pull watcher status so the SyncStatusBadge updates its
       // "Xs 前" counter to ~0 right after the manual scan.
       let last_scan_at_ms: number | null = null;
@@ -119,8 +118,6 @@ export const useSessionStore = create<SessionState>((set) => ({
         console.warn("[bettercursor] syncNow: watcher_status poll failed:", e);
       }
       set({
-        sessions: fresh,
-        lastScanAt: new Date().toISOString(),
         loading: false,
         last_scan_at_ms,
         autoSyncLive,

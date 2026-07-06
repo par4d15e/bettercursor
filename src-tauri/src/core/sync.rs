@@ -46,13 +46,12 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::canonical::{self};
+use super::inject::build_workspace_identifier;
 use super::inject::{
     self, compose_bubble_blobs, compose_composer_data, compose_composer_header_entry,
     composer_is_desktop_loadable, ensure_desktop_loadable_composer, merge_composer_headers,
-    scan_tracked_git_repos,
-    truncate_to_title_pub, Mutation,
+    scan_tracked_git_repos, truncate_to_title_pub, Mutation,
 };
-use super::inject::build_workspace_identifier;
 use super::{paths, storage};
 
 // ── Public types ──────────────────────────────────────────────
@@ -98,8 +97,8 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
     let (layer1_jsonl, bubbles_from_layer1) = read_layer1(uuid);
     let sync_bubbles = resolve_sync_bubbles(uuid, cwd, &bubbles_from_layer1);
     let layer3_data = read_layer3_composer_data(uuid);
-    let layer2_path = paths::resolve_store_db_for(uuid, cwd)
-        .unwrap_or_else(|| paths::store_db_for(cwd, uuid));
+    let layer2_path =
+        paths::resolve_store_db_for(uuid, cwd).unwrap_or_else(|| paths::store_db_for(cwd, uuid));
     let layer3_path = paths::global_db_path().ok();
 
     let need_l2 = !layer2_is_fully_synced(uuid, cwd);
@@ -151,24 +150,6 @@ pub fn sync_session(uuid: &str, cwd: &str) -> Result<SyncReport> {
                 Err(e) => report.skipped.push(format!("l3_write_failed: {e}")),
             }
             let _ = l3_path;
-        }
-    }
-
-    // ── 5. v0.3.0: mirror into unified.db (Migration A coexist) ──
-    //
-    // This is the read-cache hook — unified.db is rebuilt from the
-    // canonical 3-layer state so the FTS5 mirror, content_hash, and
-    // conflicts / archive tables reflect the post-write world.
-    // Failures here MUST NOT fail the inline-write; log and continue.
-    if let Ok(unified) = super::unified::UnifiedDb::open() {
-        if let Ok(all) = canonical::visible_sessions() {
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let host = crate::core::paths::bettercursor_dir()
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("local")
-                .to_string();
-            let _ = unified.rebuild_from_cursor_state(&all, &host, now_ms);
         }
     }
 
@@ -228,9 +209,7 @@ pub fn apply_session_from_snapshot(
     if l3_blockers.is_empty() {
         if !raw_blobs.is_empty() {
             if let Err(e) = write_agent_kv_blobs_from_snapshot(raw_blobs) {
-                report
-                    .skipped
-                    .push(format!("agent_kv_write_failed: {e}"));
+                report.skipped.push(format!("agent_kv_write_failed: {e}"));
             }
         }
         match write_layer3(uuid, &cwd, &bubbles) {
@@ -392,10 +371,7 @@ fn read_layer3_composer_data(uuid: &str) -> Option<Layer3Data> {
         .and_then(|x| x.as_str())
         .unwrap_or("New Agent")
         .to_string();
-    let created_at_ms = v
-        .get("createdAt")
-        .and_then(|x| x.as_i64())
-        .unwrap_or(0);
+    let created_at_ms = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
     let force_mode = v
         .get("forceMode")
         .and_then(|x| x.as_str())
@@ -506,11 +482,7 @@ pub fn is_meaningful_session_name(name: &str) -> bool {
 
 /// Read the CLI-visible session title from Layer 2 (`store.db` meta[0].name,
 /// falling back to sibling `meta.json` `title`).
-pub fn read_layer2_session_name(
-    uuid: &str,
-    cwd: &str,
-    store_db: Option<&Path>,
-) -> Option<String> {
+pub fn read_layer2_session_name(uuid: &str, cwd: &str, store_db: Option<&Path>) -> Option<String> {
     let store_db = store_db
         .map(Path::to_path_buf)
         .or_else(|| paths::resolve_store_db_for(uuid, cwd))?;
@@ -646,7 +618,11 @@ fn composer_bubbles_need_layer2_refresh(
                 2 => "assistant",
                 _ => return None,
             };
-            let text = bv.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let text = bv
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             let images = bv
                 .get("images")
                 .and_then(|x| x.as_array())
@@ -712,7 +688,10 @@ fn composer_user_bubbles_have_cli_envelope(uuid: &str, composer: &serde_json::Va
             continue;
         };
         let text = bv.get("text").and_then(|x| x.as_str()).unwrap_or("");
-        if text.contains("<user_query>") || text.contains("<timestamp>") || text.starts_with("[Image]\n") {
+        if text.contains("<user_query>")
+            || text.contains("<timestamp>")
+            || text.starts_with("[Image]\n")
+        {
             return true;
         }
     }
@@ -777,8 +756,8 @@ fn write_layer2(
     }
 
     // _init_store_db: create schema if missing.
-    let conn = Connection::open(&store_db)
-        .with_context(|| format!("open {}", store_db.display()))?;
+    let conn =
+        Connection::open(&store_db).with_context(|| format!("open {}", store_db.display()))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS blobs(id TEXT PRIMARY KEY, data BLOB);
          CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);",
@@ -803,13 +782,16 @@ fn write_layer2(
                 .map(|b| truncate_to_title_pub(&b.text))
                 .unwrap_or_else(|| "New Agent".to_string())
         });
-    let created_at = layer3.as_ref().map(|l3| l3.created_at_ms).unwrap_or_else(|| {
-        bubbles
-            .iter()
-            .map(|b| b.created_at_ms)
-            .find(|&t| t > 0)
-            .unwrap_or(0)
-    });
+    let created_at = layer3
+        .as_ref()
+        .map(|l3| l3.created_at_ms)
+        .unwrap_or_else(|| {
+            bubbles
+                .iter()
+                .map(|b| b.created_at_ms)
+                .find(|&t| t > 0)
+                .unwrap_or(0)
+        });
     let mode = layer3
         .as_ref()
         .map(|l3| l3.force_mode.clone())
@@ -869,10 +851,11 @@ fn collect_layer2_blobs_from_l3(l3: &Layer3Data) -> Result<Vec<(String, Vec<u8>)
     let db_path = paths::global_db_path().context("global state.vscdb path")?;
     let reader = storage::open_read(&db_path).context("open state.vscdb for agentKv")?;
 
-    let mut pending: Vec<String> = extract_blob_ids_from_protobuf(blob_map.get(&root_id).expect("root"))
-    .into_iter()
-    .filter(|id| !blob_map.contains_key(id))
-    .collect();
+    let mut pending: Vec<String> =
+        extract_blob_ids_from_protobuf(blob_map.get(&root_id).expect("root"))
+            .into_iter()
+            .filter(|id| !blob_map.contains_key(id))
+            .collect();
 
     while let Some(id) = pending.pop() {
         if blob_map.contains_key(&id) {
@@ -883,9 +866,7 @@ fn collect_layer2_blobs_from_l3(l3: &Layer3Data) -> Result<Vec<(String, Vec<u8>)
             .get_item_binary(&key, "cursorDiskKV")
             .with_context(|| format!("read {key}"))?
         else {
-            anyhow::bail!(
-                "Layer 3 缺少 agentKv 子 blob {id} — 无法还原 CLI DAG，请先补全 Layer 3"
-            );
+            anyhow::bail!("Layer 3 缺少 agentKv 子 blob {id} — 无法还原 CLI DAG，请先补全 Layer 3");
         };
         for sub in extract_blob_ids_from_protobuf(&bytes) {
             if !blob_map.contains_key(&sub) {
@@ -1084,7 +1065,9 @@ fn find_root_blob(store_db: &Path) -> Option<String> {
         Err(_) => return None,
     };
     let rows: Vec<(String, Vec<u8>)> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
         .ok()?
         .filter_map(|r| r.ok())
         .collect();
@@ -1145,20 +1128,21 @@ fn fix_latest_root(store_db: &Path) -> Result<String> {
         .ok_or_else(|| anyhow!("could not find a root blob (empty DAG?)"))?;
     let conn = Connection::open(store_db)?;
     let existing_hex: Option<String> = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = '0'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
+        .query_row("SELECT value FROM meta WHERE key = '0'", [], |r| {
+            r.get::<_, String>(0)
+        })
         .ok();
     let Some(existing_hex) = existing_hex else {
         return Err(anyhow!("meta[0] missing; cannot patch"));
     };
     let existing_bytes = hex_decode(&existing_hex)?;
-    let mut meta: serde_json::Value = serde_json::from_slice(&existing_bytes)
-        .with_context(|| "meta[0] is not valid JSON")?;
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&existing_bytes).with_context(|| "meta[0] is not valid JSON")?;
     if let Some(obj) = meta.as_object_mut() {
-        obj.insert("latestRootBlobId".to_string(), serde_json::Value::String(root.clone()));
+        obj.insert(
+            "latestRootBlobId".to_string(),
+            serde_json::Value::String(root.clone()),
+        );
     } else {
         return Err(anyhow!("meta[0] is not a JSON object"));
     }
@@ -1237,7 +1221,10 @@ pub fn fix_orphans() -> Result<FixOrphansReport> {
             // Pre-fix backup so a bad fix_latest_root can be reverted.
             backup_existing(&store_db);
             match fix_latest_root(&store_db) {
-                Ok(new_root) => report.fixed.push(format!("{uuid} (root={})", &new_root[..8.min(new_root.len())])),
+                Ok(new_root) => report.fixed.push(format!(
+                    "{uuid} (root={})",
+                    &new_root[..8.min(new_root.len())]
+                )),
                 Err(e) => report.skipped.push(format!("{uuid}: {e}")),
             }
             // v0.3.0: archive the pre-fix state into unified.db so the
@@ -1255,27 +1242,8 @@ pub fn fix_orphans() -> Result<FixOrphansReport> {
                     "pre_fix_latest_root_blob_id": pre_fix_blob_id,
                 })
                 .to_string();
-                let _ = unified.record_archive(
-                    &uuid,
-                    "before_fix_orphans",
-                    &payload,
-                    now_ms,
-                );
+                let _ = unified.record_archive(&uuid, "before_fix_orphans", &payload, now_ms);
             }
-        }
-    }
-    // v0.3.0: rebuild unified.db from current canonical state so the
-    // archive row counts and any sessions whose fix changed their
-    // content_hash stay in sync. Best-effort.
-    if let Ok(unified) = super::unified::UnifiedDb::open() {
-        if let Ok(all) = canonical::visible_sessions() {
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let host = crate::core::paths::bettercursor_dir()
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("local")
-                .to_string();
-            let _ = unified.rebuild_from_cursor_state(&all, &host, now_ms);
         }
     }
     Ok(report)
@@ -1287,18 +1255,16 @@ pub fn fix_orphans() -> Result<FixOrphansReport> {
 fn read_latest_root_blob_id(store_db: &Path) -> Result<Option<String>> {
     let conn = Connection::open(store_db)?;
     let existing_hex: Option<String> = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = '0'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
+        .query_row("SELECT value FROM meta WHERE key = '0'", [], |r| {
+            r.get::<_, String>(0)
+        })
         .ok();
     let Some(existing_hex) = existing_hex else {
         return Ok(None);
     };
     let bytes = hex_decode(&existing_hex)?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .with_context(|| "meta[0] is not valid JSON")?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| "meta[0] is not valid JSON")?;
     Ok(v.get("latestRootBlobId")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string()))
@@ -1449,12 +1415,7 @@ pub fn delete_session(
             .and_then(|all| all.into_iter().find(|s| s.uuid == uuid));
         if let Some(ref s) = existing {
             let payload = serde_json::to_string(s).unwrap_or_default();
-            let _ = unified.record_archive(
-                uuid,
-                "before_delete",
-                &payload,
-                now_ms,
-            );
+            let _ = unified.record_archive(uuid, "before_delete", &payload, now_ms);
         }
         let _ = unified.record_deleted_session(uuid, now_ms);
         let _ = unified.delete_session_row(uuid);
@@ -1522,9 +1483,8 @@ pub fn soft_delete_layer3(uuid: &str) -> Result<bool> {
 
     let tmp = tempfile::tempdir().context("create tmpdir for state.vscdb copy")?;
     let staged_db = tmp.path().join("state.vscdb");
-    let conn = storage::open_write_staging_copy(&db_path, &staged_db).with_context(|| {
-        "无法创建可写的 state.vscdb 副本 — 请确认已完全退出 Cursor Desktop"
-    })?;
+    let conn = storage::open_write_staging_copy(&db_path, &staged_db)
+        .with_context(|| "无法创建可写的 state.vscdb 副本 — 请确认已完全退出 Cursor Desktop")?;
 
     let headers_key = "composer.composerHeaders";
     let mut headers_root = read_item_table_json(&conn, headers_key)?
@@ -1550,8 +1510,7 @@ pub fn soft_delete_layer3(uuid: &str) -> Result<bool> {
 
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .context("wal_checkpoint after L3 soft delete")?;
-    let ok: String = conn
-        .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let ok: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if ok != "ok" {
         return Err(anyhow!("integrity_check failed after L3 soft delete: {ok}"));
     }
@@ -1586,9 +1545,8 @@ fn layer3_session_present(db_path: &Path, uuid: &str) -> Result<bool> {
             .get("allComposers")
             .and_then(|a| a.as_array())
             .map(|arr| {
-                arr.iter().any(|e| {
-                    e.get("composerId").and_then(|c| c.as_str()) == Some(uuid)
-                })
+                arr.iter()
+                    .any(|e| e.get("composerId").and_then(|c| c.as_str()) == Some(uuid))
             })
             .unwrap_or(false);
         if in_headers {
@@ -1608,7 +1566,10 @@ struct Layer2ConversationHydration {
 
 /// Read CLI `store.db` when present so Layer 3 inject can set
 /// `conversationState` + copy blobs into `agentKv:*` (Desktop chat loader).
-fn read_layer2_conversation_hydration(uuid: &str, cwd: &str) -> Option<Layer2ConversationHydration> {
+fn read_layer2_conversation_hydration(
+    uuid: &str,
+    cwd: &str,
+) -> Option<Layer2ConversationHydration> {
     let store_db = paths::resolve_store_db_for(uuid, cwd)?;
     let conn = Connection::open_with_flags(&store_db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let meta_hex: String = conn
@@ -1622,13 +1583,19 @@ fn read_layer2_conversation_hydration(uuid: &str, cwd: &str) -> Option<Layer2Con
         .filter(|s| !s.is_empty())?;
     let created_at_ms = meta.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
     let root_blob: Vec<u8> = conn
-        .query_row("SELECT data FROM blobs WHERE id = ?1", params![root_id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT data FROM blobs WHERE id = ?1",
+            params![root_id],
+            |r| r.get(0),
+        )
         .ok()?;
     let mut blobs = Vec::new();
     let mut stmt = conn.prepare("SELECT id, data FROM blobs").ok()?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))).ok()?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
+        .ok()?;
     for row in rows.flatten() {
         blobs.push(row);
     }
@@ -1655,7 +1622,10 @@ fn patch_composer_with_layer2_hydration(
         "conversationState".into(),
         serde_json::Value::String(format!("~{b64}")),
     );
-    obj.insert("status".into(), serde_json::Value::String("completed".into()));
+    obj.insert(
+        "status".into(),
+        serde_json::Value::String("completed".into()),
+    );
     obj.insert("generatingBubbleIds".into(), serde_json::json!([]));
     obj.insert(
         "isContinuationInProgress".into(),
@@ -1786,20 +1756,15 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
 
     let tmp = tempfile::tempdir().context("create tmpdir for state.vscdb copy")?;
     let staged_db = tmp.path().join("state.vscdb");
-    let conn = storage::open_write_staging_copy(&db_path, &staged_db).with_context(|| {
-        "无法创建可写的 state.vscdb 副本 — 请确认已完全退出 Cursor Desktop"
-    })?;
+    let conn = storage::open_write_staging_copy(&db_path, &staged_db)
+        .with_context(|| "无法创建可写的 state.vscdb 副本 — 请确认已完全退出 Cursor Desktop")?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ItemTable(key TEXT PRIMARY KEY, value TEXT);
          CREATE TABLE IF NOT EXISTS cursorDiskKV(key TEXT PRIMARY KEY, value TEXT);",
     )?;
 
     if let Some(ref hydration) = layer2_hydration {
-        patch_composer_with_layer2_hydration(
-            &mut composer_data,
-            hydration,
-            last_updated_ms,
-        );
+        patch_composer_with_layer2_hydration(&mut composer_data, hydration, last_updated_ms);
         copy_layer2_blobs_to_agent_kv(&conn, &hydration.blobs)?;
         agent_blob_ids.extend(extract_agent_blob_ids_from_composer(&composer_data));
     }
@@ -1841,8 +1806,7 @@ fn write_layer3(uuid: &str, cwd: &str, bubbles: &[canonical::Bubble]) -> Result<
 
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .context("wal_checkpoint after L3 mutations")?;
-    let ok: String = conn
-        .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let ok: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if ok != "ok" {
         return Err(anyhow!("integrity_check failed after L3 write: {ok}"));
     }
@@ -1961,8 +1925,16 @@ fn base64_encode(bytes: &[u8]) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let b0 = bytes[i] as u32;
-        let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < bytes.len() {
+            bytes[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < bytes.len() {
+            bytes[i + 2] as u32
+        } else {
+            0
+        };
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);
@@ -2221,8 +2193,12 @@ mod tests {
         let new_hex: String = conn
             .query_row("SELECT value FROM meta WHERE key = '0'", [], |r| r.get(0))
             .unwrap();
-        let new_meta: serde_json::Value = serde_json::from_slice(&hex_decode(&new_hex).unwrap()).unwrap();
-        assert_eq!(new_meta["latestRootBlobId"], serde_json::Value::String(a_id));
+        let new_meta: serde_json::Value =
+            serde_json::from_slice(&hex_decode(&new_hex).unwrap()).unwrap();
+        assert_eq!(
+            new_meta["latestRootBlobId"],
+            serde_json::Value::String(a_id)
+        );
     }
 
     #[test]
@@ -2271,14 +2247,18 @@ mod tests {
             let meta: serde_json::Value = serde_json::from_slice(&meta_bytes).unwrap();
             let root_id = meta["latestRootBlobId"].as_str().unwrap();
             let root_blob: Vec<u8> = conn
-                .query_row("SELECT data FROM blobs WHERE id = ?1", params![root_id], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT data FROM blobs WHERE id = ?1",
+                    params![root_id],
+                    |r| r.get(0),
+                )
                 .unwrap();
             let mut blobs = Vec::new();
             let mut stmt = conn.prepare("SELECT id, data FROM blobs").unwrap();
             let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })
                 .unwrap();
             for row in rows.flatten() {
                 blobs.push(row);
@@ -2289,7 +2269,8 @@ mod tests {
                 blobs,
             }
         };
-        let mut composer = serde_json::json!({"composerId": uuid, "fullConversationHeadersOnly": []});
+        let mut composer =
+            serde_json::json!({"composerId": uuid, "fullConversationHeadersOnly": []});
         super::patch_composer_with_layer2_hydration(&mut composer, &hydration, 1_700_000_001_000);
         let cs = composer["conversationState"].as_str().unwrap();
         assert!(cs.starts_with('~'));
@@ -2333,7 +2314,11 @@ mod tests {
         let cwd = "/home/eric/workspace/bettercursor";
         let report = sync_session(uuid, cwd).expect("sync_session");
         eprintln!("{report:?}");
-        assert!(report.wrote_layer3, "expected L3 rewrite, skipped={:?}", report.skipped);
+        assert!(
+            report.wrote_layer3,
+            "expected L3 rewrite, skipped={:?}",
+            report.skipped
+        );
     }
 
     /// Live smoke test: fill in Layer 2 for `cfa4177f` (Desktop-only
@@ -2363,16 +2348,6 @@ mod tests {
     }
 
     // ── v0.2.1: fix_orphans + delete_session ────────────────
-
-    /// Global mutex guarding tests that monkey-patch `HOME` to point
-    /// at a tempdir (so `paths::chats_dir()` / `cursor_projects_dir()`
-    /// resolve into the temp tree). Without this lock, two such tests
-    /// running in parallel race — and even worse, an unrelated test
-    /// like `watcher::label_strips_home` that reads `home::home_dir()`
-    /// mid-race sees the *tempdir* and asserts `~` prefix against a
-    /// path that isn't under HOME. Mutex held only for the duration
-    /// of one test fn body, so contention is brief.
-    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Build a synthetic store.db with one blob `c` (empty payload),
     /// `b → c`, `a → b`, and `meta[0].latestRootBlobId = ""`. Mirrors
@@ -2422,14 +2397,12 @@ mod tests {
 
     #[test]
     fn fix_orphans_finds_empty_root_and_fixes() {
-        // See HOME_LOCK doc — this test mutates the global HOME env
-        // var; grabbing the lock prevents parallel tests in unrelated
-        // modules (e.g. watcher::label_strips_home) from racing us
-        // and asserting against an unexpected home.
-        let _guard = HOME_LOCK.lock().unwrap();
+        // `BETTERCURSOR_TEST_HOME` 是进程级全局变量; 跟 unified/outbox
+        // 测试共用一把锁，避免并发改 env。
+        let _guard = paths::test_home_lock().lock().unwrap();
         let home = tempdir().unwrap();
-        let prev_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
+        let prev_home = std::env::var_os("BETTERCURSOR_TEST_HOME");
+        std::env::set_var("BETTERCURSOR_TEST_HOME", home.path());
         let chats = home.path().join(".cursor").join("chats");
         let bucket1 = chats.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let bucket2 = chats.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -2471,21 +2444,23 @@ mod tests {
             .unwrap()
             .flatten()
             .any(|e| e.file_name().to_string_lossy().contains(".backup_"));
-        assert!(has_backup, "fix_orphans should leave a .backup_<ts> sibling");
+        assert!(
+            has_backup,
+            "fix_orphans should leave a .backup_<ts> sibling"
+        );
 
         match prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
+            Some(v) => std::env::set_var("BETTERCURSOR_TEST_HOME", v),
+            None => std::env::remove_var("BETTERCURSOR_TEST_HOME"),
         }
     }
 
     #[test]
     fn delete_session_removes_l1_and_l2_dirs() {
-        // See HOME_LOCK doc.
-        let _guard = HOME_LOCK.lock().unwrap();
+        let _guard = paths::test_home_lock().lock().unwrap();
         let home = tempdir().unwrap();
-        let prev_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
+        let prev_home = std::env::var_os("BETTERCURSOR_TEST_HOME");
+        std::env::set_var("BETTERCURSOR_TEST_HOME", home.path());
         let uuid = "33333333-3333-3333-3333-333333333333";
         let cwd = "/tmp/never-opened-in-cursor-12345";
         let slug = "tmp-never-opened-in-cursor-12345";
@@ -2528,13 +2503,21 @@ mod tests {
                  assertions because Cursor is running on this dev box"
             );
             match prev_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
+                Some(v) => std::env::set_var("BETTERCURSOR_TEST_HOME", v),
+                None => std::env::remove_var("BETTERCURSOR_TEST_HOME"),
             }
             return;
         }
-        assert!(report.removed_l1, "L1 should be removed; skip={:?}", report.skipped_l1);
-        assert!(report.removed_l2, "L2 should be removed; skip={:?}", report.skipped_l2);
+        assert!(
+            report.removed_l1,
+            "L1 should be removed; skip={:?}",
+            report.skipped_l1
+        );
+        assert!(
+            report.removed_l2,
+            "L2 should be removed; skip={:?}",
+            report.skipped_l2
+        );
         assert!(report.skipped_l1.is_none());
         assert!(report.skipped_l2.is_none());
         assert!(!report.cursor_running);
@@ -2542,8 +2525,8 @@ mod tests {
         assert!(!l2.exists(), "L2 dir should be gone");
 
         match prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
+            Some(v) => std::env::set_var("BETTERCURSOR_TEST_HOME", v),
+            None => std::env::remove_var("BETTERCURSOR_TEST_HOME"),
         }
     }
 

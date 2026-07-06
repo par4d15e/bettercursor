@@ -100,8 +100,7 @@ impl UnifiedDb {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
         }
-        let conn = Connection::open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
+        let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
@@ -111,8 +110,7 @@ impl UnifiedDb {
         let db = Self {
             conn: Mutex::new(conn),
         };
-        db.run_migrations()
-            .with_context(|| "run migrations")?;
+        db.run_migrations().with_context(|| "run migrations")?;
         Ok(db)
     }
 
@@ -265,11 +263,14 @@ impl UnifiedDb {
     /// `sessions.endpoint_kind` which reflects current layer presence.
     pub fn load_created_origins(&self) -> Result<HashMap<String, (String, i64)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT uuid, created_endpoint_kind, created_at_ms FROM session_origins",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT uuid, created_endpoint_kind, created_at_ms FROM session_origins")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         let mut out = HashMap::new();
         for row in rows.flatten() {
@@ -417,14 +418,8 @@ impl UnifiedDb {
     /// (PRAGMA foreign_keys=ON is set in `open`).
     pub fn delete_session_row(&self, uuid: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM session_origins WHERE uuid = ?1",
-            params![uuid],
-        )?;
-        conn.execute(
-            "DELETE FROM sessions WHERE uuid = ?1",
-            params![uuid],
-        )?;
+        conn.execute("DELETE FROM session_origins WHERE uuid = ?1", params![uuid])?;
+        conn.execute("DELETE FROM sessions WHERE uuid = ?1", params![uuid])?;
         Ok(())
     }
 
@@ -554,10 +549,7 @@ impl UnifiedDb {
             ],
         )?;
 
-        tx.execute(
-            "DELETE FROM bubbles WHERE session_uuid = ?1",
-            params![uuid],
-        )?;
+        tx.execute("DELETE FROM bubbles WHERE session_uuid = ?1", params![uuid])?;
         for b in bubbles {
             tx.execute(
                 "
@@ -615,12 +607,7 @@ impl UnifiedDb {
     /// Mark a conflict resolved. `resolved_how` is one of
     /// "auto_merged", "user_chose_local", "user_chose_incoming",
     /// "skipped".
-    pub fn resolve_conflict(
-        &self,
-        conflict_id: i64,
-        how: &str,
-        now_ms: i64,
-    ) -> Result<()> {
+    pub fn resolve_conflict(&self, conflict_id: i64, how: &str, now_ms: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "
@@ -648,20 +635,13 @@ impl UnifiedDb {
             LIMIT ?2
             ",
         )?;
-        let rows = stmt.query_map(params![query, limit as i64], |r| {
-            r.get::<_, String>(0)
-        })?;
+        let rows = stmt.query_map(params![query, limit as i64], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(Result::ok).collect())
     }
 
     /// Open a sync_runs row. Returns the new id — caller must later
     /// call `finish_sync_run` to close it.
-    pub fn record_sync_run(
-        &self,
-        peer_id: &str,
-        direction: &str,
-        started_ms: i64,
-    ) -> Result<i64> {
+    pub fn record_sync_run(&self, peer_id: &str, direction: &str, started_ms: i64) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "
@@ -807,11 +787,7 @@ impl UnifiedDb {
         ];
         let mut out = std::collections::HashMap::new();
         for t in tables {
-            let n: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM {t}"),
-                [],
-                |r| r.get(0),
-            )?;
+            let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))?;
             out.insert(t.to_string(), n);
         }
         out.insert(
@@ -836,22 +812,19 @@ mod tests {
     use crate::core::canonical::{
         Bubble, BubbleToolUse, CanonicalSession, ComposerData, SourceInfo, SourceLayer, Sources,
     };
-    use std::sync::Mutex as StdMutex;
-
     /// Per-test override of `bettercursor_dir()` so each test gets its
     /// own `~/.bettercursor/unified.db` and doesn't trample other
-    /// tests' data. The Mutex serializes the HOME env-var patch —
-    /// same trick `core::sync::tests::HOME_LOCK` uses.
-    static HOME_LOCK: StdMutex<()> = StdMutex::new(());
+    /// tests' data. 跟 `core::sync` / `transport::outbox` 共用
+    /// `paths::test_home_lock()`，避免并发改同一个 env。
     fn fresh_unified_db() -> (tempfile::TempDir, UnifiedDb) {
         let home = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
+        let prev = std::env::var_os("BETTERCURSOR_TEST_HOME");
+        std::env::set_var("BETTERCURSOR_TEST_HOME", home.path());
         let db = UnifiedDb::open().expect("open unified.db");
         if let Some(v) = prev {
-            std::env::set_var("HOME", v);
+            std::env::set_var("BETTERCURSOR_TEST_HOME", v);
         } else {
-            std::env::remove_var("HOME");
+            std::env::remove_var("BETTERCURSOR_TEST_HOME");
         }
         (home, db)
     }
@@ -914,7 +887,7 @@ mod tests {
     /// `conflicts`). row_counts() surfaces them by name.
     #[test]
     fn open_creates_eight_tables() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         let counts = db.row_counts().expect("row_counts");
         for t in [
@@ -938,7 +911,7 @@ mod tests {
     /// without worrying about table growth.
     #[test]
     fn rebuild_is_idempotent() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         let s = sample_session("uuid-a", "proj-a");
         let n1 = db
@@ -964,7 +937,7 @@ mod tests {
         // craft a scenario where rebuild calls read_conversation,
         // which finds nothing (no JSONL on disk) — so bubbles is
         // empty and content_hash is the empty-input SHA-256.
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         let mut s = sample_session("uuid-b", "proj-b");
         s.composer_data = Some(ComposerData {
@@ -975,10 +948,7 @@ mod tests {
         db.rebuild_from_cursor_state(&[s], "host-b", 500).unwrap();
         let row = db.get_session_meta("uuid-b").unwrap().unwrap();
         // Empty bubble list → SHA-256("") known constant.
-        assert_eq!(
-            row.content_hash,
-            conflict::content_hash_from_bubbles(&[])
-        );
+        assert_eq!(row.content_hash, conflict::content_hash_from_bubbles(&[]));
         assert_eq!(row.endpoint_kind, "linux_cli");
         assert_eq!(row.host, "host-b");
         assert_eq!(row.bubble_count, 0);
@@ -990,7 +960,7 @@ mod tests {
     /// / archive / conflicts via FOREIGN KEY ON DELETE CASCADE.
     #[test]
     fn deleted_session_tombstone_hides_uuid_from_list() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         db.record_deleted_session("uuid-z", 42).unwrap();
         let hidden = db.deleted_session_uuids().unwrap();
@@ -999,20 +969,27 @@ mod tests {
 
     #[test]
     fn archive_and_delete_cascade() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         let mut s = sample_session("uuid-c", "proj-c");
         s.composer_data = Some(ComposerData {
             full_json: "{}".into(),
             subset_json: "{}".into(),
         });
-        db.rebuild_from_cursor_state(&[s.clone()], "host-c", 1).unwrap();
+        db.rebuild_from_cursor_state(&[s.clone()], "host-c", 1)
+            .unwrap();
         let archive_id = db
             .record_archive("uuid-c", "before_overwrite", "{\"x\":1}", 2)
             .unwrap();
         assert!(archive_id > 0);
         let conflict_id = db
-            .record_conflict("uuid-c", ConflictClass::Diverged, Some("h-local"), Some("h-in"), 3)
+            .record_conflict(
+                "uuid-c",
+                ConflictClass::Diverged,
+                Some("h-local"),
+                Some("h-in"),
+                3,
+            )
             .unwrap();
         assert!(conflict_id > 0);
         let counts = db.row_counts().unwrap();
@@ -1034,16 +1011,18 @@ mod tests {
     /// "auto-merged" / "user chose local" etc.
     #[test]
     fn resolve_conflict_marks_resolved() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
-        db.rebuild_from_cursor_state(
-            &[sample_session("uuid-d", "proj-d")],
-            "host-d",
-            1,
-        )
-        .unwrap();
+        db.rebuild_from_cursor_state(&[sample_session("uuid-d", "proj-d")], "host-d", 1)
+            .unwrap();
         let cid = db
-            .record_conflict("uuid-d", ConflictClass::Diverged, Some("h-local"), Some("h-in"), 2)
+            .record_conflict(
+                "uuid-d",
+                ConflictClass::Diverged,
+                Some("h-local"),
+                Some("h-in"),
+                2,
+            )
             .unwrap();
         let open = db.unresolved_conflicts().unwrap();
         assert_eq!(open.len(), 1);
@@ -1051,14 +1030,18 @@ mod tests {
         assert_eq!(open[0].class, "Diverged");
         db.resolve_conflict(cid, "auto_merged", 3).unwrap();
         let open = db.unresolved_conflicts().unwrap();
-        assert_eq!(open.len(), 0, "resolved conflict must drop out of unresolved list");
+        assert_eq!(
+            open.len(),
+            0,
+            "resolved conflict must drop out of unresolved list"
+        );
     }
 
     /// sync_runs bookkeeping: record → finish → row reflects the
     /// final tallies + finished_at_ms + error string.
     #[test]
     fn sync_run_record_and_finish() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         let run_id = db.record_sync_run("macbook", "pull", 100).unwrap();
         db.finish_sync_run(run_id, 12, 0, 250, None).unwrap();
@@ -1091,7 +1074,7 @@ mod tests {
     /// preserved.
     #[test]
     fn rebuild_honors_sources_priority_order() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = crate::core::paths::test_home_lock().lock().unwrap();
         let (_home, db) = fresh_unified_db();
         let mut s = sample_session("uuid-e", "proj-e");
         s.sources = Sources {
@@ -1141,8 +1124,14 @@ mod tests {
     /// text change must flip the hash.
     #[test]
     fn content_hash_changes_when_text_changes() {
-        let a = vec![bubble("b1", "user", "hello", 1), bubble("b2", "assistant", "world", 2)];
-        let b = vec![bubble("b1", "user", "hello", 1), bubble("b2", "assistant", "world!", 2)];
+        let a = vec![
+            bubble("b1", "user", "hello", 1),
+            bubble("b2", "assistant", "world", 2),
+        ];
+        let b = vec![
+            bubble("b1", "user", "hello", 1),
+            bubble("b2", "assistant", "world!", 2),
+        ];
         let h_a = conflict::content_hash_from_bubbles(&a);
         let h_b = conflict::content_hash_from_bubbles(&b);
         assert_ne!(h_a, h_b, "text edit must change content hash");

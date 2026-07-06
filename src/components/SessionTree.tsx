@@ -6,7 +6,7 @@
 // compute it per-render via `getSortLabels(t)`). Settings (gear icon)
 // in the header opens `<SettingsDialog />` for language / sync / conflicts.
 
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   useSessionStore,
@@ -25,7 +25,7 @@ import { SettingsButton } from "./SettingsButton";
 import { SettingsDialog } from "./SettingsDialog";
 import type { CanonicalSession, SourceLayer } from "../lib/types";
 import { resolveTitle } from "../lib/display";
-import { fixOrphans, syncNow as syncNowTauri, type FixOrphansReport } from "../lib/tauri";
+import { fixOrphans, type FixOrphansReport } from "../lib/tauri";
 import {
   ChevronDown,
   ChevronRight,
@@ -236,7 +236,6 @@ export function SessionTree() {
     setOrphanToast(null);
     try {
       const report = await fixOrphans();
-      await syncNowTauri().catch(() => undefined);
       setOrphanToast({
         kind: "ok",
         text:
@@ -308,7 +307,9 @@ export function SessionTree() {
         </h1>
         <span className="ml-auto inline-flex items-center gap-1.5">
           <SyncStatusBadge />
-          <SettingsButton onClick={() => setSettingsOpen(true)} />
+          <SettingsButton
+            onClick={() => startTransition(() => setSettingsOpen(true))}
+          />
         </span>
         <span className="text-[10px] text-fg-muted font-mono">
           {t("tree.header.version")}

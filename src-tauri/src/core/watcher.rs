@@ -44,6 +44,11 @@ const DEBOUNCE_MS: u64 = 500;
 /// (e.g. mtime-only updates inside a SQLite file).
 const POLL_INTERVAL_SECS: u64 = 30;
 
+/// Suppress fs-event-triggered rescans briefly after bettercursor itself
+/// writes Layer 1/2/3. This avoids "inline write → watcher echo → second
+/// full scan" on the same user action.
+const SELF_WRITE_SUPPRESS_MS: u64 = 1500;
+
 /// Spawn the watcher thread. Returns immediately; the thread lives
 /// for the lifetime of the `app` (drops when the process exits).
 ///
@@ -120,7 +125,9 @@ fn run_watcher(app: AppHandle, dirs: Vec<PathBuf>) -> Result<()> {
     }
     let _hold_watcher = Arc::new(watcher); // keep alive while we have `rx`
 
-    let last_scan = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(POLL_INTERVAL_SECS)));
+    let last_scan = Arc::new(Mutex::new(
+        Instant::now() - Duration::from_secs(POLL_INTERVAL_SECS),
+    ));
     let dirty = Arc::new(Mutex::new(false));
 
     // fs events → mark dirty, debounce by timestamp
@@ -179,6 +186,11 @@ fn is_interesting(ev: &Event) -> bool {
 /// product expectation that "open bettercursor and see current
 /// sessions" works out of the box.
 fn run_scan(app: &AppHandle, trigger: &str) {
+    if trigger == "fs-event" && fs_event_suppressed(app) {
+        log::debug!("auto-sync [{trigger}] suppressed after self-write");
+        return;
+    }
+    let started = Instant::now();
     match canonical::visible_sessions() {
         Ok(sessions) => {
             let count = sessions.len();
@@ -187,7 +199,10 @@ fn run_scan(app: &AppHandle, trigger: &str) {
                 *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
             }
             let _ = app.emit("sessions-updated", count);
-            log::debug!("auto-sync [{trigger}]: {count} sessions");
+            log::info!(
+                "auto-sync [{trigger}]: sessions={count} total_ms={}",
+                started.elapsed().as_millis()
+            );
         }
         Err(e) => {
             log::warn!("auto-sync [{trigger}] failed: {e:#}");
@@ -198,6 +213,15 @@ fn run_scan(app: &AppHandle, trigger: &str) {
 /// Public API for the frontend: turn the watcher on. Idempotent.
 pub fn start(app: &AppHandle) -> Result<()> {
     spawn(app.clone())
+}
+
+/// Tell the watcher to ignore fs-event rescans for a short window after
+/// bettercursor itself mutates Cursor storage.
+pub fn suppress_fs_events(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.watcher_suppress_until.lock().unwrap() =
+            Some(Instant::now() + Duration::from_millis(SELF_WRITE_SUPPRESS_MS));
+    }
 }
 
 /// Return the resolved watch dirs (for diagnostics / future status UI).
@@ -223,6 +247,25 @@ fn _ensure_path_in_scope() {
     let _: &Path = Path::new("");
 }
 
+fn fs_event_suppressed(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<AppState>() else {
+        return false;
+    };
+    let mut until = state.watcher_suppress_until.lock().unwrap();
+    suppression_active(&mut until, Instant::now())
+}
+
+fn suppression_active(until: &mut Option<Instant>, now: Instant) -> bool {
+    match until {
+        Some(deadline) if *deadline > now => true,
+        Some(_) => {
+            *until = None;
+            false
+        }
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +288,17 @@ mod tests {
             attrs: Default::default(),
         };
         assert!(!is_interesting(&ev));
+    }
+
+    #[test]
+    fn suppression_window_expires_cleanly() {
+        let now = Instant::now();
+        let mut until = Some(now + Duration::from_millis(10));
+        assert!(suppression_active(&mut until, now));
+        assert!(until.is_some());
+
+        let later = now + Duration::from_millis(20);
+        assert!(!suppression_active(&mut until, later));
+        assert!(until.is_none());
     }
 }

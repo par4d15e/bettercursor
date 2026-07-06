@@ -26,6 +26,9 @@ pub struct AppState {
     /// True iff the fs-watcher thread is currently alive. Used so
     /// the spawn site stays idempotent across restart attempts.
     pub watcher_active: Mutex<bool>,
+    /// Ignore watcher fs-event echoes until this deadline after
+    /// bettercursor itself writes Layer 1/2/3.
+    pub watcher_suppress_until: Mutex<Option<std::time::Instant>>,
 }
 
 impl AppState {
@@ -37,6 +40,7 @@ impl AppState {
             sessions: Mutex::new(Vec::new()),
             last_scan_at: Mutex::new(None),
             watcher_active: Mutex::new(false),
+            watcher_suppress_until: Mutex::new(None),
         }
     }
 }
@@ -58,25 +62,8 @@ fn list_sessions(state: State<'_, AppState>) -> Vec<core::canonical::CanonicalSe
 ///
 /// Tauri command — invoked from the React frontend via `invoke('sync_now')`.
 #[tauri::command]
-fn sync_now(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
-    let sessions = core::canonical::visible_sessions().map_err(|e| e.to_string())?;
-    let count = sessions.len();
-    // v0.3.0: mirror into unified.db so the FTS5 mirror,
-    // content_hash, and session rows reflect the post-scan world.
-    // Best-effort — failures MUST NOT fail the in-memory cache refresh
-    // that the frontend depends on.
-    if let Ok(unified) = core::unified::UnifiedDb::open() {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let host = local_hostname();
-        let _ = unified.rebuild_from_cursor_state(&sessions, &host, now_ms);
-    }
-    *state.sessions.lock().unwrap() = sessions;
-    *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
-    let _ = app.emit("sessions-updated", count);
-    Ok(count)
+async fn sync_now(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+    refresh_sessions_cache(app, state, true, "sync_now").await
 }
 
 /// Build the resume command appropriate for the given source.
@@ -111,8 +98,21 @@ fn platform_info() -> String {
 /// `invoke('get_conversation', { uuid })`. Returns a `Conversation`
 /// with `source_path = None` if no Layer 1 JSONL was found.
 #[tauri::command]
-fn get_conversation(uuid: &str) -> core::canonical::Conversation {
-    core::canonical::read_conversation(uuid)
+async fn get_conversation(uuid: String) -> Result<core::canonical::Conversation, String> {
+    let started = Instant::now();
+    let uuid_for_log = uuid.clone();
+    let conv =
+        tauri::async_runtime::spawn_blocking(move || core::canonical::read_conversation(&uuid))
+            .await
+            .map_err(|e| e.to_string())?;
+    log::info!(
+        "get_conversation: uuid={} bubbles={} parse_errors={} total_ms={}",
+        uuid_for_log,
+        conv.bubbles.len(),
+        conv.parse_errors,
+        started.elapsed().as_millis()
+    );
+    Ok(conv)
 }
 
 /// Watcher diagnostics for the frontend. Returns the watch dirs
@@ -131,6 +131,52 @@ struct WatcherStatus {
     /// fallback). `None` before the first scan completes. Frontend
     /// renders this as "Xs 前" / "Xm 前" / "Xh 前".
     last_scan_at_ms: Option<i64>,
+}
+
+fn collect_refreshed_sessions(
+    rebuild_unified: bool,
+) -> Result<(Vec<core::canonical::CanonicalSession>, u64, Option<u64>), String> {
+    let scan_started = Instant::now();
+    let sessions = core::canonical::visible_sessions().map_err(|e| e.to_string())?;
+    let scan_ms = scan_started.elapsed().as_millis() as u64;
+    let mut rebuild_ms = None;
+    if rebuild_unified {
+        // unified.db 是派生缓存. 统一只在"权威 refresh"阶段回填,
+        // 避免写路径、watcher、前端手动 refresh 层层重复 rebuild.
+        if let Ok(unified) = core::unified::UnifiedDb::open() {
+            let rebuild_started = Instant::now();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let host = local_hostname();
+            let _ = unified.rebuild_from_cursor_state(&sessions, &host, now_ms);
+            rebuild_ms = Some(rebuild_started.elapsed().as_millis() as u64);
+        }
+    }
+    Ok((sessions, scan_ms, rebuild_ms))
+}
+
+async fn refresh_sessions_cache(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    rebuild_unified: bool,
+    reason: &'static str,
+) -> Result<usize, String> {
+    let refresh_started = Instant::now();
+    let (sessions, scan_ms, rebuild_ms) =
+        tauri::async_runtime::spawn_blocking(move || collect_refreshed_sessions(rebuild_unified))
+            .await
+            .map_err(|e| e.to_string())??;
+    let count = sessions.len();
+    *state.sessions.lock().unwrap() = sessions;
+    *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
+    let _ = app.emit("sessions-updated", count);
+    log::info!(
+        "refresh_sessions_cache[{reason}]: sessions={count} scan_ms={scan_ms} rebuild_ms={} total_ms={}",
+        rebuild_ms
+            .map(|ms| ms.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        refresh_started.elapsed().as_millis()
+    );
+    Ok(count)
 }
 
 #[tauri::command]
@@ -168,6 +214,8 @@ fn compute_watcher_status(state: &AppState) -> WatcherStatus {
 /// `skipped=["no_cwd"]`.)
 #[tauri::command]
 async fn sync_session_layer23(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
     uuid: String,
     cwd: Option<String>,
 ) -> Result<core::sync::SyncReport, String> {
@@ -175,7 +223,15 @@ async fn sync_session_layer23(
         Some(c) if !c.trim().is_empty() => c,
         _ => lookup_cwd_for_session(&uuid).unwrap_or_default(),
     };
-    core::sync::sync_session(&uuid, &resolved_cwd).map_err(|e| e.to_string())
+    core::watcher::suppress_fs_events(&app);
+    let uuid_for_sync = uuid.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        core::sync::sync_session(&uuid_for_sync, &resolved_cwd).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = refresh_sessions_cache(app, state, true, "sync_session_layer23").await?;
+    Ok(report)
 }
 
 /// v0.2.1: 全量扫所有 chats/<md5>/<uuid>/store.db, 把每条
@@ -186,8 +242,18 @@ async fn sync_session_layer23(
 /// Returns: 修了多少 (`fixed`)、跳过了多少 (`scipped`)、扫过多少
 /// (`scanned`).
 #[tauri::command]
-fn fix_orphans() -> Result<core::sync::FixOrphansReport, String> {
-    core::sync::fix_orphans().map_err(|e| e.to_string())
+async fn fix_orphans(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<core::sync::FixOrphansReport, String> {
+    core::watcher::suppress_fs_events(&app);
+    let report = tauri::async_runtime::spawn_blocking(|| {
+        core::sync::fix_orphans().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = refresh_sessions_cache(app, state, true, "fix_orphans").await?;
+    Ok(report)
 }
 
 /// v0.2.1: 删除一条 session 的 Layer 1 (JSONL) + Layer 2 (store.db)
@@ -199,19 +265,28 @@ fn fix_orphans() -> Result<core::sync::FixOrphansReport, String> {
 /// (避免 L1 路径猜错). 当 slug 为 None 时跳过 L1 (只删 L2).
 #[tauri::command]
 async fn delete_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
     uuid: String,
     cwd: Option<String>,
     project_slug: Option<String>,
     remove_l3: Option<bool>,
 ) -> Result<core::sync::DeleteReport, String> {
     let cwd_str = cwd.unwrap_or_default();
-    core::sync::delete_session(
-        &uuid,
-        &cwd_str,
-        project_slug.as_deref(),
-        remove_l3.unwrap_or(false),
-    )
-    .map_err(|e| e.to_string())
+    core::watcher::suppress_fs_events(&app);
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        core::sync::delete_session(
+            &uuid,
+            &cwd_str,
+            project_slug.as_deref(),
+            remove_l3.unwrap_or(false),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = refresh_sessions_cache(app, state, true, "delete_session").await?;
+    Ok(report)
 }
 
 /// v0.2.6: 列出 `~/.bettercursor/transports.json` 里的所有 peer.
@@ -319,8 +394,16 @@ fn transport_pull(
 }
 
 #[tauri::command]
-fn get_preferences() -> core::config::Preferences {
-    core::config::load()
+async fn get_preferences() -> Result<core::config::Preferences, String> {
+    let started = Instant::now();
+    let prefs = tauri::async_runtime::spawn_blocking(core::config::load)
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!(
+        "get_preferences: total_ms={}",
+        started.elapsed().as_millis()
+    );
+    Ok(prefs)
 }
 
 #[tauri::command]
@@ -358,21 +441,54 @@ fn pairing_join(
 }
 
 #[tauri::command]
-fn list_trusted_peers() -> Result<Vec<core::transport::trusted_peers::TrustedPeer>, String> {
-    core::transport::trusted_peers::TrustedPeersFile::load()
-        .map(|f| f.peers)
-        .map_err(|e| e.to_string())
+async fn list_trusted_peers() -> Result<Vec<core::transport::trusted_peers::TrustedPeer>, String> {
+    let started = Instant::now();
+    let peers = tauri::async_runtime::spawn_blocking(|| {
+        core::transport::trusted_peers::TrustedPeersFile::load()
+            .map(|f| f.peers)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    log::info!(
+        "list_trusted_peers: count={} total_ms={}",
+        peers.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(peers)
 }
 
 #[tauri::command]
-fn discovery_browse() -> Result<Vec<core::discovery::DiscoveredDevice>, String> {
-    core::discovery::browse_devices(3000).map_err(|e| e.to_string())
+async fn discovery_browse() -> Result<Vec<core::discovery::DiscoveredDevice>, String> {
+    let started = Instant::now();
+    let devices = tauri::async_runtime::spawn_blocking(|| {
+        core::discovery::browse_devices(3000).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    log::info!(
+        "discovery_browse: count={} total_ms={}",
+        devices.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(devices)
 }
 
 #[tauri::command]
-fn list_unresolved_conflicts() -> Result<Vec<core::unified::ConflictRow>, String> {
-    let db = core::unified::UnifiedDb::open().map_err(|e| e.to_string())?;
-    db.unresolved_conflicts().map_err(|e| e.to_string())
+async fn list_unresolved_conflicts() -> Result<Vec<core::unified::ConflictRow>, String> {
+    let started = Instant::now();
+    let conflicts = tauri::async_runtime::spawn_blocking(|| {
+        let db = core::unified::UnifiedDb::open().map_err(|e| e.to_string())?;
+        db.unresolved_conflicts().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    log::info!(
+        "list_unresolved_conflicts: count={} total_ms={}",
+        conflicts.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(conflicts)
 }
 
 #[tauri::command]
@@ -426,8 +542,7 @@ fn lookup_cwd_for_session(uuid: &str) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -438,19 +553,18 @@ pub fn run() {
             // Initial scan on startup; failures are logged but not fatal —
             // the user can hit Refresh later.
             let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                match core::canonical::visible_sessions() {
-                    Ok(sessions) => {
-                        log::info!("initial scan: {} session(s)", sessions.len());
-                        if let Some(state) = handle.try_state::<AppState>() {
-                            *state.sessions.lock().unwrap() = sessions;
-                            *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
-                            let _ = handle.emit("sessions-updated", state.sessions.lock().unwrap().len());
-                        }
+            std::thread::spawn(move || match core::canonical::visible_sessions() {
+                Ok(sessions) => {
+                    log::info!("initial scan: {} session(s)", sessions.len());
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        *state.sessions.lock().unwrap() = sessions;
+                        *state.last_scan_at.lock().unwrap() = Some(chrono::Utc::now());
+                        let _ =
+                            handle.emit("sessions-updated", state.sessions.lock().unwrap().len());
                     }
-                    Err(e) => {
-                        log::warn!("initial scan failed: {e:#}");
-                    }
+                }
+                Err(e) => {
+                    log::warn!("initial scan failed: {e:#}");
                 }
             });
             // Start the fs watcher for live auto-sync.

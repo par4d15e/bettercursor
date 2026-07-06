@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Settings } from "lucide-react";
 import { useSyncStore } from "../store/syncStore";
@@ -10,11 +9,6 @@ interface Props {
 export function SettingsButton({ onClick }: Props) {
   const { t } = useTranslation();
   const conflicts = useSyncStore((s) => s.conflicts);
-  const loadConflicts = useSyncStore((s) => s.loadConflicts);
-
-  useEffect(() => {
-    void loadConflicts();
-  }, [loadConflicts]);
 
   const count = conflicts.length;
   const title =

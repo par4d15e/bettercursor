@@ -139,6 +139,7 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.3.0 PR-2 — 单元测试 28+ 新 case** (snapshot 5 / conflict 8 / ssh async 4 / sync agentKv 1; 全量 `cargo test --lib` 126 case) | 各 `::tests` | **v0.3.0 PR-2 ✅** |
 | 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对; **v0.3.2** 起 UI 收进 `<SettingsDialog>`; SSH (T2b) 保留为高级模式 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
+| **交互性能收口** (写后单次权威刷新 + watcher 忽略自写回声 + 重 IO 不阻塞 UI 线程) | [SYNC_DESIGN.md §1.3A](SYNC_DESIGN.md) | **v0.3.7 进行中** |
 | **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** (最小切片: `write_layer3` 复制已有 agentKv) |
@@ -220,6 +221,17 @@ cd .. && python3 tests/test_layer2_import.py
 | US-5 | 我用搜索框过滤 session 名称 / 项目 / 内容关键字. | 实时过滤, 高亮匹配. |
 | US-6 | 我点 "刷新" 按钮, **重新扫描** 本机存储. | 1-2 秒内列表更新. |
 | US-7 | 重复的 UUID (同一 session 在多层都存在) **不出现两次**. | canonical merge 按 uuid dedup; 有效 CLI 会话 L1/L2 同 uuid; 未 sync 的 L2 栈与 L3 栈 uuid 池分立 — 见 [SYNC_DESIGN §2.5 Q6](SYNC_DESIGN.md). |
+
+### 2.3A 交互性能验收补充 (2026-07-06)
+
+> 这组约束是对 US-3 / US-6 的补充收口. 目标不是把所有扫描都做成增量, 而是先避免一次用户操作触发重复的全量扫描 / 重建 / 详情重拉.
+
+| 场景 | 约束 | 理由 |
+|----|------|------|
+| 单条写操作 (`sync_session_layer23` / `fix_orphans` / `delete_session`) | **一次用户动作最多一次权威 refresh**: 后端完成写入后自行刷新 `AppState.sessions` 并 emit `sessions-updated`; 前端不再追加 `sync_now` | 避免 "写入 → watcher 重扫 → 前端再手动重扫" 的三连 |
+| watcher 监听到本应用自己刚写的文件 | **忽略短窗口内的自写回声** | inline-write 已知会命中 Layer 2 / Layer 3 watcher; 若不抑制, UI 会收到重复刷新 |
+| `sync_now` / `get_conversation` / repair / delete 等重 IO 命令 | **必须离开 Tauri UI 线程执行** (`spawn_blocking` 或等价机制) | SQLite + JSONL 全盘读取会造成窗口短暂无响应 |
+| SessionDetail 会话内容加载 | 保持**按需加载**; 不要求启动时预取全量对话 | 启动性能优先, 避免列表页被详情解析拖慢 |
 
 ### 2.3 非目标 (Non-goals, 强调)
 

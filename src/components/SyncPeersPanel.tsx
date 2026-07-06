@@ -64,13 +64,12 @@ export function SyncPeersPanel({ active }: Props) {
   useEffect(() => {
     if (!active) return;
     void refresh();
-    void browse();
     void getPreferences().then((p) => {
       setAutoPullEnabled(p.auto_pull_enabled);
       setAutoPullInterval(p.auto_pull_interval_secs);
       setPathMappings(p.path_mappings ?? {});
     });
-  }, [active, refresh, browse]);
+  }, [active, refresh]);
 
   const savePrefs = (enabled: boolean, interval: number) => {
     void setPreferences({

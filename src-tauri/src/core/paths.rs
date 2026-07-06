@@ -19,9 +19,26 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+fn effective_home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(p) = std::env::var_os("BETTERCURSOR_TEST_HOME") {
+        return Some(PathBuf::from(p));
+    }
+    home::home_dir()
+}
+
+#[cfg(test)]
+pub fn test_home_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Return the Cursor User data directory for the current platform.
 pub fn cursor_user_dir() -> Result<PathBuf> {
-    let home = home::home_dir().context("could not determine home directory")?;
+    let home = effective_home_dir().context("could not determine home directory")?;
     let p = match std::env::consts::OS {
         "macos" => home
             .join("Library")
@@ -41,9 +58,7 @@ pub fn cursor_user_dir() -> Result<PathBuf> {
 
 /// Path to Layer 3 SQLite: `<user_dir>/globalStorage/state.vscdb`.
 pub fn global_db_path() -> Result<PathBuf> {
-    Ok(cursor_user_dir()?
-        .join("globalStorage")
-        .join("state.vscdb"))
+    Ok(cursor_user_dir()?.join("globalStorage").join("state.vscdb"))
 }
 
 /// Path to Layer 3 workspace storage dir (one state.vscdb per workspace).
@@ -53,12 +68,14 @@ pub fn workspace_storage_dir() -> Result<PathBuf> {
 
 /// Path to a specific workspace's state.vscdb (Layer 3 per-workspace).
 pub fn workspace_db(workspace_hash: &str) -> Result<PathBuf> {
-    Ok(workspace_storage_dir()?.join(workspace_hash).join("state.vscdb"))
+    Ok(workspace_storage_dir()?
+        .join(workspace_hash)
+        .join("state.vscdb"))
 }
 
 /// `~/.cursor/projects/` — parent of all Layer 1 (JSONL) directories.
 pub fn cursor_projects_dir() -> PathBuf {
-    home::home_dir()
+    effective_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".cursor")
         .join("projects")
@@ -66,7 +83,7 @@ pub fn cursor_projects_dir() -> PathBuf {
 
 /// `~/.cursor/chats/` — parent of all `<md5(cwd)>/<uuid>/store.db` directories.
 pub fn chats_dir() -> PathBuf {
-    home::home_dir()
+    effective_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".cursor")
         .join("chats")
@@ -122,7 +139,7 @@ pub fn resolve_store_db_for(uuid: &str, cwd: &str) -> Option<PathBuf> {
 /// only `config.json` lives here (post-v0.2-alpha: no queue files,
 /// no offline apply scripts — sync.rs writes inline).
 pub fn bettercursor_dir() -> PathBuf {
-    let p = home::home_dir()
+    let p = effective_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".bettercursor");
     let _ = std::fs::create_dir_all(&p);
