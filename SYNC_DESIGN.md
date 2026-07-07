@@ -6,10 +6,10 @@
 >
 > 读者画像: 已熟悉 v0.1 架构 (`src-tauri/src/core/{paths,storage,canonical}.rs` + `src/components/*`), 想知道"为 v0.2.x 之后做设计时要参考什么约束".
 >
-> **状态**: 设计稿. v0.2-alpha + v0.2.1 已落地 (见 §0.5 callout). §3 unified.db / §4 transport 适配器 / §6 冲突解决 / §7 lock module 升级 仍是待拍板.
+> **状态**: 设计稿. v0.2-alpha–v0.3.6 已落地. **2026-07-07 新拍板**: `v0.3.7` 改走 **LAN-only** 路线, 主路径为**手动地址连接**, `mDNS` 仅辅助发现, **SSH/T2b 退出当前路线图**; §3 unified.db / §6 冲突解决 / §7 lock module 升级保持既有设计前提.
 >
 > **章节 map**:
-> §0 背景与现状 → §1 核心架构 → §2 Snapshot codec (§2.5 Q6 = UUID 身份) → §3 unified.db schema → §4 传输适配器层 → §5 SSH/rsync (T2b) → §6 冲突解决 → §7 锁画像 → §8 多端接力 → §9 Cursor 集成 → §10 路线图 → §11 文件清单 (**§11.5 vendored** / **§11.6 社区参考**) → §12 决策 → §13 风险.
+> §0 背景与现状 → §1 核心架构 → §2 Snapshot codec (§2.5 Q6 = UUID 身份) → §3 unified.db schema → §4 传输适配器层 (**v0.3.7 LAN-only 拍板**) → §5 SSH/rsync (历史方案, 已取消) → §6 冲突解决 → §7 锁画像 → §8 多端接力 → §9 Cursor 集成 → §10 路线图 → §11 文件清单 (**§11.5 vendored** / **§11.6 社区参考**) → §12 决策 → §13 风险.
 
 ### Reading guide: 旧章节 → 新章节 映射表
 
@@ -26,7 +26,7 @@
 | §4 Tauri Command API + §4.1 新增 commands | v0.2.3 待做的 commands | 删除 (老 command 表已跟当前 lib.rs 不同, 看 §0.5 callout + lib.rs 实测) |
 | §4.3 sync_session_layer23 v0.2-alpha 实现 | 6 步编排 | 收口在 §0.5 callout + §9.1 写流程 (不要重复) |
 | §5 后台同步循环 + §5.2 notify | tokio daemon_loop 设计 | (删除; §10 路线图 v0.2.3 是它, 但本文件不重写 tokio 细节) |
-| §6.1 Tailscale mesh + §6.2 SSH 反向推送 + §6.4 冲突 | 旧 Tailscale + LWW 4-way | **拆分** → §4 (Tailscale 降级为 T5) + §5 (SSH) + §6 (LWW + 5-way) |
+| §6.1 Tailscale mesh + §6.2 SSH 反向推送 + §6.4 冲突 | 旧 Tailscale + LWW 4-way | **拆分** → §4 (现改为 LAN-only 主路) + §5 (SSH 历史方案) + §6 (LWW + 5-way) |
 | §7 对话记录展开 | 读 3 层 merge | 删除 (跟 v0.2.2 路线图一对一; §10 提) |
 | §8 写 store.db / state.vscdb 细节 | L2/L3 write 函数 | §9 (简化成 reference, 不重列 sync.rs 已写的) |
 | §9 阶段拆解 (v0.2 路线图) | 5 个 milestone | **§10 (重排**: v0.2.1 ✅, v0.2.2/v0.2.3/v0.2.4 待做, v0.3.0 大版本) |
@@ -69,12 +69,27 @@
 | 维度 | 旧 SYNC_DESIGN (2026-07-03) | 新 SYNC_DESIGN (本文件) |
 |------|---------------------------|------------------------|
 | 数据形态 | 单一 `~/.bettercursor/unified.db` 在 hub | **每台机器各自一份** unified.db (本机内部缓存) |
-| 跨设备传输 | Tailscale mesh + 公网 SSH | **SSH/rsync** (默认), Tailscale 仅作为可选 (T5) |
+| 跨设备传输 | Tailscale mesh + 公网 SSH | **LAN TCP** (手动地址连接为主, `mDNS` 为辅), Tailscale / ZeroTier / Headscale 通过虚拟局域网地址接入 |
 | Snapshot 编码 | gzip JSON (`*.json.gz`) | **纯文本 JSON** (为 3-way merge) |
 | 冲突解决 | LWW only | **LWW + bubble-level diff + 3-way UI**, 写前自动 archive |
 | 锁检测 | sync.rs 内联 `cursor_processes_running` | 独立 `core::process`, 升级为分类型 `core::lock` |
 | 离线交付 | 本地 sync loop | **离线 outbox 队列** + 上线后 flush |
 | 备份 | 未设计 | **`cp -r ~/.bettercursor/`** (用户自管) |
+
+### 0.4 v0.3.7 拍板: LAN-only, 手动地址连接为主, `mDNS` 为辅
+
+> 拍板时间: **2026-07-07**
+>
+> **结论**:
+> - `v0.3.7` 的主路径改为 **LAN 手动地址连接**
+> - `LAN` 在这里指 **同一可达网络内的 TCP peer**, 不限定物理局域网; Tailscale / ZeroTier / Headscale 都算
+> - `mDNS` 保留, 但仅作为**自动发现捷径**, 不是主流程前提
+> - `SSH/T2b` 不再做设置 UI, `transports.json` 不再进入当前路线图
+>
+> **产品心智**:
+> - 像 Deskflow 一样: 用户知道对端地址时, 直接填 `host:port`
+> - 像 lan-mouse 一样: 首次连接仍保留轻量授权 / trusted peer 持久化
+> - 一次配对后, 双方都记住对方, 后续 push/pull 不要求重复录入
 
 ### 0.5 v0.2-alpha + v0.2.1 已落地的能力 (区别于本设计稿的"待做"部分)
 
@@ -801,35 +816,36 @@ pub struct BubbleHit {
 
 ## §4 传输适配器层
 
-### 4.1 为什么是适配器, 不是单一通道
+### 4.1 为什么 v0.3.7 收口到 LAN-only
 
-旧版 (`SYNC_DESIGN.md §6.2`, 2026-07-03) 默认 **Tailscale mesh**, 这要求用户装 Tailscale, 不友好. 新版拆成 **6 层 tier + T2 子层**, **默认走 T2a (LAN TCP + mDNS 配对)**, T2b (SSH/rsync) 降为高级/headless 模式; T5 (Tailscale) 作为跨网升级路径, T0 (手动文件) 作为最低 fallback.
+旧版 (`SYNC_DESIGN.md §6.2`, 2026-07-03) 先后尝试过 **Tailscale mesh**、**SSH/rsync 默认**、**mDNS 优先 LAN**. 走到 `v0.3.7` 时, 产品目标进一步收敛:
 
-### 4.2 6 层 tier ASCII 栈
+- **一期只保留一条跨设备主路径**: LAN TCP
+- **手动地址连接** 是主入口, 因为它同时覆盖物理局域网与虚拟局域网
+- `mDNS` 仅作为“能自动发现时更方便”的附加能力
+- `SSH/T2b` 不再扩展 UI, 避免把一期工作拆成两套平行连接系统
+
+### 4.2 v0.3.7 当前连接模型
 
 ```
-           ↓ 简单 ↑              auto       ←── 版本演进方向
-T5   Tailscale / SSH-direct       (auto, both-end daemon)
-T4   S3 / R2 / B2                (auto, cloud)
-T3   Git over SSH/HTTPS          (auto, versioned)
-T2a  LAN TCP + mDNS + 配对  ⭐ default (同网开箱即用)
-T2b  SSH + rsync                 (高级 / headless, 需 transports.json)
-T1   Folder watcher              (semi-auto, USB / NAS)
-T0   Manual file copy            (manual, fallback)
-           ↓ 灵活 ↓              manual     ←── 用户控制方向
+            ↓ 用户几乎无配置 ↑
+辅助入口    mDNS nearby browse
+主入口      手动输入 host:port + code   ⭐ default
+持久层      trusted_peers.json
+传输层      LAN TCP (PAIR / PUSH / PULL)
+回退路径    手动复制 snapshot 文件
+            ↓ 对虚拟局域网最稳 ↓
 ```
 
-### 4.3 各 tier 详解
+### 4.3 当前路线与历史路线
 
-| Tier | 传输方式 | Target user | 优点 | 缺点 | 路线图 |
-|------|---------|------------|------|------|--------|
-| T0 | 手动 `scp` / U 盘 / AirDrop | 完全离线 / 临时文件 | 零配置 | 需手动, 容易忘 | ✅ 已能跑 (snapshot 文件本来就在 `~/.bettercursor/snapshots/`) |
-| T1 | 文件夹 watcher (`core::watcher`) | U 盘 / NAS mount | 半自动 | mount point 要固定 | 待 v0.3.2 (?) |
-| **T2a** ⭐ | LAN TCP + mDNS (`_bettercursor._tcp`) + 6 位配对码 | 同网 Mac↔Linux 默认用户 | **零配置发现, 一次配对, 托盘常驻** | 仅限局域网; 无 TLS (v0.3.1 用 pairing secret) | **✅ v0.3.1 默认** |
-| **T2b** | SSH + rsync | 已有 SSH key / headless | 零第三方, 增量, 可恢复 | 需手写 `transports.json` + key | ✅ 高级模式 (v0.2.6 起) |
-| T3 | Git over SSH/HTTPS | 想看 history 的用户 | diff 可视化, 老 snapshot 可回放 | 仓库膨胀, 写冲突 | 待 v0.3.8+ (?) |
-| T4 | S3 / R2 / B2 | 多端 ≥3 / 没 SSH | scale, durability | 第三依赖, 1 个 API key 要管 | 待拍板 |
-| T5 | Tailscale mesh | 已有 Tailscale 的用户 | 自动发现, 直连 | 需装 Tailscale | 待 v0.3.x |
+| 路线 | 方式 | 角色 | 优点 | 缺点 | 当前状态 |
+|------|------|------|------|------|---------|
+| **LAN-manual** ⭐ | 手动 `host:port` + 配对码 | **v0.3.7 主路径** | 兼容物理 LAN / Tailscale / ZeroTier / Headscale; 用户心智明确 | 需要知道对端地址 | ⚪ v0.3.7 待实现 |
+| **LAN-discovery** | `mDNS` (`_bettercursor._tcp`) + 配对码 | 辅助入口 | 同物理 LAN 下零输入 | 依赖 multicast; 在部分虚拟局域网中不可靠 | ✅ 已有, v0.3.7 继续保留 |
+| T0 | 手动复制 snapshot 文件 | 最低回退 | 零协议依赖 | 完全手动 | ✅ 已能跑 |
+| **SSH/T2b** | SSH + rsync + `transports.json` | 历史高级路线 | 对 headless 友好 | 需要 SSH server / key / 额外配置 | ⛔ v0.3.7 起退出当前路线图 |
+| T3/T4/T5 | Git / S3 / Tailscale 专用发现 | 未来路线 | 各有适用场景 | 范围过大 | ⏸️ v0.3.8+ 再议 |
 
 ### 4.4 Transport Trait
 
@@ -867,28 +883,75 @@ pub struct RemoteSessionMeta {
 }
 ```
 
-### 4.5 拍板: T2a LAN 是 default, T2b SSH 是高级, T5 Tailscale 是跨网候选
+### 4.5 拍板: LAN-only, 手动地址为主, `mDNS` 为辅
 
-> 拍板时间: 2026-07-05 (v0.3.1 产品转向, 取代 2026-07-03 的「T2 SSH 默认」).
+> 拍板时间: **2026-07-07**
 >
 > **理由**:
-> - 同网接力应对齐剪贴板/KDE Connect 心智: **装一次、自动发现、配对一次**.
-> - mDNS `_bettercursor._tcp` + `trusted_peers.json` 对用户隐藏 JSON 配置.
-> - SSH/rsync **保留不删** (`SshRsyncTransport`), 供 headless / 已有 key 的高级用户; 跨网官方推荐 T5 Tailscale.
+> - Tailscale / Headscale / ZeroTier 这类虚拟局域网通常能提供**单播 TCP 可达**, 但不保证 multicast / `mDNS`
+> - 用户一旦知道对端地址, 直接填 `host:port` 比维护一套 SSH key / `transports.json` 更轻
+> - 当前 `LAN TCP + trusted_peers` 已经具备主干能力, 缺的是**手动地址入口**, 不是第二套传输后端
 >
-> **实现落点** (v0.3.1):
-> - `core::transport::lan` — `BC/1` 协议 (PAIR / PUSH / PUSH v4 body / PULL)
-> - `core::discovery` — mDNS 广播与浏览
-> - `~/.bettercursor/trusted_peers.json` — 配对结果
-> - `~/.bettercursor/outbox/<peer_id>/` — 离线排队 + 5min 后台 flush (`core::sync_loop`)
+> **v0.3.7 主张**:
+> - `mDNS` 继续保留, 但只是自动发现捷径
+> - `手动连接` 才是必须成功的主路径
+> - `SSH/T2b` 不再追加设置面板 / 配置文件 UI
 >
-> **稳定性约束** (v0.3.7b 补齐):
-> - mDNS 广播必须通过 `ServiceInfo::enable_addr_auto()` 自动附带本机可达地址; 不能注册空地址后指望浏览端兜底.
-> - 浏览端必须在同一调用内消费 `ServiceResolved` 事件, 并在返回前显式 `stop_browse` + `shutdown`, 避免 daemon 提前析构导致空列表或 closed channel 日志.
+> **稳定性约束**:
+> - `mDNS` 广播必须通过 `ServiceInfo::enable_addr_auto()` 自动附带本机可达地址
+> - 浏览端必须显式 `stop_browse` + `shutdown`
+> - 手动地址连接必须**不依赖** `mDNS` 结果
+> - 配对成功后, 双方都要持久化 trusted peer, 避免重复录入
+
+### 4.6 LAN 连接模型 (Deskflow × lan-mouse 混合)
+
+#### 4.6.1 连接入口
+
+- **主入口**: 手动输入 `host` / `port` / `code`
+- **辅助入口**: `mDNS` nearby 列表
+- **本机侧**:
+  - 选择一个“对外通告地址”
+  - 显示当前监听端口
+  - 显示配对码
+  - 支持复制连接串, 例如 `100.101.102.103:38472#123456`
+
+#### 4.6.2 地址与端口模型
+
+- 本机地址来自 **网络接口枚举**, 不是主动扫网:
+  - 私网 IPv4
+  - Tailscale `100.x`
+  - ZeroTier / 其他虚拟网卡地址
+- `listen_port` 默认可自动分配, 但需要允许用户固定
+- 配对后 peer 存储至少包含:
+  - `preferred_host`
+  - `port`
+  - `pairing_secret`
+  - `device_name`
+  - `trusted_at_ms`
+- 允许未来扩展 `fallback_hosts[]`, 但 v0.3.7 first cut 可先不暴露 UI
+
+#### 4.6.3 授权与持久化
+
+- 保留现有 6 位配对码 / `pairing_secret`
+- 首次连接成功后, **双方**都把对方写入 `trusted_peers.json`
+- 后续 `push/pull` 只依赖 trusted peer, 不要求再次输入配对码
+
+#### 4.6.4 UI 结构
+
+- `SyncPeersPanel` 分 4 块:
+  - 本机连接信息: 地址下拉 + 端口 + 配对码 + 复制连接串
+  - 手动连接: `host` / `port` / `code`
+  - 自动发现: nearby peers + 重扫
+  - 已连接设备: push / pull / 编辑 / 移除
+- **主文案**必须明确:
+  - “手动地址连接是推荐路径”
+  - “自动发现仅在支持 `mDNS` 的网络中可用”
 
 ---
 
-## §5 SSH/rsync Transport (T2b 高级模式)
+## §5 SSH/rsync Transport (T2b 历史方案, 已取消)
+
+> 本节保留为 **v0.2.6–v0.3.6 的历史设计记录**. 自 **v0.3.7 拍板** 起, SSH/T2b **退出当前路线图**, 不再增加设置 UI, `transports.json` 也不再作为主文档中的推荐路径. 如果未来重启此路线, 需要重新评估是否仍值得维护两套平行连接模型.
 
 ### 5.1 数据流 ASCII
 
@@ -1656,7 +1719,7 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 
 ## §10 实现路线图
 
-> ✅ **v0.2.1 + v0.2.2 + v0.2.3 + v0.2.5 + v0.2.6 + v0.2.6 housekeeping 已完工** (2026-07-04). v0.2.5 / v0.2.6 housekeeping 是**旁路 housekeeping**, 不动 sync 架构; v0.2.6 真正把 §4 transport trait 引进来 (T2 SSH/rsync 一份, 0 新 Cargo dep). 后续 milestone: **v0.3.0 大版本** (开本文件所有 §2-§7 的能力) → v0.3.1 (UI 层).
+> ✅ **v0.2.1 + v0.2.2 + v0.2.3 + v0.2.5 + v0.2.6 + v0.2.6 housekeeping 已完工** (2026-07-04). `v0.2.6` 把 transport trait 引进来; `v0.3.1–v0.3.6` 把 LAN MVP 走通并补可靠性; **2026-07-07 拍板**: `v0.3.7` 聚焦 LAN-only 连接入口, 不再推进 SSH UI.
 
 ### 10.1 路线图总表
 
@@ -1679,13 +1742,13 @@ pub fn apply_mutation_inline(conn: &Connection, m: &Mutation) -> anyhow::Result<
 | **v0.3.4** | L2→L3 bubble 富化 + 用户图片注入 + 补 L3 操作规范 (§0.5) | 2d | **✅ 已落地 2026-07-05** |
 | **v0.3.5** | L3 软删 + 子代理树 + 空壳过滤 + 对话读取修复 + `deleted_sessions` | 2d | **✅ 已落地 2026-07-05** |
 | **v0.3.6** | **跨端同步完善** (§10.4) — v4 snapshot 富化 (图片 / agentKv / `raw_blobs`) + Mac↔Linux `project_path` 重写 + `Identical` 时补写缺失 L2/L3 + pull→apply 结果 UI 反馈 + 后台 loop 补 pull (LAN) | 3-4d | **✅ 已落地 2026-07-05** |
-| **v0.3.7a** (2026-07-06) | **交互性能收口** (§1.3A) — 写后单次权威 refresh、watcher suppress 自写回声、`sync_now/get_conversation/fix_orphans/delete_session/sync_session_layer23` 脱离 UI 线程执行、前端去掉写后额外 `sync_now` | 1-1.5d | ⚪ **当前优先** |
-| **v0.3.7b** (2026-07-06) | **LAN 自动发现稳定性** (§4.5) — mDNS 广播自动附带地址、浏览端显式 stop/shutdown、补发现链路日志 | 0.5d | ⚪ 当前优先 |
-| **v0.3.7** | T2b SSH peer 设置 UI + `transports.json` 可视化编辑 (高级模式) | 2d | ⏸️ 顺延到性能收口之后 |
+| **v0.3.7a** (2026-07-06) | **交互性能收口** (§1.3A) — 写后单次权威 refresh、watcher suppress 自写回声、`sync_now/get_conversation/fix_orphans/delete_session/sync_session_layer23` 脱离 UI 线程执行、前端去掉写后额外 `sync_now` | 1-1.5d | ✅ 已落地 |
+| **v0.3.7b** (2026-07-06) | **LAN 自动发现稳定性** (§4.5) — mDNS 广播自动附带地址、浏览端显式 stop/shutdown、补发现链路日志 | 0.5d | ✅ 已落地 |
+| **v0.3.7** | **LAN-only 配对入口重构** — 手动地址连接 UI、本机地址选择、固定/自动监听端口、trusted peers 双向记忆、`mDNS` 降级为辅助入口 | 2-3d | ⚪ **当前优先** |
 | **v0.3.0 PR-2b** | Doctor 孤儿会话 + workspace 注册对齐 + git remote 项目标识. 默认 dry-run; **不** auto-create workspace | 2d | ⏸️ **延后观察** (2026-07-05 拍板: 根因未清晰, 先跨端 sync) |
-| **v0.3.8+** | T3 Git / T4 S3 / T5 Tailscale adapter (路线图) | 4-5d | ⚪ 待拍板 |
+| **v0.3.8+** | T3 Git / T4 S3 / T5 专用发现 / 其他 transport adapter (路线图) | 4-5d | ⚪ 待拍板 |
 
-总计: v0.2.x 已全部完工; v0.3.0–v0.3.6 跨端 MVP + 可靠性已落地; **v0.3.7 起 SSH UI**.
+总计: v0.2.x 已全部完工; v0.3.0–v0.3.6 跨端 MVP + 可靠性已落地; **v0.3.7 起聚焦 LAN-only 主路径**.
 
 ### 10.2 依赖图
 
@@ -1715,7 +1778,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
                                               │
                                 ┌─────────────┴──────────────┐
                                 ▼                            ▼
-                          v0.3.7 ⚪ (SSH UI)            PR-2b Doctor ⏸️ (观察期)
+                    v0.3.7 ⚪ (LAN 手动地址连接)        PR-2b Doctor ⏸️ (观察期)
                                               │
                                               ▼
                                     v0.3.8+ (T3/T4/T5 待拍板)
@@ -1739,7 +1802,7 @@ v0.2-alpha ✅ ──► v0.2.1 ✅ ──► v0.2.2 ✅ ──► v0.2.3 ✅
 | G3 | Identical 不补 L2/L3 | `transport_pull.rs` Identical + `layer2/3_is_fully_synced` | ✅ |
 | G4 | pull 结果不可见 | `PullReport.results` + `SyncPeersPanel.tsx` | ✅ |
 | G5 | 后台 loop 单向 | `sync_loop.rs` auto-pull + `Preferences` | ✅ |
-| G6 | SSH 无 UI | README `transports.json` 高级用法 | ✅ 文档 |
+| G6 | `mDNS` 在部分网络不可用 | `v0.3.7` 手动地址连接主路径 | ⚪ 待实现 |
 
 #### 10.4.3 孤儿会话 — 延后观察 (非 v0.3.6 范围)
 

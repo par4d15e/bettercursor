@@ -4,17 +4,18 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![app](https://img.shields.io/badge/app-0.3.6-success)
-![release](https://img.shields.io/badge/release-v0.3.7b-success)
+![app](https://img.shields.io/badge/app-0.3.7-success)
+![release](https://img.shields.io/badge/release-v0.3.7c-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
 ![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
 
-Current repo tag: `v0.3.7b`. App version fields in `package.json` / `Cargo.toml` /
-`tauri.conf.json` remain `0.3.6`, so release tags `v0.3.7a` / `v0.3.7b` are
-maintenance tags on top of the `0.3.6` app version line.
+Current repo tag: `v0.3.7c`. The embedded app version fields in
+`package.json` / `Cargo.toml` / `tauri.conf.json` are `0.3.7`, so
+`v0.3.7c` is the first maintenance tag that builds artifacts on the
+`0.3.7` app version line instead of the old `0.3.6` package version.
 
 ## What it is
 
@@ -32,6 +33,15 @@ Design goals:
   parity tests pass
 
 ## Feature status
+
+### v0.3.7c (✅ latest maintenance tag, 2026-07-07)
+
+- [x] **Version-line alignment** — `package.json` / `Cargo.toml` /
+      `tauri.conf.json` now all report `0.3.7`, so packaged app metadata
+      finally matches the `v0.3.7*` release line
+- [x] **Release-doc cleanup** — README / roadmap / download notes now
+      distinguish historical `v0.3.7a` / `v0.3.7b` artifacts from the
+      new `0.3.7` package line
 
 ### v0.3.7b (✅ latest maintenance tag, 2026-07-06)
 
@@ -53,7 +63,22 @@ Design goals:
 - [x] **Settings-load unblock** — LAN browse no longer runs eagerly on settings
       open; nearby peer scan is manual
 
-### v0.3.6 (✅ app version line, shipped 2026-07-05)
+### v0.3.7 (⚪ planned next, 2026-07-07 scoped)
+
+- [ ] **LAN-only pairing flow refresh** — promote manual `host:port + code`
+      pairing to the primary path for virtual LANs such as Tailscale /
+      ZeroTier / Headscale
+- [ ] **Local address picker** — choose which local interface/address to
+      advertise and display in settings (physical LAN + virtual overlays)
+- [ ] **Stable listen port** — keep auto-assign by default, but allow an
+      advanced fixed port for firewall / overlay reuse
+- [ ] **mDNS as convenience, not prerequisite** — nearby scan stays available
+      on multicast-friendly networks, but failure to discover peers no longer
+      blocks the sync flow
+- [ ] **SSH/T2b path removed from active roadmap** — no new SSH peer UI; the
+      v0.2.6 SSH config remains historical/reference only
+
+### v0.3.6 (shipped 2026-07-05)
 
 - [x] **v4 snapshot enrichment** — `images` + `blob_refs` / `raw_blobs` (agentKv);
       restored on apply
@@ -192,16 +217,16 @@ sqlite3 ~/.bettercursor/unified.db "SELECT uuid, bubble_count, content_hash FROM
       project / content / UUID
 - [x] MD5 `chat_root` byte-identical to the Python reference
 
-### v0.3.7+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
+### v0.3.8+ (planned, see [SYNC_DESIGN.md](SYNC_DESIGN.md))
 
-- [ ] **v0.3.7** — SSH peer UI for T2b advanced mode
-- [ ] **v0.3.8+** — T3 Git / T4 S3 / T5 Tailscale adapters (TBD)
+- [ ] **T3/T4/T5** — Git / S3 / specialized overlay discovery adapters (TBD)
 - [ ] **PR-2b Doctor** — deferred; observe orphan cases first
       ([SYNC_DESIGN §10.4.3](SYNC_DESIGN.md))
 
-### SSH cross-device (advanced, documented in v0.3.6)
+### Historical SSH cross-device (v0.2.6–v0.3.6 reference only)
 
-LAN pairing is the default. For SSH/rsync, edit `~/.bettercursor/transports.json`:
+Before the v0.3.7 LAN-only plan, advanced users could configure
+SSH/rsync peers in `~/.bettercursor/transports.json`:
 
 ```json
 {
@@ -219,8 +244,8 @@ LAN pairing is the default. For SSH/rsync, edit `~/.bettercursor/transports.json
 }
 ```
 
-`transport_list_peers` / `transport_push` / `transport_pull` use the same commands as
-LAN peers; `id` is the `peerId`.
+This path is now historical/reference only. The active roadmap favors
+LAN manual-address pairing over an SSH settings UI.
 
 ## Download & install
 
@@ -229,9 +254,9 @@ Every git tag (`v*.*.*`) triggers
 on three platforms. Artifacts end up on the
 [Releases](../../releases) page.
 
-Note: until the next explicit version bump, maintenance tags `v0.3.7a` /
-`v0.3.7b` still build artifacts whose embedded app version and filenames remain
-`0.3.6`.
+Current repo config is already on the `0.3.7` app version line. Older
+artifacts built from `v0.3.7a` / `v0.3.7b` may still carry `0.3.6`
+filenames because those tags were cut before the version bump landed.
 
 ### Linux
 
@@ -397,10 +422,12 @@ Tauri commands exposed to the frontend:
 | `transport_push` | `uuid`, `peerId` | `PushReport` (uuid / bytes_written / duration_ms) |
 | `transport_pull` | `peerId`, `sinceMs?` | `PullReport` (peer_id / count / snapshots[]) |
 
-## Cross-device sync (v0.2.6)
+## Cross-device sync (historical v0.2.6 SSH first cut)
 
-v0.2.6 ships the **Transport trait first cut**. Configure one or more
-peers in `~/.bettercursor/transports.json`:
+v0.2.6 shipped the **Transport trait first cut** around SSH/rsync.
+That design remains useful as implementation history, but it is no longer
+the recommended user path after the v0.3.7 LAN-only product decision.
+Configure one or more peers in `~/.bettercursor/transports.json`:
 
 ```json
 {
@@ -433,7 +460,8 @@ SSH safety flags baked in: `BatchMode=yes` (no interactive prompts) +
 `StrictHostKeyChecking=accept-new` (auto-trust new hosts, fail loud
 on key mismatch). The `Transport` trait is **sync** (not `async_trait`)
 in v0.2.6 — it migrates to async in v0.3.0 when the offline outbox
-lands. A `<SyncPeersDialog>` UI is on the v0.3.0 roadmap.
+lands. This section is kept for release-history context rather than
+current product guidance.
 
 ## Pitfalls
 
@@ -528,11 +556,12 @@ v0.3.0 (✅ done)  ~/.bettercursor/unified.db · snapshot codec v4 ·
                  async Transport · Conflict 5-way
 v0.3.1 (✅ done)  LAN mDNS pairing · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  Settings UI · L2/L3 enrichment · L3 soft delete
-v0.3.6 (✅ app line)  Cross-device sync hardening — see SYNC_DESIGN §10.4
+v0.3.6 (✅ done)  Cross-device sync hardening — see SYNC_DESIGN §10.4
 v0.3.7a (✅ done)  Interaction performance cut-down
-v0.3.7b (✅ latest tag)  LAN discovery stabilization
-v0.3.7 (⚪ next)     SSH peer UI
-v0.3.7+           SSH UI · T3/T4/T5 adapters · Doctor (deferred)
+v0.3.7c (✅ latest tag)  Version-line alignment · release metadata cleanup
+v0.3.7b (✅ done)  LAN discovery stabilization
+v0.3.7 (⚪ next)     LAN manual-address pairing · virtual LAN support
+v0.3.8+           T3/T4/T5 adapters · Doctor (deferred)
 ```
 
 ## Acknowledgements
@@ -547,4 +576,4 @@ v0.3.7+           SSH UI · T3/T4/T5 adapters · Doctor (deferred)
 ---
 
 > Currently a personal/early-stage project. v0.2.6 is the first
-> release that ships cross-device sync; the latest maintenance tag is `v0.3.7b`.
+> release that ships cross-device sync; the latest maintenance tag is `v0.3.7c`.

@@ -21,6 +21,7 @@
 >   - **v0.3.4** (2026-07-05 完工) = L2→L3 bubble 富化、用户图片注入、补 Layer 3 操作规范. 详见 [SYNC_DESIGN §0.5](SYNC_DESIGN.md).
 >   - **v0.3.5** (2026-07-05 完工) = L3 软删、子代理树、隐藏空壳 Desktop 会话、对话读取修复、`deleted_sessions` tombstone. 详见 [README.md](README.md).
 >   - **v0.3.6** (2026-07-05 完工) = 跨端同步完善 — v4 snapshot 富化、Mac↔Linux 路径重写、Identical 补 L2/L3、pull UI 反馈、后台 auto-pull. 详见 [SYNC_DESIGN §10.4](SYNC_DESIGN.md).
+>   - **v0.3.7** (2026-07-07 已拍板) = **LAN-only 配对入口重构** — 主路径改为 **手动地址连接** (本机地址选择 + 监听端口 + `host/port/code`), 支持 Tailscale / ZeroTier / Headscale 等虚拟局域网; `mDNS` 降级为辅助发现; `trusted_peers` 继续保留且一次配对后双边记住 peer; **SSH 路线取消**. 详见 [SYNC_DESIGN §4.5 / §10.1](SYNC_DESIGN.md).
 
 ---
 ## 0. v0.1 Status (2026-07-03 完工)
@@ -137,10 +138,16 @@ Layer 3 (state.vscdb)─┘                            ↓
 | **v0.3.0 PR-2 — `snapshot_meta.rs` 重命名** (v0.2.6 8-field push 载体保留) | `core/transport/snapshot_meta.rs` | **v0.3.0 PR-2 ✅** |
 | **v0.3.0 PR-2 — agentKv 写入 (最小切片)** (`write_layer3` 从 `conversationState` 提取 blob id 并复制 `agentKv:blob:{hex}`) | `core/sync.rs` | **v0.3.0 PR-2 ✅** |
 | **v0.3.0 PR-2 — 单元测试 28+ 新 case** (snapshot 5 / conflict 8 / ssh async 4 / sync agentKv 1; 全量 `cargo test --lib` 126 case) | 各 `::tests` | **v0.3.0 PR-2 ✅** |
-| 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对; **v0.3.2** 起 UI 收进 `<SettingsDialog>`; SSH (T2b) 保留为高级模式 |
+| 跨设备 (Mac↔Linux) | [SYNC_DESIGN.md §4/§5](SYNC_DESIGN.md) | **v0.3.0 后端 ✅** (unified.db + codec v4 + 5-way conflict + async Transport); **v0.3.1 开箱即用 ✅** — T2a LAN mDNS + 配对; **v0.3.7 已拍板** — 主路径切到 LAN 手动地址连接, 支持虚拟局域网, SSH 路线取消 |
 | 对话记录展开 (读 store.db blobs + JSONL messages) | [SYNC_DESIGN.md §7](SYNC_DESIGN.md) | **v0.2.2 ✅** |
-| **交互性能收口** (写后单次权威刷新 + watcher 忽略自写回声 + 重 IO 不阻塞 UI 线程) | [SYNC_DESIGN.md §1.3A](SYNC_DESIGN.md) | **v0.3.7 进行中** |
-| **LAN 自动发现稳定性** (mDNS 广播自动携带地址 + 搜索端显式 stop/shutdown) | [SYNC_DESIGN.md §4.5](SYNC_DESIGN.md) | **v0.3.7b 进行中** |
+| **交互性能收口** (写后单次权威刷新 + watcher 忽略自写回声 + 重 IO 不阻塞 UI 线程) | [SYNC_DESIGN.md §1.3A](SYNC_DESIGN.md) | **v0.3.7a ✅** |
+| **LAN 自动发现稳定性** (mDNS 广播自动携带地址 + 搜索端显式 stop/shutdown) | [SYNC_DESIGN.md §4.5](SYNC_DESIGN.md) | **v0.3.7b ✅** |
+| **v0.3.7 — LAN 手动地址连接 UI** (`host` / `port` / `code`) | [SYNC_DESIGN.md §4.6](SYNC_DESIGN.md) | ⚪ **已拍板 / 待实现** |
+| **v0.3.7 — 本机可用地址选择** (物理局域网 + 虚拟局域网接口) | [SYNC_DESIGN.md §4.6](SYNC_DESIGN.md) | ⚪ **已拍板 / 待实现** |
+| **v0.3.7 — 固定监听端口 / 自动端口** (高级选项) | [SYNC_DESIGN.md §4.6](SYNC_DESIGN.md) | ⚪ **已拍板 / 待实现** |
+| **v0.3.7 — trusted peers 双向记忆** (一次配对后双方都保存 peer) | [SYNC_DESIGN.md §4.6](SYNC_DESIGN.md) | ⚪ **已拍板 / 待实现** |
+| **v0.3.7 — mDNS 降级为辅助入口** (扫描不到设备不阻断主流程) | [SYNC_DESIGN.md §4.5](SYNC_DESIGN.md) | ⚪ **已拍板 / 待实现** |
+| **v0.3.7 — 取消 SSH/T2b 路线** (`transports.json` / SSH peer UI 不进入当前路线图) | [SYNC_DESIGN.md §4.5](SYNC_DESIGN.md) | ⚪ **已拍板 / 待实现** |
 | **L3 bubble 完整文本提取** (`toolFormerData` / thinking / codeBlocks, 非仅 `text` 字段) | [SYNC_DESIGN.md §2.8](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **Cursor 3.0+ session discovery** (`composer.composerHeaders` / `selectedComposerIds` / `composerChatViewPane.*` / workspace DB 补全) | [SYNC_DESIGN.md §11.5](SYNC_DESIGN.md) | **v0.3.0 pre-PR-2 ✅** |
 | **agentKv blob 写入 + 缺失修复** (无则 Desktop `--resume` 报 Blob not found) | [SYNC_DESIGN.md §9.8](SYNC_DESIGN.md) | **v0.3.0 PR-2 ✅** (最小切片: `write_layer3` 复制已有 agentKv) |
@@ -233,6 +240,19 @@ cd .. && python3 tests/test_layer2_import.py
 | watcher 监听到本应用自己刚写的文件 | **忽略短窗口内的自写回声** | inline-write 已知会命中 Layer 2 / Layer 3 watcher; 若不抑制, UI 会收到重复刷新 |
 | `sync_now` / `get_conversation` / repair / delete 等重 IO 命令 | **必须离开 Tauri UI 线程执行** (`spawn_blocking` 或等价机制) | SQLite + JSONL 全盘读取会造成窗口短暂无响应 |
 | SessionDetail 会话内容加载 | 保持**按需加载**; 不要求启动时预取全量对话 | 启动性能优先, 避免列表页被详情解析拖慢 |
+
+### 2.3B 虚拟局域网验收补充 (v0.3.7 已拍板)
+
+> v0.3.7 的主路径是 **LAN 手动地址连接**. `mDNS` 只是同物理局域网或支持 multicast 的网络中的便利功能, **不是**主流程前提.
+
+| 场景 | 验收 | 理由 |
+|----|------|------|
+| Tailscale / Headscale | **不依赖 mDNS** 也能通过 `host + port + code` 完成配对与后续 push/pull | 这类虚拟局域网通常提供单播可达, 但不保证 multicast / mDNS |
+| ZeroTier / 其他支持 multicast 的 overlay | 手动连接可用; 若 multicast 可用, `mDNS` 可作为快捷入口 | 自动发现应是加分项, 不能绑死主流程 |
+| 首次配对 | 一次配对成功后, **双方**都把对方写入 trusted peers | 降低 N 台设备互联时的重复录入成本 |
+| 重启应用 | 手动选择的监听端口 / 首选对外地址应保持 | 方便防火墙放行、虚拟局域网长期复用 |
+| 设置面板 | 提供 **本机地址选择 + 端口 + 配对码 + 手动连接表单**; 自动发现作为次级区块 | 对齐 Deskflow / lan-mouse 的已知地址直连心智 |
+| 路线范围 | v0.3.7 **不再**引入 SSH peer 配置 UI, 也不新增 `transports.json` 依赖 | 保持一期范围聚焦于 LAN-only |
 
 ### 2.3 非目标 (Non-goals, 强调)
 
