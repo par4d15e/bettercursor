@@ -206,8 +206,7 @@ fn apply_v4_snapshot(
                 .map(canonical::Bubble::from_snapshot)
                 .collect();
             unified.upsert_session_from_snapshot(v4, &incoming, now_ms)?;
-            let local_cwd =
-                path_rewrite::rewrite_project_path(&remote_path, &project_slug);
+            let local_cwd = path_rewrite::rewrite_project_path(&remote_path, &project_slug);
             let need_apply = !sync::layer2_is_fully_synced(&uuid, &local_cwd)
                 || !sync::layer3_is_fully_synced(&uuid, &local_cwd);
             if need_apply {

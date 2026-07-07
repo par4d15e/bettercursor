@@ -128,21 +128,18 @@ mod tests {
             "conversationState": "/Users/eric/should-not-touch"
         });
         let out = rewrite_paths_in_data(&data, "/Users/eric/proj", "/home/eric/proj");
-        assert_eq!(
-            out["workspace"]["path"],
-            "/home/eric/proj/src/main.rs"
-        );
-        assert_eq!(
-            out["conversationState"],
-            "/Users/eric/should-not-touch"
-        );
+        assert_eq!(out["workspace"]["path"], "/home/eric/proj/src/main.rs");
+        assert_eq!(out["conversationState"], "/Users/eric/should-not-touch");
     }
 
     #[test]
     fn apply_path_mappings_longest_prefix_wins() {
         let mut m = HashMap::new();
         m.insert("/Users/eric".into(), "/home/eric".into());
-        m.insert("/Users/eric/workspace".into(), "/home/eric/workspace".into());
+        m.insert(
+            "/Users/eric/workspace".into(),
+            "/home/eric/workspace".into(),
+        );
         let out = apply_path_mappings("/Users/eric/workspace/foo", &m).unwrap();
         assert_eq!(out, "/home/eric/workspace/foo");
     }

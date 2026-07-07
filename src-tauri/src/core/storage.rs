@@ -36,7 +36,10 @@ pub fn open_read(db_path: impl AsRef<Path>) -> Result<CursorRead> {
     for suffix in ["-wal", "-shm"] {
         let sidecar = db_path.with_extension(format!(
             "{}{}",
-            db_path.extension().and_then(|s| s.to_str()).unwrap_or("vscdb"),
+            db_path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("vscdb"),
             suffix
         ));
         if sidecar.exists() {
@@ -167,7 +170,11 @@ impl CursorRead {
 }
 
 /// One-shot helper: open a fresh read handle and return the JSON-decoded value.
-pub fn read_json(db_path: impl AsRef<Path>, key: &str, table: &str) -> Result<Option<serde_json::Value>> {
+pub fn read_json(
+    db_path: impl AsRef<Path>,
+    key: &str,
+    table: &str,
+) -> Result<Option<serde_json::Value>> {
     let r = open_read(db_path)?;
     r.get_json(key, table)
 }
@@ -200,16 +207,14 @@ pub fn remove_wal_sidecars(db_path: &Path) {
 
 /// Copy `src` → `dest`, checkpoint WAL into main on the copy, verify integrity.
 /// Returns a writable connection — caller must `drop` before `atomic_replace`.
-pub fn open_write_staging_copy(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<Connection> {
+pub fn open_write_staging_copy(
+    src: impl AsRef<Path>,
+    dest: impl AsRef<Path>,
+) -> Result<Connection> {
     let src = src.as_ref();
     let dest = dest.as_ref();
-    std::fs::copy(src, dest).with_context(|| {
-        format!(
-            "copy {} → {}",
-            src.display(),
-            dest.display()
-        )
-    })?;
+    std::fs::copy(src, dest)
+        .with_context(|| format!("copy {} → {}", src.display(), dest.display()))?;
     for suffix in ["-wal", "-shm"] {
         let side = sidecar_path(src, suffix);
         if side.exists() {
@@ -220,8 +225,7 @@ pub fn open_write_staging_copy(src: impl AsRef<Path>, dest: impl AsRef<Path>) ->
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .context("wal_checkpoint(TRUNCATE) on staging copy")?;
     remove_wal_sidecars(dest);
-    let ok: String = conn
-        .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let ok: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if ok != "ok" {
         anyhow::bail!("staging copy integrity_check failed: {ok}");
     }

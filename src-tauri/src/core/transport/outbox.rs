@@ -52,6 +52,44 @@ pub fn mark_processed(peer_id: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 迁移某个 peer 的 outbox 到新 id。若目标目录已存在，则并入现有目录。
+pub fn rekey_peer_dir(old_peer_id: &str, new_peer_id: &str) -> Result<()> {
+    if old_peer_id == new_peer_id {
+        return Ok(());
+    }
+    let old_dir = peer_outbox_dir(old_peer_id);
+    if !old_dir.exists() {
+        return Ok(());
+    }
+    let new_dir = peer_outbox_dir(new_peer_id);
+    if !new_dir.exists() {
+        std::fs::rename(&old_dir, &new_dir)?;
+        return Ok(());
+    }
+    move_dir_contents(&old_dir, &new_dir)?;
+    let _ = std::fs::remove_dir_all(&old_dir);
+    Ok(())
+}
+
+fn move_dir_contents(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            move_dir_contents(&from, &to)?;
+            let _ = std::fs::remove_dir(&from);
+            continue;
+        }
+        if to.exists() {
+            continue;
+        }
+        std::fs::rename(&from, &to)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +111,16 @@ mod tests {
             assert_eq!(pending.len(), 1);
             mark_processed("peer-a", &pending[0]).unwrap();
             assert!(list_pending("peer-a").unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn rekey_peer_dir_moves_pending_files() {
+        with_temp_home(|| {
+            enqueue("peer-old", "uuid-1", r#"{"version":4}"#).unwrap();
+            rekey_peer_dir("peer-old", "peer-new").unwrap();
+            assert!(list_pending("peer-old").unwrap().is_empty());
+            assert_eq!(list_pending("peer-new").unwrap().len(), 1);
         });
     }
 }

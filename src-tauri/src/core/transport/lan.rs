@@ -28,11 +28,13 @@ pub fn pairing_join_client(
     host: &str,
     port: u16,
     code: &str,
+    device_id: &str,
     device_name: &str,
 ) -> Result<TrustedPeer> {
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .with_context(|| format!("parse {host}:{port}"))?;
+    let device_id = device_id.to_string();
     let device_name = device_name.to_string();
     let code = code.to_string();
     let lan_addr = addr.to_string();
@@ -40,28 +42,12 @@ pub fn pairing_join_client(
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             tokio::task::spawn_blocking(move || {
-                let mut stream =
-                    TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
-                writeln!(stream, "{PROTO}")?;
-                writeln!(stream, "PAIR {code} {device_name}")?;
-                stream.flush()?;
-                let mut line = String::new();
-                read_line(&mut stream, &mut line)?;
-                if !line.starts_with("OK PAIR ") {
-                    return Err(anyhow!("pair rejected: {line}"));
-                }
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                let device_id = parts
-                    .get(2)
-                    .ok_or_else(|| anyhow!("missing device_id in pair response"))?;
-                let secret = parts
-                    .get(3)
-                    .ok_or_else(|| anyhow!("missing secret in pair response"))?;
+                let pair = pair_v2_with_fallback(&addr, &code, &device_id, &device_name)?;
                 let peer = TrustedPeer {
-                    id: (*device_id).to_string(),
-                    device_name: device_name.clone(),
+                    id: pair.device_id,
+                    device_name: pair.device_name,
                     lan_addr,
-                    pairing_secret: (*secret).to_string(),
+                    pairing_secret: pair.secret,
                     trusted_at_ms: chrono::Utc::now().timestamp_millis(),
                 };
                 let mut peers = super::trusted_peers::TrustedPeersFile::load()?;
@@ -83,9 +69,7 @@ pub fn snapshots_incoming_dir() -> std::path::PathBuf {
 /// 生成 6 位配对码 + secret，启动 LAN TCP 服务（若尚未启动）。
 pub fn start_pairing_mode() -> Result<PendingPairing> {
     let port = ensure_lan_server()?;
-    let code: String = (0..6)
-        .map(|_| format!("{}", rand_digit()))
-        .collect();
+    let code: String = (0..6).map(|_| format!("{}", rand_digit())).collect();
     let secret = hex::encode(rand_bytes(16));
     let pending = PendingPairing {
         code: code.clone(),
@@ -135,6 +119,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<()> {
     read_line(&mut stream, &mut cmd_line)?;
     let parts: Vec<&str> = cmd_line.split_whitespace().collect();
     match parts.first().copied() {
+        Some("PAIR2") => handle_pair_v2(&mut stream, &parts[1..]),
         Some("PAIR") => handle_pair(&mut stream, &parts[1..]),
         Some("PUSH") => handle_push(&mut stream, &parts[1..]),
         Some("PULL") => handle_pull(&mut stream, &parts[1..]),
@@ -156,10 +141,9 @@ fn handle_pair(stream: &mut TcpStream, args: &[&str]) -> Result<()> {
         return write_err(stream, "invalid code");
     }
     let peer_addr = stream.peer_addr()?.to_string();
-    let device_id = hex::encode(rand_bytes(8));
     let mut peers = super::trusted_peers::TrustedPeersFile::load()?;
     peers.upsert(TrustedPeer {
-        id: device_id.clone(),
+        id: hex::encode(rand_bytes(8)),
         device_name: device_name.clone(),
         lan_addr: peer_addr,
         pairing_secret: p.secret.clone(),
@@ -167,7 +151,48 @@ fn handle_pair(stream: &mut TcpStream, args: &[&str]) -> Result<()> {
     });
     peers.save()?;
     *PENDING_PAIRING.lock().unwrap() = None;
-    writeln!(stream, "OK PAIR {device_id} {}", p.secret)?;
+    writeln!(
+        stream,
+        "OK PAIR {} {}",
+        crate::core::device_identity::local_device_id(),
+        p.secret
+    )?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn handle_pair_v2(stream: &mut TcpStream, args: &[&str]) -> Result<()> {
+    if args.len() < 3 {
+        return write_err(stream, "PAIR2 needs code, device_id and device_name");
+    }
+    let code = args[0];
+    let device_id = args[1];
+    let device_name = args[2..].join(" ");
+    let pending = PENDING_PAIRING.lock().unwrap().clone();
+    let Some(p) = pending else {
+        return write_err(stream, "pairing not active");
+    };
+    if p.code != code {
+        return write_err(stream, "invalid code");
+    }
+    let peer_addr = stream.peer_addr()?.to_string();
+    let mut peers = super::trusted_peers::TrustedPeersFile::load()?;
+    peers.upsert(TrustedPeer {
+        id: device_id.to_string(),
+        device_name: device_name.clone(),
+        lan_addr: peer_addr,
+        pairing_secret: p.secret.clone(),
+        trusted_at_ms: chrono::Utc::now().timestamp_millis(),
+    });
+    peers.save()?;
+    *PENDING_PAIRING.lock().unwrap() = None;
+    writeln!(
+        stream,
+        "OK PAIR2 {} {} {}",
+        crate::core::device_identity::local_device_id(),
+        p.secret,
+        crate::core::device_identity::local_device_name(),
+    )?;
     stream.flush()?;
     Ok(())
 }
@@ -208,7 +233,9 @@ fn handle_pull(stream: &mut TcpStream, args: &[&str]) -> Result<()> {
     }
     let since_ms: i64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let host = local_hostname();
-    let snap_dir = crate::core::paths::bettercursor_dir().join("snapshots").join(&host);
+    let snap_dir = crate::core::paths::bettercursor_dir()
+        .join("snapshots")
+        .join(&host);
     let mut count = 0u32;
     if snap_dir.exists() {
         for entry in std::fs::read_dir(&snap_dir)?.flatten() {
@@ -260,6 +287,94 @@ fn read_line(stream: &mut TcpStream, buf: &mut String) -> Result<()> {
         buf.push(byte[0] as char);
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct PairResult {
+    device_id: String,
+    secret: String,
+    device_name: String,
+}
+
+fn pair_v2_with_fallback(
+    addr: &SocketAddr,
+    code: &str,
+    device_id: &str,
+    device_name: &str,
+) -> Result<PairResult> {
+    match pair_v2(addr, code, device_id, device_name) {
+        Ok(result) => Ok(result),
+        Err(err) => {
+            log::debug!("PAIR2 failed, falling back to legacy PAIR: {err:#}");
+            pair_legacy(addr, code)
+        }
+    }
+}
+
+fn pair_v2(
+    addr: &SocketAddr,
+    code: &str,
+    device_id: &str,
+    device_name: &str,
+) -> Result<PairResult> {
+    let mut stream = TcpStream::connect_timeout(addr, Duration::from_secs(10))?;
+    writeln!(stream, "{PROTO}")?;
+    writeln!(stream, "PAIR2 {code} {device_id} {device_name}")?;
+    stream.flush()?;
+    let mut line = String::new();
+    read_line(&mut stream, &mut line)?;
+    parse_pair_v2_response(&line)
+}
+
+fn pair_legacy(addr: &SocketAddr, code: &str) -> Result<PairResult> {
+    let mut stream = TcpStream::connect_timeout(addr, Duration::from_secs(10))?;
+    writeln!(stream, "{PROTO}")?;
+    writeln!(stream, "PAIR {code} bettercursor-peer")?;
+    stream.flush()?;
+    let mut line = String::new();
+    read_line(&mut stream, &mut line)?;
+    parse_pair_legacy_response(&line, &addr.to_string())
+}
+
+fn parse_pair_v2_response(line: &str) -> Result<PairResult> {
+    if !line.starts_with("OK PAIR2 ") {
+        return Err(anyhow!("pair rejected: {line}"));
+    }
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let device_id = parts
+        .get(2)
+        .ok_or_else(|| anyhow!("missing device_id in PAIR2 response"))?;
+    let secret = parts
+        .get(3)
+        .ok_or_else(|| anyhow!("missing secret in PAIR2 response"))?;
+    let device_name = parts
+        .get(4..)
+        .map(|v| v.join(" "))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "bettercursor-peer".to_string());
+    Ok(PairResult {
+        device_id: (*device_id).to_string(),
+        secret: (*secret).to_string(),
+        device_name,
+    })
+}
+
+fn parse_pair_legacy_response(line: &str, lan_addr: &str) -> Result<PairResult> {
+    if !line.starts_with("OK PAIR ") {
+        return Err(anyhow!("pair rejected: {line}"));
+    }
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let device_id = parts
+        .get(2)
+        .ok_or_else(|| anyhow!("missing device_id in legacy pair response"))?;
+    let secret = parts
+        .get(3)
+        .ok_or_else(|| anyhow!("missing secret in legacy pair response"))?;
+    Ok(PairResult {
+        device_id: (*device_id).to_string(),
+        secret: (*secret).to_string(),
+        device_name: super::trusted_peers::fallback_device_name(lan_addr),
+    })
 }
 
 pub struct LanTcpTransport {
@@ -420,5 +535,25 @@ mod tests {
             created_at_ms: 0,
         };
         assert_eq!(p.code.len(), 6);
+    }
+
+    #[test]
+    fn parse_pair_v2_response_keeps_remote_name() {
+        let got = parse_pair_v2_response("OK PAIR2 remote-id secret-1 macbook pro").unwrap();
+        assert_eq!(
+            got,
+            PairResult {
+                device_id: "remote-id".into(),
+                secret: "secret-1".into(),
+                device_name: "macbook pro".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_pair_legacy_response_uses_addr_fallback_name() {
+        let got =
+            parse_pair_legacy_response("OK PAIR remote-id secret-1", "192.168.0.8:38472").unwrap();
+        assert_eq!(got.device_name, "192.168.0.8");
     }
 }

@@ -392,31 +392,33 @@ fn scan_layer1_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
             // doing so previously caused cfa4177f (a Desktop session
             // with no Layer 2) to be incorrectly tagged
             // `linux_cli:L1 + linux_desktop:L3` (#87).
-            let entry = by_uuid.entry(uuid.clone()).or_insert_with(|| CanonicalSession {
-                uuid: uuid.clone(),
-                project_slug: project_slug.clone(),
-                project_path: String::new(),
-                chat_root: String::new(),
-                name: String::new(),
-                last_updated_at: modified,
-                bubble_count: 0,
-                is_empty_draft: true,
-                is_broken: false,
-                broken_reason: None,
-                sources: Sources::default(),
-                first_user_message_preview: String::new(),
-                files_referenced: vec![],
-                indexable_text: String::new(),
-                layer_3_present: false,
-                layer_3_needs_refresh: false,
-                layer_2_needs_refresh: false,
-                created_endpoint: None,
-                created_at_ms: None,
-                composer_data: None,
-                composer_id: None,
-                is_subagent: false,
-                subagent_info: None,
-            });
+            let entry = by_uuid
+                .entry(uuid.clone())
+                .or_insert_with(|| CanonicalSession {
+                    uuid: uuid.clone(),
+                    project_slug: project_slug.clone(),
+                    project_path: String::new(),
+                    chat_root: String::new(),
+                    name: String::new(),
+                    last_updated_at: modified,
+                    bubble_count: 0,
+                    is_empty_draft: true,
+                    is_broken: false,
+                    broken_reason: None,
+                    sources: Sources::default(),
+                    first_user_message_preview: String::new(),
+                    files_referenced: vec![],
+                    indexable_text: String::new(),
+                    layer_3_present: false,
+                    layer_3_needs_refresh: false,
+                    layer_2_needs_refresh: false,
+                    created_endpoint: None,
+                    created_at_ms: None,
+                    composer_data: None,
+                    composer_id: None,
+                    is_subagent: false,
+                    subagent_info: None,
+                });
             if !preview.is_empty() && entry.first_user_message_preview.is_empty() {
                 entry.first_user_message_preview = preview;
             }
@@ -487,10 +489,9 @@ fn read_jsonl_preview(path: &Path) -> (String, Vec<String>) {
                 if let Some(s) = v.get("content").and_then(|c| c.as_str()) {
                     return Some(s.to_string());
                 }
-                v.get("content")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| {
-                        arr.iter().find_map(|item| {
+                v.get("content").and_then(|c| c.as_array()).and_then(|arr| {
+                    arr.iter()
+                        .find_map(|item| {
                             if item.get("type").and_then(|t| t.as_str()) == Some("text") {
                                 item.get("text").and_then(|t| t.as_str())
                             } else {
@@ -498,7 +499,7 @@ fn read_jsonl_preview(path: &Path) -> (String, Vec<String>) {
                             }
                         })
                         .map(|s| s.to_string())
-                    })
+                })
             };
 
             let raw = nested_text.map(str::to_string).or_else(root_text);
@@ -623,7 +624,8 @@ fn scan_layer2_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 {
                     entry.is_broken = true;
                     entry.broken_reason = Some(
-                        "Layer 2 latestRootBlobId 是空字符串 — `cursor-agent --resume` 会失败".to_string(),
+                        "Layer 2 latestRootBlobId 是空字符串 — `cursor-agent --resume` 会失败"
+                            .to_string(),
                     );
                 }
                 if let Some(ref info) = meta.subagent_info {
@@ -674,18 +676,14 @@ fn read_store_db_meta(path: &Path) -> StoreDbMeta {
     };
 
     // Read meta[0] (agent session metadata). cursor-agent stores hex JSON.
-    let (name, created_at, latest_root_blob_id, subagent_info) =
-        match r.get_store_meta_json("0") {
-            Ok(Some(v)) => {
+    let (name, created_at, latest_root_blob_id, subagent_info) = match r.get_store_meta_json("0") {
+        Ok(Some(v)) => {
             let name = v
                 .get("name")
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
-            let created_at = v
-                .get("createdAt")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0);
+            let created_at = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
             let root = v
                 .get("latestRootBlobId")
                 .and_then(|x| x.as_str())
@@ -743,10 +741,17 @@ fn resolve_path_from_chat_root(chat_root: &str) -> Option<String> {
         if !ws_json.is_file() {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(&ws_json) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else { continue };
+        let Ok(body) = std::fs::read_to_string(&ws_json) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else {
+            continue;
+        };
         let folder = v.get("folder").and_then(|x| x.as_str()).unwrap_or("");
-        let path = folder.strip_prefix("file://").unwrap_or(folder).trim_end_matches('/');
+        let path = folder
+            .strip_prefix("file://")
+            .unwrap_or(folder)
+            .trim_end_matches('/');
         if path.is_empty() {
             continue;
         }
@@ -808,10 +813,9 @@ fn reconcile_cli_session_title(entry: &mut CanonicalSession) {
 fn reconcile_layer_refresh_flags(entry: &mut CanonicalSession) {
     let cwd = entry.project_path.clone();
     let has_l2 = entry.sources.linux_cli.is_some();
-    entry.layer_2_needs_refresh =
-        has_l2 && !super::sync::layer2_is_fully_synced(&entry.uuid, &cwd);
-    entry.layer_3_needs_refresh = entry.layer_3_present
-        && !super::sync::layer3_is_fully_synced(&entry.uuid, &cwd);
+    entry.layer_2_needs_refresh = has_l2 && !super::sync::layer2_is_fully_synced(&entry.uuid, &cwd);
+    entry.layer_3_needs_refresh =
+        entry.layer_3_present && !super::sync::layer3_is_fully_synced(&entry.uuid, &cwd);
 }
 
 // ── Layer 3: Electron state.vscdb ─────────────────────────────
@@ -1095,10 +1099,7 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
     for uuid in candidate_ids {
         let global_bubbles = bubble_counts.get(&uuid).copied().unwrap_or(0);
         let composer_key = format!("composerData:{uuid}");
-        let composer_v = r
-            .get_json(&composer_key, "cursorDiskKV")
-            .ok()
-            .flatten();
+        let composer_v = r.get_json(&composer_key, "cursorDiskKV").ok().flatten();
 
         if global_bubbles == 0 && composer_v.is_none() {
             continue;
@@ -1111,11 +1112,10 @@ fn scan_layer3_into(by_uuid: &mut HashMap<String, CanonicalSession>) {
                 v,
                 &global_db,
                 source.clone(),
-                Some(global_bubbles.max(
-                    v.get("bubbleCount")
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(0) as u32,
-                )),
+                Some(
+                    global_bubbles
+                        .max(v.get("bubbleCount").and_then(|x| x.as_u64()).unwrap_or(0) as u32),
+                ),
             );
         } else {
             let stub = serde_json::json!({
@@ -1150,31 +1150,33 @@ fn merge_source(
     last_updated_at: i64,
     first_user_message_preview: String,
 ) {
-    let entry = by_uuid.entry(uuid.to_string()).or_insert_with(|| CanonicalSession {
-        uuid: uuid.to_string(),
-        project_slug: project_slug.to_string(),
-        project_path: String::new(),
-        chat_root: String::new(),
-        name: name.clone(),
-        last_updated_at,
-        bubble_count: 0,
-        is_empty_draft: false,
-        is_broken: false,
-        broken_reason: None,
-        sources: Sources::default(),
-        first_user_message_preview: first_user_message_preview.clone(),
-        files_referenced: vec![],
-        indexable_text: String::new(),
-        layer_3_present: false,
-        layer_3_needs_refresh: false,
-        layer_2_needs_refresh: false,
-        created_endpoint: None,
-        created_at_ms: None,
-        composer_data: None,
-        composer_id: None,
-        is_subagent: false,
-        subagent_info: None,
-    });
+    let entry = by_uuid
+        .entry(uuid.to_string())
+        .or_insert_with(|| CanonicalSession {
+            uuid: uuid.to_string(),
+            project_slug: project_slug.to_string(),
+            project_path: String::new(),
+            chat_root: String::new(),
+            name: name.clone(),
+            last_updated_at,
+            bubble_count: 0,
+            is_empty_draft: false,
+            is_broken: false,
+            broken_reason: None,
+            sources: Sources::default(),
+            first_user_message_preview: first_user_message_preview.clone(),
+            files_referenced: vec![],
+            indexable_text: String::new(),
+            layer_3_present: false,
+            layer_3_needs_refresh: false,
+            layer_2_needs_refresh: false,
+            created_endpoint: None,
+            created_at_ms: None,
+            composer_data: None,
+            composer_id: None,
+            is_subagent: false,
+            subagent_info: None,
+        });
 
     let slot = match layer {
         SourceLayer::Mac => &mut entry.sources.mac,
@@ -1278,7 +1280,11 @@ pub fn read_conversation(uuid: &str) -> Conversation {
 
 fn resolve_conversation_cwd(uuid: &str) -> String {
     if let Some(db) = paths::resolve_store_db_for(uuid, "") {
-        if let Some(chat_root) = db.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()) {
+        if let Some(chat_root) = db
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+        {
             let chat_root = chat_root.to_string_lossy();
             if let Some(path) = resolve_path_from_chat_root(&chat_root) {
                 return path;
@@ -1320,9 +1326,10 @@ fn trim_l3_prefix_to_l1_anchor(mut l3: Vec<Bubble>, l1: &[Bubble]) -> Vec<Bubble
     if l3_first_user == anchor {
         return l3;
     }
-    let Some(start) = l3.iter().position(|b| {
-        b.role == "user" && clean_user_text(&b.text) == anchor
-    }) else {
+    let Some(start) = l3
+        .iter()
+        .position(|b| b.role == "user" && clean_user_text(&b.text) == anchor)
+    else {
         return l3;
     };
     if start > 0 {
@@ -1399,9 +1406,9 @@ fn dedupe_bubbles_by_role_text(bubbles: Vec<Bubble>) -> Vec<Bubble> {
     for b in bubbles {
         let norm = normalized_bubble_text(&b);
         if !norm.is_empty()
-            && out.iter().any(|x: &Bubble| {
-                x.role == b.role && normalized_bubble_text(x) == norm
-            })
+            && out
+                .iter()
+                .any(|x: &Bubble| x.role == b.role && normalized_bubble_text(x) == norm)
         {
             continue;
         }
@@ -1532,11 +1539,7 @@ pub(crate) fn read_layer1_bubbles_from_body(uuid: &str, body: &str) -> (Vec<Bubb
             .and_then(|a| a.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|a| {
-                        a.get("name")
-                            .and_then(|n| n.as_str())
-                            .map(str::to_string)
-                    })
+                    .filter_map(|a| a.get("name").and_then(|n| n.as_str()).map(str::to_string))
                     .collect::<Vec<String>>()
             })
             .unwrap_or_default();
@@ -1547,10 +1550,7 @@ pub(crate) fn read_layer1_bubbles_from_body(uuid: &str, body: &str) -> (Vec<Bubb
             continue;
         }
 
-        let created_at_ms = v
-            .get("timestamp")
-            .and_then(|t| t.as_i64())
-            .unwrap_or(0);
+        let created_at_ms = v.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
         let id = super::inject::deterministic_bubble_id(uuid, &role, created_at_ms, ordinal);
 
         bubbles.push(Bubble {
@@ -1640,12 +1640,7 @@ fn decode_l2_blob(uuid: &str, blob_id: &str, bytes: &[u8], ordinal: usize) -> Op
     if let Some(b) = try_decode_canonical_bubble(&v) {
         let b = if b.id.is_empty() {
             Bubble {
-                id: super::inject::deterministic_bubble_id(
-                    uuid,
-                    &b.role,
-                    b.created_at_ms,
-                    ordinal,
-                ),
+                id: super::inject::deterministic_bubble_id(uuid, &b.role, b.created_at_ms, ordinal),
                 ..b
             }
         } else {
@@ -1694,9 +1689,17 @@ fn try_decode_canonical_bubble(v: &serde_json::Value) -> Option<Bubble> {
     if role != "user" && role != "assistant" {
         return None;
     }
-    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let text = v
+        .get("text")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
     let created_at_ms = v.get("createdAt").and_then(|x| x.as_i64()).unwrap_or(0);
-    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
     let tool_calls: Vec<BubbleToolUse> = v
         .get("tool_calls")
         .and_then(|x| x.as_array())
@@ -1842,10 +1845,7 @@ fn l3_extract_code_block_parts(v: &serde_json::Value) -> Vec<String> {
         if content.trim().is_empty() {
             continue;
         }
-        let lang = cb
-            .get("languageId")
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
+        let lang = cb.get("languageId").and_then(|x| x.as_str()).unwrap_or("");
         if lang.is_empty() {
             out.push(content.to_string());
         } else {
@@ -1909,17 +1909,20 @@ fn l3_format_tool_with_result(tool: &serde_json::Value) -> Option<String> {
 }
 
 /// Format a toolFormerData bubble for display. read_file_v2 / edit_file_v2: no truncation (spec 013).
-fn l3_format_tool_call(tool: &serde_json::Value, code_blocks: Option<&serde_json::Value>) -> String {
-    let name = tool.get("name").and_then(|x| x.as_str()).unwrap_or("unknown");
+fn l3_format_tool_call(
+    tool: &serde_json::Value,
+    code_blocks: Option<&serde_json::Value>,
+) -> String {
+    let name = tool
+        .get("name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("unknown");
     let params = l3_parse_tool_params(tool).unwrap_or(serde_json::json!({}));
     let mut lines = vec![format!("[Tool: {name}]")];
 
     match name {
         "read_file_v2" | "read_file" => {
-            let file = l3_get_param(
-                &params,
-                &["targetFile", "path", "file", "effectiveUri"],
-            );
+            let file = l3_get_param(&params, &["targetFile", "path", "file", "effectiveUri"]);
             if !file.is_empty() {
                 lines.push(format!("File: {file}"));
             }
@@ -2103,7 +2106,10 @@ fn extract_l3_bubble_text(v: &serde_json::Value, is_assistant: bool) -> String {
     }
 
     if is_assistant {
-        if let Some(text) = v.get("text").and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty())
+        if let Some(text) = v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.trim().is_empty())
         {
             if code_block_parts.is_empty() {
                 return text.to_string();
@@ -2147,7 +2153,10 @@ fn extract_l3_bubble_text(v: &serde_json::Value, is_assistant: bool) -> String {
             "markdown",
             "textDescription",
         ] {
-            if let Some(s) = v.get(key).and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty())
+            if let Some(s) = v
+                .get(key)
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.trim().is_empty())
             {
                 return s.to_string();
             }
@@ -2192,11 +2201,7 @@ pub(crate) fn decode_l3_header_bubble(bid: &str, v: &serde_json::Value) -> Optio
         2 => "assistant",
         _ => return None,
     };
-    let text = strip_redacted_markers(
-        v.get("text")
-            .and_then(|x| x.as_str())
-            .unwrap_or(""),
-    );
+    let text = strip_redacted_markers(v.get("text").and_then(|x| x.as_str()).unwrap_or(""));
     let tool_calls = l3_extract_tool_calls(v);
     let files = l3_extract_tool_files(v);
     let images = l3_extract_bubble_images(v);
@@ -2306,11 +2311,7 @@ fn fill_timestamp_gaps(bubbles: &mut [Bubble]) {
     }
 }
 
-pub fn merge_bubbles_three_way(
-    l1: Vec<Bubble>,
-    l2: Vec<Bubble>,
-    l3: Vec<Bubble>,
-) -> Vec<Bubble> {
+pub fn merge_bubbles_three_way(l1: Vec<Bubble>, l2: Vec<Bubble>, l3: Vec<Bubble>) -> Vec<Bubble> {
     use std::collections::HashMap;
 
     // 1. Index L3 by id (main chain).
@@ -2416,7 +2417,10 @@ fn strip_context_envelope_blocks(s: &str) -> String {
     const BLOCKS: &[(&str, &str)] = &[
         ("<system_reminder>", "</system_reminder>"),
         ("<user_info>", "</user_info>"),
-        ("<open_and_recently_viewed_files>", "</open_and_recently_viewed_files>"),
+        (
+            "<open_and_recently_viewed_files>",
+            "</open_and_recently_viewed_files>",
+        ),
         ("<git_status>", "</git_status>"),
         ("<attached_files>", "</attached_files>"),
         ("<agent_transcripts>", "</agent_transcripts>"),
@@ -2758,7 +2762,10 @@ mod tests {
             }
         });
         let info = parse_subagent_info(&v).expect("subagentInfo");
-        assert_eq!(info.root_parent_agent_id, "33de2d97-940e-4335-a4ab-1f1a5b63243c");
+        assert_eq!(
+            info.root_parent_agent_id,
+            "33de2d97-940e-4335-a4ab-1f1a5b63243c"
+        );
         assert_eq!(info.type_name.as_deref(), Some("generalPurpose"));
     }
 
@@ -3001,12 +3008,18 @@ mod tests {
             if let Some(info) = &s.sources.mac {
                 bits.push(format!("mac:L{}", info.layer));
             }
-            let summary = if bits.is_empty() { "(none!)".to_string() } else { bits.join(" + ") };
-            eprintln!("{} | {:32} | {} | {}",
+            let summary = if bits.is_empty() {
+                "(none!)".to_string()
+            } else {
+                bits.join(" + ")
+            };
+            eprintln!(
+                "{} | {:32} | {} | {}",
                 &s.uuid[..8.min(s.uuid.len())],
                 summary,
                 if s.layer_3_present { "✓" } else { "·" },
-                &s.project_slug);
+                &s.project_slug
+            );
         }
     }
 
@@ -3042,8 +3055,8 @@ mod tests {
             layer_3_present: false,
             layer_3_needs_refresh: false,
             layer_2_needs_refresh: false,
-        created_endpoint: None,
-        created_at_ms: None,
+            created_endpoint: None,
+            created_at_ms: None,
             composer_data: None,
             composer_id: None,
             is_subagent: false,
@@ -3073,8 +3086,8 @@ mod tests {
             layer_3_present: false,
             layer_3_needs_refresh: false,
             layer_2_needs_refresh: false,
-        created_endpoint: None,
-        created_at_ms: None,
+            created_endpoint: None,
+            created_at_ms: None,
             composer_data: None,
             composer_id: None,
             is_subagent: false,
@@ -3110,8 +3123,8 @@ mod tests {
             layer_3_present: false,
             layer_3_needs_refresh: false,
             layer_2_needs_refresh: false,
-        created_endpoint: None,
-        created_at_ms: None,
+            created_endpoint: None,
+            created_at_ms: None,
             composer_data: None,
             composer_id: None,
             is_subagent: false,
@@ -3194,7 +3207,11 @@ mod tests {
         merge_source(
             &mut by_uuid,
             "uuid-a",
-            SourceInfo { last_seen_at: mtime, layer: "3".into(), path: "state.vscdb".into() },
+            SourceInfo {
+                last_seen_at: mtime,
+                layer: "3".into(),
+                path: "state.vscdb".into(),
+            },
             SourceLayer::LinuxDesktop,
             "no-workspace",
             "A".into(),
@@ -3204,7 +3221,11 @@ mod tests {
         merge_source(
             &mut by_uuid,
             "uuid-b",
-            SourceInfo { last_seen_at: mtime, layer: "3".into(), path: "state.vscdb".into() },
+            SourceInfo {
+                last_seen_at: mtime,
+                layer: "3".into(),
+                path: "state.vscdb".into(),
+            },
             SourceLayer::LinuxDesktop,
             "no-workspace",
             "B".into(),
@@ -3213,8 +3234,14 @@ mod tests {
         );
         let a = by_uuid.get("uuid-a").unwrap();
         let b = by_uuid.get("uuid-b").unwrap();
-        assert_eq!(a.last_updated_at, a_updated, "A must keep its JSON lastUpdatedAt");
-        assert_eq!(b.last_updated_at, b_updated, "B must keep its JSON lastUpdatedAt");
+        assert_eq!(
+            a.last_updated_at, a_updated,
+            "A must keep its JSON lastUpdatedAt"
+        );
+        assert_eq!(
+            b.last_updated_at, b_updated,
+            "B must keep its JSON lastUpdatedAt"
+        );
         assert!(a.last_updated_at > b.last_updated_at);
         // The bug (pre-#102) would have both equal to `mtime`, defeating
         // the sidebar's "updated_desc" sort. Explicitly assert they differ.
@@ -3237,7 +3264,11 @@ mod tests {
         merge_source(
             &mut by_uuid,
             "uuid-x",
-            SourceInfo { last_seen_at: mtime, layer: "3".into(), path: "state.vscdb".into() },
+            SourceInfo {
+                last_seen_at: mtime,
+                layer: "3".into(),
+                path: "state.vscdb".into(),
+            },
             SourceLayer::LinuxDesktop,
             "no-workspace",
             "X".into(),
@@ -3246,7 +3277,10 @@ mod tests {
         );
         let x = by_uuid.get("uuid-x").unwrap();
         assert_eq!(x.last_updated_at, created);
-        assert_ne!(x.last_updated_at, mtime, "must NOT fall back to global mtime");
+        assert_ne!(
+            x.last_updated_at, mtime,
+            "must NOT fall back to global mtime"
+        );
     }
 
     // ─── v0.2.2: 3-layer bubble merge tests ─────────────────
@@ -3877,7 +3911,9 @@ mod tests {
         let mut miss = 0usize;
         for entry in chats.flatten() {
             let chat_root = entry.file_name().to_string_lossy().into_owned();
-            if chat_root.len() != 32 { continue; } // skip non-md5 (shouldn't happen but defensive)
+            if chat_root.len() != 32 {
+                continue;
+            } // skip non-md5 (shouldn't happen but defensive)
             if let Some(path) = resolve_path_from_chat_root(&chat_root) {
                 let slug = paths::sanitize_project_path(&path);
                 eprintln!("chat_root={chat_root} → project.path={path} slug={slug}");
@@ -3895,8 +3931,10 @@ mod tests {
             eprintln!("---workspaceStorage → md5(folder)---");
             for entry in ws.flatten() {
                 let hash = entry.file_name().to_string_lossy().into_owned();
-                let body = std::fs::read_to_string(entry.path().join("workspace.json")).unwrap_or_default();
-                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                let body = std::fs::read_to_string(entry.path().join("workspace.json"))
+                    .unwrap_or_default();
+                let v: serde_json::Value =
+                    serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
                 let folder = v["folder"].as_str().unwrap_or("");
                 let path = folder.strip_prefix("file://").unwrap_or(folder);
                 let md5 = paths::chat_root_for(path);
@@ -3956,14 +3994,21 @@ mod tests {
                 );
             }
         }
-        assert_eq!(violations, 0, "bubble display order must follow L3 header order");
+        assert_eq!(
+            violations, 0,
+            "bubble display order must follow L3 header order"
+        );
         let out_users: Vec<_> = conv
             .bubbles
             .iter()
             .enumerate()
             .filter(|(_, b)| b.role == "user")
             .collect();
-        eprintln!("out_users={} l3_users={}", out_users.len(), l3.iter().filter(|b| b.role == "user").count());
+        eprintln!(
+            "out_users={} l3_users={}",
+            out_users.len(),
+            l3.iter().filter(|b| b.role == "user").count()
+        );
         for (out_i, b) in out_users.iter().take(3) {
             eprintln!(
                 "  user out[{out_i}] hdr={} {:?}",
@@ -4007,7 +4052,8 @@ mod tests {
     #[test]
     #[ignore = "需要本机 Cursor 数据"]
     fn live_audit_all_bettercursor_sessions() {
-        let l1_dir = "/home/eric/.cursor/projects/home-eric-workspace-bettercursor/agent-transcripts";
+        let l1_dir =
+            "/home/eric/.cursor/projects/home-eric-workspace-bettercursor/agent-transcripts";
         let entries = std::fs::read_dir(l1_dir).expect("l1 dir");
         let mut uuids: Vec<String> = entries
             .flatten()
@@ -4025,7 +4071,11 @@ mod tests {
             let l3h = l3.len();
             let out = conv.bubbles.len();
             let users = conv.bubbles.iter().filter(|b| b.role == "user").count();
-            let assts = conv.bubbles.iter().filter(|b| b.role == "assistant").count();
+            let assts = conv
+                .bubbles
+                .iter()
+                .filter(|b| b.role == "assistant")
+                .count();
             let mut issue = String::new();
             for b in &conv.bubbles {
                 if b.text.contains("open_and_recently_viewed_files")

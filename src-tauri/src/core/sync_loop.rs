@@ -23,8 +23,8 @@ pub fn start_background_sync(app: tauri::AppHandle) {
             0
         }
     };
-    let device_id = device_id();
-    let device_name = local_hostname();
+    let device_id = crate::core::device_identity::local_device_id();
+    let device_name = crate::core::device_identity::local_device_name();
     if port > 0 {
         match crate::core::discovery::spawn_mdns_service(&device_id, &device_name, port) {
             Ok(()) => {
@@ -119,7 +119,7 @@ fn push_dirty_sessions(app: &tauri::AppHandle) -> Result<()> {
     if sessions.is_empty() {
         return Ok(());
     }
-    let host = local_hostname();
+    let host = crate::core::device_identity::local_device_name();
     let now_ms = chrono::Utc::now().timestamp_millis();
     for session in sessions.iter().take(20) {
         let conv = crate::core::canonical::read_conversation(&session.uuid);
@@ -148,45 +148,4 @@ fn push_dirty_sessions(app: &tauri::AppHandle) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn device_id() -> String {
-    let path = crate::core::paths::bettercursor_dir().join("device_id");
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let t = existing.trim();
-        if !t.is_empty() {
-            return t.to_string();
-        }
-    }
-    let id = hex::encode(rand_bytes(16));
-    let _ = std::fs::create_dir_all(crate::core::paths::bettercursor_dir());
-    let _ = std::fs::write(&path, &id);
-    id
-}
-
-fn rand_bytes(n: usize) -> Vec<u8> {
-    use std::time::SystemTime;
-    let seed = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0) as u64;
-    let mut out = Vec::with_capacity(n);
-    let mut x = seed;
-    for _ in 0..n {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        out.push((x & 0xFF) as u8);
-    }
-    out
-}
-
-fn local_hostname() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
 }

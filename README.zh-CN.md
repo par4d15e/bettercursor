@@ -4,17 +4,17 @@
 >
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![app](https://img.shields.io/badge/app-0.3.6-success)
-![release](https://img.shields.io/badge/release-v0.3.7b-success)
+![app](https://img.shields.io/badge/app-0.3.7-success)
+![release](https://img.shields.io/badge/release-v0.3.7d-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
 ![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
 
-当前仓库最新 tag 是 `v0.3.7b`. 但 `package.json` / `Cargo.toml` /
-`tauri.conf.json` 的应用版本字段仍是 `0.3.6`, 所以 `v0.3.7a` /
-`v0.3.7b` 属于 `0.3.6` 版本线上的维护 tag.
+当前仓库最新 tag 是 `v0.3.7d`. `package.json` / `Cargo.toml` /
+`tauri.conf.json` 的应用版本字段现在都已经对齐到 `0.3.7`, 所以
+`v0.3.7c` / `v0.3.7d` 属于当前 `0.3.7` 版本线上的维护 tag.
 
 ## 它是什么
 
@@ -27,7 +27,21 @@
 
 ## 功能状态
 
-### v0.3.7b (✅ 最新维护 tag, 2026-07-06)
+### v0.3.7d (✅ 最新维护 tag, 2026-07-07)
+
+- [x] **过滤本机自发现** — mDNS 邻近设备搜索不再把本机自己显示成可配对目标
+- [x] **trusted peers 旧数据清理** — 历史 `trusted_peers.json` 里写错的设备名 / 旧 id 会在加载与重扫时自动修正
+- [x] **稳定配对身份** — LAN 配对优先走 `PAIR2` 交换稳定 `device_id` 和真实主机名, 对旧协议保留兼容回退
+
+### v0.3.7c (2026-07-07)
+
+- [x] **版本线对齐** — `package.json` / `Cargo.toml` /
+      `tauri.conf.json` 现在都报告 `0.3.7`, 打包元数据终于和
+      `v0.3.7*` 维护线一致
+- [x] **release 文档清理** — README / 路线图 / 下载说明区分历史
+      `v0.3.7a` / `v0.3.7b` 产物和新的 `0.3.7` 包版本线
+
+### v0.3.7b (2026-07-06)
 
 - [x] **LAN 自动发现修复** — mDNS 广播改用 `ServiceInfo::enable_addr_auto()`, 不再发布空地址服务
 - [x] **搜索生命周期修复** — `discovery_browse` 在同次调用内消费 `ServiceResolved`, 返回前显式 `stop_browse` / `shutdown`
@@ -146,7 +160,7 @@ LAN 配对是默认路径. 需要 SSH/rsync 时手编 `~/.bettercursor/transport
 
 每个 git tag (`v*.*.*`) 都触发 [`.github/workflows/release.yml`](.github/workflows/release.yml) 三平台矩阵 build, 产物在 [Releases](../../releases) 页:
 
-注意: 在下一次明确的 version bump 之前, `v0.3.7a` / `v0.3.7b` 这类维护 tag 打出来的构建, 内嵌应用版本和产物文件名仍然会是 `0.3.6`.
+注意: `v0.3.7a` / `v0.3.7b` 这类较早维护 tag 打出来的构建, 内嵌应用版本和产物文件名仍然可能是 `0.3.6`; `v0.3.7c` 起已经切到 `0.3.7` 版本线.
 
 ### Linux
 
@@ -408,7 +422,9 @@ v0.3.1 (✅ done)  LAN mDNS 配对 · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  设置面板 · L2/L3 富化 · L3 软删
 v0.3.6 (✅ app line)  跨端同步完善 — 见 SYNC_DESIGN §10.4
 v0.3.7a (✅ done)  交互性能收口
-v0.3.7b (✅ latest tag)  局域网发现稳定性
+v0.3.7d (✅ latest tag)  过滤本机自发现 · trusted peers 旧数据清理
+v0.3.7c (✅ done)  版本线对齐 · release 文档清理
+v0.3.7b (✅ done)  局域网发现稳定性
 v0.3.7 (⚪ next)     SSH peer UI
 v0.3.7+           SSH UI · T3/T4/T5 adapter · Doctor (延后观察)
 ```
@@ -421,4 +437,4 @@ v0.3.7+           SSH UI · T3/T4/T5 adapter · Doctor (延后观察)
 
 ---
 
-> 当前为个人早期项目. v0.2.6 是首个带跨设备 sync 能力的 release; 最新维护 tag 是 `v0.3.7b`.
+> 当前为个人早期项目. v0.2.6 是首个带跨设备 sync 能力的 release; 最新维护 tag 是 `v0.3.7d`.

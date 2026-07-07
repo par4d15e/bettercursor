@@ -124,7 +124,9 @@ fn process_holds_file(pid: u32, target: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(&fd_dir) else {
         return false;
     };
-    let target = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let target = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
     for entry in entries.flatten() {
         let Ok(link) = std::fs::read_link(entry.path()) else {
             continue;
@@ -201,7 +203,8 @@ mod tests {
 
     #[test]
     fn is_agent_worker_detects_worker_start() {
-        let line = "370767 cursor-agent worker start --worker-dir /home/eric/workspace/bettercursor";
+        let line =
+            "370767 cursor-agent worker start --worker-dir /home/eric/workspace/bettercursor";
         assert!(is_agent_worker(line));
         assert!(!is_agent_worker("396140 agent --resume=abc-def"));
     }
@@ -211,7 +214,10 @@ mod tests {
         let uuid = "d77a4a3f-145d-4350-856f-5ad28eed930d";
         let line = format!("396140 agent --resume={uuid}");
         assert!(command_line_targets_session(&line, uuid));
-        assert!(!command_line_targets_session(&line, "00000000-0000-0000-0000-000000000000"));
+        assert!(!command_line_targets_session(
+            &line,
+            "00000000-0000-0000-0000-000000000000"
+        ));
     }
 
     #[test]

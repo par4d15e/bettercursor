@@ -66,16 +66,13 @@ pub fn load() -> Preferences {
 pub fn save(prefs: &Preferences) -> Result<()> {
     let path = paths::config_file();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("create config dir {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create config dir {}", parent.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(prefs).context("serialize config")?;
-    std::fs::write(&tmp, body)
-        .with_context(|| format!("write tmp config to {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("rename tmp → {}", path.display()))?;
+    std::fs::write(&tmp, body).with_context(|| format!("write tmp config to {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("rename tmp → {}", path.display()))?;
     Ok(())
 }
 

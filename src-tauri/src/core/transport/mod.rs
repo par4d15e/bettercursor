@@ -145,7 +145,9 @@ mod tests {
 
     #[test]
     fn push_snapshot_v4_encode_round_trip() {
-        use crate::core::snapshot::{decode_snapshot, ComposerMeta, SessionSnapshot, SourceEndpoint};
+        use crate::core::snapshot::{
+            decode_snapshot, ComposerMeta, SessionSnapshot, SourceEndpoint,
+        };
         let snap = SessionSnapshot {
             version: 4,
             exported_at: 1,

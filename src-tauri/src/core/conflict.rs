@@ -61,7 +61,8 @@ pub struct BubbleDiff {
 pub fn bubble_diff(local: &[Bubble], incoming: &[Bubble]) -> BubbleDiff {
     use std::collections::{HashMap, HashSet};
     let local_map: HashMap<&str, &Bubble> = local.iter().map(|b| (b.id.as_str(), b)).collect();
-    let incoming_map: HashMap<&str, &Bubble> = incoming.iter().map(|b| (b.id.as_str(), b)).collect();
+    let incoming_map: HashMap<&str, &Bubble> =
+        incoming.iter().map(|b| (b.id.as_str(), b)).collect();
     let local_ids: HashSet<&str> = local_map.keys().copied().collect();
     let incoming_ids: HashSet<&str> = incoming_map.keys().copied().collect();
 
@@ -95,14 +96,20 @@ pub fn bubble_diff(local: &[Bubble], incoming: &[Bubble]) -> BubbleDiff {
 pub fn content_hash_from_bubbles(bubbles: &[Bubble]) -> String {
     let mut sorted: Vec<&Bubble> = bubbles.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
-    let payload = serde_json::to_string(&sorted.iter().map(|b| {
-        json!({
-            "id": b.id,
-            "role": b.role,
-            "text": b.text,
-            "ts": b.created_at_ms,
-        })
-    }).collect::<Vec<_>>()).unwrap_or_default();
+    let payload = serde_json::to_string(
+        &sorted
+            .iter()
+            .map(|b| {
+                json!({
+                    "id": b.id,
+                    "role": b.role,
+                    "text": b.text,
+                    "ts": b.created_at_ms,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_default();
     let digest = Sha256::digest(payload.as_bytes());
     hex::encode(digest)
 }
@@ -150,18 +157,12 @@ mod tests {
 
     #[test]
     fn classify_table_new() {
-        assert_eq!(
-            classify(None, 0, "abc", 100),
-            ConflictClass::New
-        );
+        assert_eq!(classify(None, 0, "abc", 100), ConflictClass::New);
     }
 
     #[test]
     fn classify_table_identical() {
-        assert_eq!(
-            classify(Some("h"), 100, "h", 50),
-            ConflictClass::Identical
-        );
+        assert_eq!(classify(Some("h"), 100, "h", 50), ConflictClass::Identical);
     }
 
     #[test]
@@ -182,10 +183,7 @@ mod tests {
 
     #[test]
     fn classify_table_diverged() {
-        assert_eq!(
-            classify(Some("a"), 100, "b", 100),
-            ConflictClass::Diverged
-        );
+        assert_eq!(classify(Some("a"), 100, "b", 100), ConflictClass::Diverged);
     }
 
     #[test]

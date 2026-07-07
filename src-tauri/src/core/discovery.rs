@@ -89,7 +89,10 @@ pub fn browse_devices(timeout_ms: u64) -> Result<Vec<DiscoveredDevice>> {
         found.len(),
         timeout_ms.clamp(500, 5000)
     );
-    Ok(found)
+    Ok(filter_out_self_device(
+        found,
+        &crate::core::device_identity::local_device_id(),
+    ))
 }
 
 fn build_service_info(device_id: &str, device_name: &str, port: u16) -> Result<ServiceInfo> {
@@ -155,6 +158,19 @@ fn service_instance_name(device_id: &str) -> String {
     }
 }
 
+fn filter_out_self_device(
+    devices: Vec<DiscoveredDevice>,
+    self_device_id: &str,
+) -> Vec<DiscoveredDevice> {
+    if self_device_id.trim().is_empty() {
+        return devices;
+    }
+    devices
+        .into_iter()
+        .filter(|device| device.device_id != self_device_id)
+        .collect()
+}
+
 fn local_hostname() -> String {
     std::process::Command::new("hostname")
         .output()
@@ -215,5 +231,26 @@ mod tests {
         assert_eq!(device.device_name, "workstation");
         assert_eq!(device.host, "192.168.1.9");
         assert_eq!(device.port, 38472);
+    }
+
+    #[test]
+    fn filter_out_self_device_removes_local_id() {
+        let devices = vec![
+            DiscoveredDevice {
+                device_id: "self".into(),
+                device_name: "my-mac".into(),
+                host: "192.168.1.2".into(),
+                port: 38472,
+            },
+            DiscoveredDevice {
+                device_id: "peer".into(),
+                device_name: "linux-box".into(),
+                host: "192.168.1.3".into(),
+                port: 38472,
+            },
+        ];
+        let filtered = filter_out_self_device(devices, "self");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].device_id, "peer");
     }
 }

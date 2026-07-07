@@ -18,11 +18,12 @@
 pub mod canonical;
 pub mod config;
 pub mod conflict;
+pub mod device_identity;
 pub mod discovery;
 pub mod inject;
 pub mod layer2_messages;
-pub mod paths;
 pub mod path_rewrite;
+pub mod paths;
 pub mod process;
 pub mod session_origin;
 pub mod snapshot;

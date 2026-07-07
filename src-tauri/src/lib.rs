@@ -434,9 +434,11 @@ fn pairing_join(
     host: String,
     port: u16,
     code: String,
-    device_name: String,
+    _device_name: String,
 ) -> Result<core::transport::trusted_peers::TrustedPeer, String> {
-    core::transport::lan::pairing_join_client(&host, port, &code, &device_name)
+    let device_id = core::device_identity::local_device_id();
+    let device_name = core::device_identity::local_device_name();
+    core::transport::lan::pairing_join_client(&host, port, &code, &device_id, &device_name)
         .map_err(|e| e.to_string())
 }
 
@@ -444,9 +446,19 @@ fn pairing_join(
 async fn list_trusted_peers() -> Result<Vec<core::transport::trusted_peers::TrustedPeer>, String> {
     let started = Instant::now();
     let peers = tauri::async_runtime::spawn_blocking(|| {
-        core::transport::trusted_peers::TrustedPeersFile::load()
-            .map(|f| f.peers)
-            .map_err(|e| e.to_string())
+        let mut file =
+            core::transport::trusted_peers::TrustedPeersFile::load().map_err(|e| e.to_string())?;
+        let changed = file
+            .cleanup_with_discovery(
+                &[],
+                &core::device_identity::local_device_id(),
+                &core::device_identity::local_device_name(),
+            )
+            .map_err(|e| e.to_string())?;
+        if changed {
+            file.save().map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>(file.peers)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -462,7 +474,20 @@ async fn list_trusted_peers() -> Result<Vec<core::transport::trusted_peers::Trus
 async fn discovery_browse() -> Result<Vec<core::discovery::DiscoveredDevice>, String> {
     let started = Instant::now();
     let devices = tauri::async_runtime::spawn_blocking(|| {
-        core::discovery::browse_devices(3000).map_err(|e| e.to_string())
+        let devices = core::discovery::browse_devices(3000).map_err(|e| e.to_string())?;
+        let mut file =
+            core::transport::trusted_peers::TrustedPeersFile::load().map_err(|e| e.to_string())?;
+        let changed = file
+            .cleanup_with_discovery(
+                &devices,
+                &core::device_identity::local_device_id(),
+                &core::device_identity::local_device_name(),
+            )
+            .map_err(|e| e.to_string())?;
+        if changed {
+            file.save().map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>(devices)
     })
     .await
     .map_err(|e| e.to_string())??;

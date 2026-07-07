@@ -125,10 +125,7 @@ pub fn parse_layer1_bubbles(uuid: &str, body: &str) -> Vec<super::canonical::Bub
         if text.trim().is_empty() {
             continue;
         }
-        let created_at_ms = v
-            .get("timestamp")
-            .and_then(|t| t.as_i64())
-            .unwrap_or(0);
+        let created_at_ms = v.get("timestamp").and_then(|t| t.as_i64()).unwrap_or(0);
         let trimmed_text = text.trim_end().to_string();
         let id = deterministic_bubble_id(uuid, &role, created_at_ms, ordinal);
         out.push(super::canonical::Bubble {
@@ -302,7 +299,11 @@ pub(crate) fn composer_is_desktop_loadable(v: &serde_json::Value) -> bool {
                 })
         })
         .unwrap_or(true);
-    cs_ok && last_updated > 0 && headers_have_ts && composer_context_is_valid(v) && composer_agent_fields_valid(v)
+    cs_ok
+        && last_updated > 0
+        && headers_have_ts
+        && composer_context_is_valid(v)
+        && composer_agent_fields_valid(v)
 }
 
 fn composer_agent_fields_valid(v: &serde_json::Value) -> bool {
@@ -664,7 +665,9 @@ fn bubble_images_json(images: &[super::canonical::BubbleImage]) -> Vec<serde_jso
 }
 
 /// Minimal `toolFormerData` for the first L2 tool-call (Desktop render hint).
-fn first_tool_former_data(tool_calls: &[super::canonical::BubbleToolUse]) -> Option<serde_json::Value> {
+fn first_tool_former_data(
+    tool_calls: &[super::canonical::BubbleToolUse],
+) -> Option<serde_json::Value> {
     let tc = tool_calls.first()?;
     let params = tc
         .input
@@ -825,7 +828,12 @@ fn ms_to_iso(ms: i64) -> String {
 /// L1 JSONL bubbles can participate in the 3-layer `merge_bubbles_three_way`
 /// reconciliation. The algorithm is unchanged — callers that pass the
 /// same `(uuid, role, ts_ms, ordinal)` tuple always get the same id back.
-pub(crate) fn deterministic_bubble_id(uuid: &str, role: &str, ts_ms: i64, ordinal: usize) -> String {
+pub(crate) fn deterministic_bubble_id(
+    uuid: &str,
+    role: &str,
+    ts_ms: i64,
+    ordinal: usize,
+) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(uuid.as_bytes());
@@ -909,16 +917,28 @@ mod tests {
     #[test]
     fn default_composer_context_has_file_selections() {
         let ctx = default_composer_context();
-        assert!(ctx.get("fileSelections").and_then(|x| x.as_array()).is_some());
+        assert!(ctx
+            .get("fileSelections")
+            .and_then(|x| x.as_array())
+            .is_some());
         assert!(ctx.get("mentions").is_some());
     }
 
     #[test]
     fn default_agent_composer_fields_has_object_maps() {
         let agent = default_agent_composer_fields();
-        assert!(agent.get("conversationMap").map(|x| x.is_object()).unwrap_or(false));
-        assert!(agent.get("codeBlockData").map(|x| x.is_object()).unwrap_or(false));
-        assert!(agent.get("capabilities").map(|x| x.is_array()).unwrap_or(false));
+        assert!(agent
+            .get("conversationMap")
+            .map(|x| x.is_object())
+            .unwrap_or(false));
+        assert!(agent
+            .get("codeBlockData")
+            .map(|x| x.is_object())
+            .unwrap_or(false));
+        assert!(agent
+            .get("capabilities")
+            .map(|x| x.is_array())
+            .unwrap_or(false));
     }
 
     #[test]
@@ -958,8 +978,8 @@ mod tests {
     #[test]
     #[ignore]
     fn build_workspace_identifier_returns_real_storage_hash() {
-        let id = build_workspace_identifier("/home/eric/workspace/bettercursor")
-            .expect("non-empty cwd");
+        let id =
+            build_workspace_identifier("/home/eric/workspace/bettercursor").expect("non-empty cwd");
         let id_str = id.get("id").and_then(|x| x.as_str()).unwrap_or("");
         // Real hash from `ls ~/.config/Cursor/User/workspaceStorage/`.
         assert_eq!(
@@ -975,8 +995,8 @@ mod tests {
     #[test]
     fn build_workspace_identifier_falls_back_to_md5() {
         // /tmp never appears in workspaceStorage on any sane install.
-        let id = build_workspace_identifier("/tmp/nonexistent-workspace-12345")
-            .expect("non-empty cwd");
+        let id =
+            build_workspace_identifier("/tmp/nonexistent-workspace-12345").expect("non-empty cwd");
         let id_str = id.get("id").and_then(|x| x.as_str()).unwrap_or("");
         assert_eq!(id_str.len(), 32, "expected 32-char hex, got {id_str:?}");
         assert!(

@@ -5,17 +5,17 @@
 > 🌐 [English](README.md) · [简体中文](README.zh-CN.md)
 
 ![app](https://img.shields.io/badge/app-0.3.7-success)
-![release](https://img.shields.io/badge/release-v0.3.7c-success)
+![release](https://img.shields.io/badge/release-v0.3.7d-success)
 ![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![stack](https://img.shields.io/badge/Tauri-2-orange)
 ![language](https://img.shields.io/badge/Rust-1.77%2B-orange)
 ![i18n](https://img.shields.io/badge/i18n-zh--CN%20%7C%20en-green)
 ![sync](https://img.shields.io/badge/sync-Transport%20trait%20v1-purple)
 
-Current repo tag: `v0.3.7c`. The embedded app version fields in
+Current repo tag: `v0.3.7d`. The embedded app version fields in
 `package.json` / `Cargo.toml` / `tauri.conf.json` are `0.3.7`, so
-`v0.3.7c` is the first maintenance tag that builds artifacts on the
-`0.3.7` app version line instead of the old `0.3.6` package version.
+the `v0.3.7c` / `v0.3.7d` maintenance line builds artifacts on the
+current `0.3.7` app version instead of the old `0.3.6` package line.
 
 ## What it is
 
@@ -34,7 +34,18 @@ Design goals:
 
 ## Feature status
 
-### v0.3.7c (✅ latest maintenance tag, 2026-07-07)
+### v0.3.7d (✅ latest maintenance tag, 2026-07-07)
+
+- [x] **Self-discovery filter** — nearby mDNS browse now hides the
+      local machine itself instead of offering a bogus self-pair target
+- [x] **Trusted-peer cleanup** — legacy `trusted_peers.json` entries
+      with wrong/self device names are repaired on load and reconciled
+      against fresh discovery results when available
+- [x] **Stable pairing identity** — LAN pairing now prefers a `PAIR2`
+      handshake that exchanges stable `device_id` + real host name and
+      falls back to legacy `PAIR` for backward compatibility
+
+### v0.3.7c (2026-07-07)
 
 - [x] **Version-line alignment** — `package.json` / `Cargo.toml` /
       `tauri.conf.json` now all report `0.3.7`, so packaged app metadata
@@ -558,7 +569,8 @@ v0.3.1 (✅ done)  LAN mDNS pairing · outbox · sync loop
 v0.3.2–v0.3.5 (✅ done)  Settings UI · L2/L3 enrichment · L3 soft delete
 v0.3.6 (✅ done)  Cross-device sync hardening — see SYNC_DESIGN §10.4
 v0.3.7a (✅ done)  Interaction performance cut-down
-v0.3.7c (✅ latest tag)  Version-line alignment · release metadata cleanup
+v0.3.7d (✅ latest tag)  Self-discovery filter · trusted-peer cleanup
+v0.3.7c (✅ done)  Version-line alignment · release metadata cleanup
 v0.3.7b (✅ done)  LAN discovery stabilization
 v0.3.7 (⚪ next)     LAN manual-address pairing · virtual LAN support
 v0.3.8+           T3/T4/T5 adapters · Doctor (deferred)
@@ -576,4 +588,4 @@ v0.3.8+           T3/T4/T5 adapters · Doctor (deferred)
 ---
 
 > Currently a personal/early-stage project. v0.2.6 is the first
-> release that ships cross-device sync; the latest maintenance tag is `v0.3.7c`.
+> release that ships cross-device sync; the latest maintenance tag is `v0.3.7d`.

@@ -185,7 +185,10 @@ mod tests {
             path: "/desktop/state.vscdb".into(),
         });
         let snap2 = SessionSnapshot::from_canonical(&c2, "h");
-        assert_eq!(snap2.source_path, "/desktop/state.vscdb", "linux_desktop 2nd");
+        assert_eq!(
+            snap2.source_path, "/desktop/state.vscdb",
+            "linux_desktop 2nd"
+        );
 
         let mut c3 = minimal_canonical();
         c3.sources.linux_cli = Some(crate::core::canonical::SourceInfo {
@@ -194,7 +197,10 @@ mod tests {
             path: "/cli/store.db".into(),
         });
         let snap3 = SessionSnapshot::from_canonical(&c3, "h");
-        assert_eq!(snap3.source_path, "/cli/store.db", "linux_cli last fallback");
+        assert_eq!(
+            snap3.source_path, "/cli/store.db",
+            "linux_cli last fallback"
+        );
 
         let c4 = minimal_canonical();
         let snap4 = SessionSnapshot::from_canonical(&c4, "h");
@@ -217,7 +223,10 @@ mod tests {
         let back = decode_snapshot(&json).expect("decode");
         assert_eq!(snap, back, "round-trip must preserve equality");
         // 顺便验证 JSON 里中文 / emoji 没被 escape 截断
-        assert!(json.contains("hello 你好 🎉"), "UTF-8 preserved in JSON: {json}");
+        assert!(
+            json.contains("hello 你好 🎉"),
+            "UTF-8 preserved in JSON: {json}"
+        );
     }
 
     /// text_preview 截断到 280 字符 (Unicode scalar value, 不是字节).

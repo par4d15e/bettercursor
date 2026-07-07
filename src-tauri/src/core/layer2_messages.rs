@@ -13,7 +13,9 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-use super::canonical::{clean_user_text, decode_l3_header_bubble, Bubble, BubbleImage, BubbleToolUse};
+use super::canonical::{
+    clean_user_text, decode_l3_header_bubble, Bubble, BubbleImage, BubbleToolUse,
+};
 use super::paths;
 
 /// One user or assistant turn extracted from the L2 DAG (chronological).
@@ -90,7 +92,8 @@ pub fn layer2_has_richer_turns(uuid: &str, cwd: &str, bubbles: &[Bubble]) -> boo
             if !turn.images.is_empty() && b.images.is_empty() {
                 return true;
             }
-            if !turn.text.is_empty() && (b.text.contains("<user_query>") || b.text.contains("<timestamp>"))
+            if !turn.text.is_empty()
+                && (b.text.contains("<user_query>") || b.text.contains("<timestamp>"))
             {
                 return true;
             }
@@ -266,11 +269,8 @@ fn merge_turn_into_bubble(b: &mut Bubble, turn: &Layer2Turn) {
 }
 
 fn read_layer2_turns_from_conn(conn: &Connection) -> Result<Vec<Layer2Turn>> {
-    let meta_hex: String = conn.query_row(
-        "SELECT value FROM meta WHERE key = '0'",
-        [],
-        |r| r.get(0),
-    )?;
+    let meta_hex: String =
+        conn.query_row("SELECT value FROM meta WHERE key = '0'", [], |r| r.get(0))?;
     let meta_bytes = hex::decode(&meta_hex).context("decode meta[0] hex")?;
     let meta: Value = serde_json::from_slice(&meta_bytes).context("parse meta[0] json")?;
     let root_id = meta
@@ -281,7 +281,9 @@ fn read_layer2_turns_from_conn(conn: &Connection) -> Result<Vec<Layer2Turn>> {
 
     let mut blob_map: HashMap<String, Vec<u8>> = HashMap::new();
     let mut stmt = conn.prepare("SELECT id, data FROM blobs")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
     for row in rows.flatten() {
         blob_map.insert(row.0, row.1);
     }
@@ -409,10 +411,7 @@ fn parse_ai_sdk_blob(data: &[u8]) -> Option<ParsedAiSdkMessage> {
             match typ {
                 "text" => {
                     if let Some(t) = obj.get("text").and_then(|x| x.as_str()) {
-                        if !t.is_empty()
-                            && t != "[REDACTED]"
-                            && !is_context_only_text_part(t)
-                        {
+                        if !t.is_empty() && t != "[REDACTED]" && !is_context_only_text_part(t) {
                             text_parts.push(t.to_string());
                         }
                     }
@@ -425,10 +424,7 @@ fn parse_ai_sdk_blob(data: &[u8]) -> Option<ParsedAiSdkMessage> {
                         .unwrap_or("")
                         .to_string();
                     if !name.is_empty() {
-                        let input = obj
-                            .get("args")
-                            .or_else(|| obj.get("input"))
-                            .cloned();
+                        let input = obj.get("args").or_else(|| obj.get("input")).cloned();
                         tool_calls.push(BubbleToolUse { name, input });
                     }
                 }
@@ -693,7 +689,10 @@ mod tests {
         let filtered = crate::core::canonical::filter_display_bubbles(enriched);
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].text, "你现在用的是什么模型?");
-        assert_eq!(filtered[1].text, "我是 Auto，由 Cursor 设计的 agent 路由器。");
+        assert_eq!(
+            filtered[1].text,
+            "我是 Auto，由 Cursor 设计的 agent 路由器。"
+        );
     }
 
     #[test]

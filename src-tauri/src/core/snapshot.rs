@@ -101,7 +101,10 @@ impl SessionSnapshot {
                 cursor_version: None,
             },
             composer: ComposerMeta {
-                composer_id: session.composer_id.clone().unwrap_or_else(|| session.uuid.clone()),
+                composer_id: session
+                    .composer_id
+                    .clone()
+                    .unwrap_or_else(|| session.uuid.clone()),
                 last_updated_at: session.last_updated_at,
                 project_path: session.project_path.clone(),
                 project_slug: session.project_slug.clone(),
@@ -196,11 +199,7 @@ pub fn decode_snapshot(json: &str) -> Result<SessionSnapshot> {
 }
 
 /// Atomic write: tmp file + rename into `out_dir/<host>/<uuid>-<exported_at>.json`.
-pub fn write_snapshot_file(
-    out_dir: &Path,
-    host: &str,
-    snap: &SessionSnapshot,
-) -> Result<PathBuf> {
+pub fn write_snapshot_file(out_dir: &Path, host: &str, snap: &SessionSnapshot) -> Result<PathBuf> {
     let host_dir = out_dir.join(host);
     std::fs::create_dir_all(&host_dir)?;
     let fname = format!("{}-{}.json", snap.composer.composer_id, snap.exported_at);
@@ -287,7 +286,8 @@ mod tests {
             created_at_ms: 1000,
             parent_bubble_id: None,
         }];
-        let snap = SessionSnapshot::from_canonical_v4(&session, &bubbles, "host-a", 1_700_000_001_000);
+        let snap =
+            SessionSnapshot::from_canonical_v4(&session, &bubbles, "host-a", 1_700_000_001_000);
         let json = encode_snapshot(&snap).unwrap();
         let back = decode_snapshot(&json).unwrap();
         assert_eq!(snap, back);
@@ -319,7 +319,11 @@ mod tests {
         let snap = SessionSnapshot::from_canonical_v4(&session, &[], "myhost", 99);
         let path = write_snapshot_file(dir.path(), "myhost", &snap).unwrap();
         assert!(path.exists());
-        assert!(!dir.path().join("myhost").join("uuid-v4-99.json.tmp").exists());
+        assert!(!dir
+            .path()
+            .join("myhost")
+            .join("uuid-v4-99.json.tmp")
+            .exists());
     }
 
     #[test]

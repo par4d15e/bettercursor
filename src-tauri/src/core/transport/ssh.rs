@@ -186,11 +186,7 @@ impl SshRsyncTransport {
 impl Transport for SshRsyncTransport {
     async fn push(&self, snap: &super::PushSnapshot) -> Result<PushReport> {
         let started = std::time::Instant::now();
-        let remote_dir = format!(
-            "{}/{}",
-            self.config.remote_snap_dir,
-            snap.host_namespace()
-        );
+        let remote_dir = format!("{}/{}", self.config.remote_snap_dir, snap.host_namespace());
         let final_path = format!("{}/{}.json", remote_dir, snap.uuid());
         let body = snap.encode_body().context("encode snapshot for push")?;
         self.ssh_write_atomic(&final_path, &body).await?;
@@ -230,11 +226,7 @@ impl Transport for SshRsyncTransport {
             }
             match decode_snapshot_meta(&body) {
                 Ok(s) => out_snapshots.push(RemoteSnapshot::Meta(s)),
-                Err(e) => log::warn!(
-                    "skipping malformed snapshot {}: {}",
-                    path.display(),
-                    e
-                ),
+                Err(e) => log::warn!("skipping malformed snapshot {}: {}", path.display(), e),
             }
         }
         out_snapshots.sort_by_key(|s| match s {
@@ -336,17 +328,28 @@ mod tests {
         let cmd = t.ssh_std_cmd();
         let args: Vec<&str> = cmd.get_args().filter_map(|a| a.to_str()).collect();
         // -o BatchMode=yes
-        assert!(args.windows(2).any(|w| w[0] == "-o" && w[1] == "BatchMode=yes"),
-            "missing BatchMode=yes in: {args:?}");
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-o" && w[1] == "BatchMode=yes"),
+            "missing BatchMode=yes in: {args:?}"
+        );
         // -o StrictHostKeyChecking=accept-new
-        assert!(args.windows(2).any(|w| w[0] == "-o" && w[1] == "StrictHostKeyChecking=accept-new"),
-            "missing StrictHostKeyChecking=accept-new in: {args:?}");
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-o" && w[1] == "StrictHostKeyChecking=accept-new"),
+            "missing StrictHostKeyChecking=accept-new in: {args:?}"
+        );
         // -i <identity_file>
-        assert!(args.windows(2).any(|w| w[0] == "-i" && w[1] == "/tmp/fake-key"),
-            "missing -i identity_file in: {args:?}");
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-i" && w[1] == "/tmp/fake-key"),
+            "missing -i identity_file in: {args:?}"
+        );
         // -p <port>
-        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "22"),
-            "missing -p 22 in: {args:?}");
+        assert!(
+            args.windows(2).any(|w| w[0] == "-p" && w[1] == "22"),
+            "missing -p 22 in: {args:?}"
+        );
     }
 
     /// push 路径: fake ssh 走 `with_bins` 指向 `tests/fixtures/fake-ssh.sh`,
@@ -358,10 +361,7 @@ mod tests {
     /// 失败, 只是 logged).
     #[tokio::test]
     async fn push_calls_ssh_with_expected_args() {
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/fake-ssh.sh"
-        );
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-ssh.sh");
         if !std::path::Path::new(fixture).exists() {
             eprintln!("skipping: fake-ssh.sh fixture not at {fixture}");
             return;
@@ -377,7 +377,10 @@ mod tests {
             text_preview: "hello".into(),
             bubble_count: 3,
         });
-        let report = t.push(&snap).await.expect("push should succeed with fake ssh");
+        let report = t
+            .push(&snap)
+            .await
+            .expect("push should succeed with fake ssh");
         assert_eq!(report.uuid, "uuid-test");
         assert!(report.bytes_written > 0, "must report body bytes");
     }
@@ -408,7 +411,9 @@ mod tests {
     /// `hostname` 几乎所有 Unix 都预装; CI Linux runner 必有.
     #[tokio::test]
     async fn local_hostname_returns_trimmed_string() {
-        let h = local_hostname().await.expect("hostname should work on Unix");
+        let h = local_hostname()
+            .await
+            .expect("hostname should work on Unix");
         assert!(!h.is_empty());
         assert!(!h.ends_with('\n'));
         assert!(!h.ends_with('\r'));

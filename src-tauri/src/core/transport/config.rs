@@ -65,10 +65,10 @@ impl TransportConfigFile {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let body = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
-        let cfg: Self = serde_json::from_str(&body)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let body =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let cfg: Self =
+            serde_json::from_str(&body).with_context(|| format!("parse {}", path.display()))?;
         Ok(cfg)
     }
 
@@ -80,8 +80,7 @@ impl TransportConfigFile {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
         }
-        let body = serde_json::to_string_pretty(self)
-            .context("serialize transports.json")?;
+        let body = serde_json::to_string_pretty(self).context("serialize transports.json")?;
         let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, &body)
             .with_context(|| format!("write {}", tmp_path.display()))?;
